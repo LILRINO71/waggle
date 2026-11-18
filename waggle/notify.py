@@ -32,12 +32,41 @@ def _toast(text):
         pass
 
 
-def send(text, urgent=False, settings=None):
+def hermes_exe():
+    from pathlib import Path
+    home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+    exe = home / "bin" / ("hermes.exe" if os.name == "nt" else "hermes")
+    return exe if exe.exists() else None
+
+
+def to_phone(text, settings=None):
+    """Send to the phone through `hermes send` (works without the gateway running). True on success."""
+    s = settings or Settings.load()
+    exe = hermes_exe()
+    if not exe:
+        return False
+    env = dict(os.environ, HERMES_HOME=str(exe.parent.parent))
+    try:
+        r = subprocess.run([str(exe), "send", "-q", "-t", s.phone_target, text[:3500]], capture_output=True,
+                           text=True, timeout=60, env=env, encoding="utf-8", errors="replace",
+                           creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        return r.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def send(text, urgent=False, settings=None, phone=True):
+    """Queue for your next message + desktop toast; phone too unless it's quiet hours (urgent ignores those)."""
+    quiet = in_quiet_hours(settings)
     row = {"time": time.time(), "text": text, "urgent": urgent, "seen": False}
     with open(data_path("notifications.jsonl"), "a", encoding="utf-8") as f:
         f.write(json.dumps(row) + "\n")
-    if urgent or not in_quiet_hours(settings):
+    if urgent or not quiet:
         _toast(text)
+        if phone:
+            row["phoned"] = to_phone(f"🐝 {text}", settings)
+    from . import events
+    events.log("notify", text=text[:200], urgent=urgent, quiet=quiet, phoned=row.get("phoned", False))
     return row
 
 

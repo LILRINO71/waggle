@@ -10,6 +10,7 @@ Before every tool call: guardrails (messaging, money, destructive commands need 
 """
 import json
 import logging
+import re
 import sys
 import threading
 import time
@@ -20,7 +21,7 @@ _repo = Path(__file__).with_name("repo_path.txt")
 if _repo.exists() and _repo.read_text(encoding="utf-8").strip() not in sys.path:
     sys.path.insert(0, _repo.read_text(encoding="utf-8").strip())
 
-from waggle import jobs, learn, memory, notify, quota, router, security, vault
+from waggle import events, jobs, learn, memory, notify, projects, quota, router, security, vault
 from waggle.config import Settings
 
 log = logging.getLogger("waggle")
@@ -46,7 +47,16 @@ def _reindex_soon():
     threading.Thread(target=work, daemon=True, name="waggle-index").start()
 
 
+FEEDBACK = re.compile(r"^\s*(not\s+useful|useful|👍|👎)\s+([0-9a-f]{12})\s*$", re.I)
+
+
 def on_pre_llm_call(session_id=None, user_message="", platform="", **kwargs):
+    m = FEEDBACK.match(user_message or "")
+    if m:
+        useful = m.group(1).lower() in ("useful", "👍")
+        events.log("feedback", finding=m.group(2), useful=useful, platform=platform)
+        return {"action": "block", "message": "Noted, thanks. " + ("I'll look for more like that." if useful
+                                                                   else "I'll be pickier about those.")}
     _reindex_soon()
     extras = []
     news = notify.unseen()
@@ -57,6 +67,10 @@ def on_pre_llm_call(session_id=None, user_message="", platform="", **kwargs):
     except Exception as e:
         log.warning("resume_paused failed: %s", e)
     ctx = memory.context_block(user_message or "")
+    try:
+        ctx += "\n\n" + projects.context_for(user_message or "")
+    except Exception as e:
+        log.warning("project context failed: %s", e)
     if platform in SKIP_ROUTING_PLATFORMS or not user_message:
         return {"context": "\n\n".join([ctx] + extras)}
 
@@ -68,7 +82,8 @@ def on_pre_llm_call(session_id=None, user_message="", platform="", **kwargs):
         return {"action": "block", "message": d["reply"] + news_text}
     if d["route"] == "opus" and d.get("build_prompt"):
         title = d.get("title") or "Build"
-        job_id = jobs.create(title, d["build_prompt"], user_message)
+        proj = (projects.find(user_message) or [None])[0]
+        job_id = jobs.create(title, d["build_prompt"], user_message, project=proj)
         jobs.launch(job_id)
         msg = (f"On it. I gave this to Opus as a background build: **{title}**.\n"
                f"I'll ping you when it's done (job `{job_id}`). Ask \"build status\" any time.{news_text}")
@@ -121,7 +136,49 @@ def t_build_status(args, **kw):
 
 
 def t_waggle_status(args, **kw):
-    return json.dumps({"quota": quota.status(), "jobs": len(jobs.load()), "vault": Settings.load().vault})
+    return json.dumps({"quota": quota.status(), "jobs": len(jobs.load()), "vault": Settings.load().vault,
+                       "stats": events.summary()})
+
+
+def _project_name(args):
+    name = args.get("project", "")
+    known = [p["name"] for p in projects.all_projects()]
+    if name in known:
+        return name
+    hits = projects.find(name)
+    return hits[0] if hits else None
+
+
+def t_project_status(args, **kw):
+    name = _project_name(args) if args.get("project") else None
+    if not name:
+        return json.dumps({"projects": projects.all_projects()})
+    return json.dumps({"project": name, "state": projects.sections(name), "tasks": projects.tasks(name)})
+
+
+def t_project_update(args, **kw):
+    name = _project_name(args)
+    if not name:
+        return json.dumps({"ok": False, "error": "unknown project", "known": [p["name"] for p in projects.all_projects()]})
+    action = args.get("action", "log")
+    text = args.get("text", "")
+    if action == "add_task":
+        projects.add_task(name, text)
+    elif action == "complete_task":
+        done = projects.complete_task(name, text)
+        return json.dumps({"ok": bool(done), "completed": done})
+    elif action in ("Current focus", "Open problems", "Decisions", "Goal", "Resources"):
+        projects._set_section(name, action, text)
+        events.log("project_update", project=name, action=action)
+    else:
+        projects.add_log(name, text)
+    return json.dumps({"ok": True, "project": name})
+
+
+def t_rate_finding(args, **kw):
+    events.log("feedback", finding=args.get("finding_id"), useful=bool(args.get("useful")),
+               note=args.get("note", "")[:300])
+    return json.dumps({"ok": True})
 
 
 def _schema(name, desc, props, required):
@@ -142,7 +199,19 @@ TOOLS = [
              {"title": {"type": "string"}, "prompt": {"type": "string"}, "request": {"type": "string"}},
              ["title", "prompt"]), t_start_build),
     (_schema("build_status", "List recent background build jobs and their status/results.", {}, []), t_build_status),
-    (_schema("waggle_status", "Show Claude Pro quota use, job count and vault location.", {}, []), t_waggle_status),
+    (_schema("waggle_status", "Show Claude Pro quota use, job count, vault location and usage stats.", {}, []),
+     t_waggle_status),
+    (_schema("project_status", "Get the structured state of one of the user's projects (goal, focus, open problems, "
+             "next actions, decisions, log), or list all projects if no name is given. Use for 'where were we with X'.",
+             {"project": {"type": "string"}}, []), t_project_status),
+    (_schema("project_update", "Update a project's state after meaningful progress. action: 'log' (add a dated log "
+             "entry), 'add_task', 'complete_task', or replace a section: 'Current focus', 'Open problems', "
+             "'Decisions', 'Goal', 'Resources'. Do not log chit-chat.",
+             {"project": {"type": "string"}, "action": {"type": "string"}, "text": {"type": "string"}},
+             ["project", "action", "text"]), t_project_update),
+    (_schema("rate_finding", "Record whether a proactive suggestion from Waggle was useful (the user's reaction).",
+             {"finding_id": {"type": "string"}, "useful": {"type": "boolean"}, "note": {"type": "string"}},
+             ["finding_id", "useful"]), t_rate_finding),
 ]
 
 

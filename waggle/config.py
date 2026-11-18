@@ -14,7 +14,7 @@ class Settings:
     vault: str = str(Path.home() / "WaggleVault")
     jobs_dir: str = str(Path.home() / "Claude" / "waggle-jobs")
     ollama_url: str = "http://localhost:11434"
-    local_model: str = "waggle-8b"
+    local_model: str = "waggle-4b"
     fallback_coder: str = "hf.co/mradermacher/Huihui-Qwen3-Coder-30B-A3B-Instruct-abliterated-i1-GGUF:Q4_K_M"
     embed_model: str = "nomic-embed-text"
     router_model: str = "sonnet"
@@ -28,6 +28,14 @@ class Settings:
     window_hours: float = 5.0
     search_top_k: int = 6
     quiet_hours: list = field(default_factory=lambda: [23, 7])
+    # Proactive loop
+    watch_roots: list = field(default_factory=lambda: [str(Path.home() / "Claude")])
+    extra_repos: list = field(default_factory=list)
+    max_verifications_per_day: int = 4
+    stale_days: int = 7
+    phone_target: str = "telegram"
+    # Saved by install.py: cron scripts run with a trimmed environment and may not see LOCALAPPDATA.
+    claude_bin: str = ""
 
     @classmethod
     def load(cls):

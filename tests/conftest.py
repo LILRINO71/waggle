@@ -1,16 +1,29 @@
 import pytest
 
 import waggle.config as config
+import waggle.router as router
 from waggle.config import Settings
 
 
-@pytest.fixture
-def settings(tmp_path, monkeypatch):
+@pytest.fixture(autouse=True)
+def isolated_home(tmp_path, monkeypatch):
+    """No test ever touches the real ~/.waggle, the real vault, Ollama or Claude."""
     monkeypatch.setattr(config, "HOME", tmp_path / "home")
     monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "home" / "config.json")
+    monkeypatch.setattr(router, "local_sort", lambda text, s=None, chat=None: ("unsure", 0.0))
+    import waggle.notify as notify
+    sent = []
+    monkeypatch.setattr(notify, "_toast", lambda text: None)
+    monkeypatch.setattr(notify, "to_phone", lambda text, settings=None: sent.append(text) or True)
+    monkeypatch.setattr(notify, "PHONE_LOG", sent, raising=False)
     s = Settings(vault=str(tmp_path / "vault"), jobs_dir=str(tmp_path / "jobs"))
     s.save()
     return s
+
+
+@pytest.fixture
+def settings(isolated_home):
+    return isolated_home
 
 
 def bag_embed(texts):

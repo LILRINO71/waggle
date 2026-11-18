@@ -7,7 +7,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import claude_cli, notify, quota, security, vault
+from . import claude_cli, events, notify, projects, quota, security, vault
 from .config import Settings, data_path
 
 
@@ -33,14 +33,24 @@ def update(job_id, **fields):
     return jobs[job_id]
 
 
-def create(title, build_prompt, request, settings=None):
+def create(title, build_prompt, request, settings=None, project=None):
     s = settings or Settings.load()
     job_id = f"{dt.datetime.now():%Y%m%d-%H%M%S}-{vault.slug(title, 30)}"
     workdir = Path(s.jobs_dir) / vault.slug(title, 40)
     workdir.mkdir(parents=True, exist_ok=True)
     update(job_id, id=job_id, title=title, request=request, prompt=build_prompt, workdir=str(workdir),
-           status="queued", created=time.time(), model=s.builder_model)
+           status="queued", created=time.time(), model=s.builder_model, project=project)
+    events.log("job", job=job_id, status="queued", project=project, title=title)
+    if project:
+        _project_log(project, f"Started Opus build **{title}** (job `{job_id}`)", s)
     return job_id
+
+
+def _project_log(project, entry, settings=None):
+    try:
+        projects.add_log(project, entry, settings)
+    except Exception:
+        pass  # a project note problem must never break a build
 
 
 REPO = str(Path(__file__).resolve().parents[1])
@@ -113,10 +123,16 @@ def run(job_id, resume=False):
     if is_error and "limit" in result.lower():
         quota.note_limit_hit(s, claude_cli.parse_reset_hours(result))
         update(job_id, status="paused_limit", note=result[:300])
+        events.log("job", job=job_id, status="paused_limit", project=job.get("project"))
         notify.send(f"Build '{job['title']}' paused: Claude limit hit. It resumes automatically after the reset.")
         return
     status = "failed" if is_error else "done"
     update(job_id, status=status, result=result[:4000], finished=time.time())
+    events.log("job", job=job_id, status=status, project=job.get("project"),
+               duration_s=round(time.time() - job.get("created", time.time()), 1))
+    if job.get("project"):
+        first = (result.strip().splitlines() or [""])[0][:200]
+        _project_log(job["project"], f"Build **{job['title']}** {status}: {first} [[Jobs/{job_id}]]", s)
     note = vault.write(f"Jobs/{job_id}", f"# {job['title']}\n\n- Status: **{status}**\n- Folder: `{job['workdir']}`\n"
                        f"- Asked: {job['request']}\n\n## Result\n\n{result}\n\n## Prompt Opus got\n\n{job['prompt']}\n")
     vault.journal(f"Build job [[Jobs/{job_id}|{job['title']}]] finished: {status}")

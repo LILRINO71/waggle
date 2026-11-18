@@ -36,7 +36,11 @@ def find_claude():
     path = os.environ.get("CLAUDE_BIN") or shutil.which("claude")
     if path:
         return path
-    local = os.environ.get("LOCALAPPDATA", "")
+    from .config import Settings
+    saved = Settings.load().claude_bin
+    if saved and os.path.exists(saved):
+        return saved
+    local = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
     patterns = [
         # Claude desktop app (2026 layout): Claude-Data\claude_<id>\claude-code\<version>\<hash>\claude.exe
         os.path.join(local, "Claude-Data", "claude_*", "claude-code", "*", "*", "claude.exe"),

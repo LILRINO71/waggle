@@ -27,10 +27,43 @@ def hermes(*args):
     return r
 
 
+SCRIPT = '''import sys
+sys.path.insert(0, r"{repo}")
+sys.argv = [sys.argv[0]{extra}]
+from waggle.proactive import main
+main()
+'''
+
+CRON_JOBS = [  # (name, schedule, script, extra argv)
+    ("waggle-proactive", "every 1h", "waggle_proactive.py", ""),
+    ("waggle-digest", "0 8,17 * * *", "waggle_digest.py", ', "digest"'),
+    ("waggle-consolidate", "0 18 * * 0", "waggle_consolidate.py", ', "consolidate"'),
+]
+
+
+def install_cron(s):
+    """Script-only Hermes cron jobs: stdout goes to the phone, empty stdout = silent."""
+    scripts = HERMES_HOME / "scripts"
+    scripts.mkdir(parents=True, exist_ok=True)
+    for name, schedule, script, extra in CRON_JOBS:
+        (scripts / script).write_text(SCRIPT.format(repo=REPO, extra=extra), encoding="utf-8")
+    existing = hermes("cron", "list").stdout
+    for name, schedule, script, extra in CRON_JOBS:
+        if name in existing:
+            print(f"cron {name}: already there")
+            continue
+        hermes("cron", "create", schedule, "--name", name, "--no-agent", "--script", script,
+               "--deliver", s.phone_target, "--failure-deliver", "local", "--no-wrap-response",
+               "--catch-up", "off")
+
+
 def main():
     s = Settings.load()
+    from waggle.claude_cli import find_claude
+    s.claude_bin = find_claude() or s.claude_bin
     s.save()
     print("vault:", vault.init(s))
+    print("claude:", s.claude_bin or "not found")
 
     dest = HERMES_HOME / "plugins" / "waggle"
     if dest.exists():
@@ -50,6 +83,8 @@ def main():
     hermes("config", "set", "model.context_length", "65536")
     hermes("config", "set", "compression.threshold_tokens", "30000")
     hermes("plugins", "enable", "waggle")
+    if "--cron" in sys.argv:
+        install_cron(s)
 
 
 if __name__ == "__main__":

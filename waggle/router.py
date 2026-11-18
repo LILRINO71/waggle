@@ -1,13 +1,16 @@
 """Who handles a request: the local model, Sonnet, or an Opus background build.
 
 1. Heuristics (instant, free) catch trivial requests: greetings, time, timers, opening apps.
-2. Everything else goes to Sonnet, which picks the route AND in the same call either answers
-   (route=sonnet) or rewrites the request into a detailed build prompt (route=opus).
-3. If the Pro budget says no, a local fallback decides instead (and the local model does the work).
+2. The local model sorts the rest: simple / reasoning / build / unsure (about 1 s, free).
+   Confident "simple" stays local. Only reasoning, builds and unsure go to Claude.
+3. Sonnet then picks the route AND in the same call either answers (route=sonnet) or rewrites the
+   request into a detailed build prompt (route=opus).
+4. If the Pro budget says no, the local model does the work anyway.
 """
 import re
+import time
 
-from . import claude_cli, ollama, quota
+from . import claude_cli, events, ollama, quota
 from .config import Settings
 
 TRIVIAL_PATTERNS = [
@@ -65,12 +68,50 @@ def local_route(text, memory_ctx="", settings=None):
             "by": "local-fallback"}
 
 
-def decide(text, memory_ctx="", settings=None, asker=None):
+SORT_SYSTEM = """Sort the user's message for a personal assistant. Categories:
+- simple: chit-chat, quick facts, controlling apps/files, short lookups, reminders, simple edits
+- reasoning: needs careful thinking or expertise but one answer (explain, plan, advise, design trade-offs, debug ideas)
+- build: a big multi-step creation (an app, website, game, multi-file program, research project)
+- unsure: you can't tell
+Return JSON: {"category": "...", "confidence": 0.0-1.0}"""
+
+
+def local_sort(text, settings=None, chat=None):
+    """(category, confidence) from the local model; ('unsure', 0) if it fails."""
+    chat = chat or ollama.chat_json
+    try:
+        out = chat([{"role": "system", "content": SORT_SYSTEM}, {"role": "user", "content": text[:2000]}],
+                   settings=settings, timeout=60)
+        cat = out.get("category")
+        conf = float(out.get("confidence", 0))
+        if cat in ("simple", "reasoning", "build", "unsure"):
+            return cat, max(0.0, min(1.0, conf))
+    except Exception:
+        pass
+    return "unsure", 0.0
+
+
+def decide(text, memory_ctx="", settings=None, asker=None, sorter=None):
+    t0 = time.time()
+    d = _decide(text, memory_ctx, settings, asker, sorter)
+    d["latency_s"] = round(time.time() - t0, 2)
+    events.log("route", route=d["route"], by=d.get("by"), sort=d.get("sort"), reason=d.get("reason", "")[:200],
+               latency_s=d["latency_s"], chars=len(text or ""))
+    return d
+
+
+def _decide(text, memory_ctx="", settings=None, asker=None, sorter=None):
     s = settings or Settings.load()
     h = heuristic(text)
     if h == "trivial":
         return {"route": "local", "reason": "trivial request", "reply": "", "build_prompt": "", "title": "",
                 "by": "heuristic"}
+    cat, conf = (sorter or local_sort)(text, s)
+    if h == "big" and cat == "simple":
+        cat = "unsure"  # keyword says build, model says simple: let Sonnet settle it
+    if cat == "simple" and conf >= 0.7:
+        return {"route": "local", "reason": f"local sort: simple ({conf:.2f})", "reply": "", "build_prompt": "",
+                "title": "", "by": "local-sort", "sort": cat}
     allowed, why = quota.can_escalate(s.router_model, s)
     if not allowed:
         out = local_route(text, memory_ctx, s)
@@ -93,6 +134,7 @@ def decide(text, memory_ctx="", settings=None, asker=None):
             # Sonnet already wrote a great prompt; the local model works from it now.
             d.update(route="local", reason=f"wanted Opus but {why}", looked_big=True)
     d["by"] = "sonnet"
+    d["sort"] = cat
     return d
 
 
