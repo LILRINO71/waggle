@@ -36,6 +36,9 @@ class Settings:
     phone_target: str = "telegram"
     # Saved by install.py: cron scripts run with a trimmed environment and may not see LOCALAPPDATA.
     claude_bin: str = ""
+    # Weather: saved the first time the user names a city; imperial = °F / mph.
+    home_location: str = ""
+    units: str = "imperial"
 
     @classmethod
     def load(cls):

@@ -82,6 +82,8 @@ def main():
     # Hermes refuses windows under 64k, but qwen3:8b really holds 40,960 tokens: compress well before that.
     hermes("config", "set", "model.context_length", "65536")
     hermes("config", "set", "compression.threshold_tokens", "30000")
+    # Small local models fumble Hermes's tool-search meta-tool; show every tool directly.
+    hermes("config", "set", "tools.tool_search.enabled", "off")
     hermes("plugins", "enable", "waggle")
     if "--cron" in sys.argv:
         install_cron(s)

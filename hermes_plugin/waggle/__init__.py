@@ -21,7 +21,7 @@ _repo = Path(__file__).with_name("repo_path.txt")
 if _repo.exists() and _repo.read_text(encoding="utf-8").strip() not in sys.path:
     sys.path.insert(0, _repo.read_text(encoding="utf-8").strip())
 
-from waggle import events, jobs, learn, memory, notify, ollama, projects, quota, router, security, vault
+from waggle import events, jobs, learn, live, memory, notify, ollama, projects, quota, router, security, vault
 from waggle.config import Settings
 
 log = logging.getLogger("waggle")
@@ -74,6 +74,17 @@ def on_pre_llm_call(session_id=None, user_message="", platform="", **kwargs):
     if platform in SKIP_ROUTING_PLATFORMS or not user_message:
         return {"context": "\n\n".join([ctx] + extras)}
 
+    # Live data first, so whichever brain answers (local or Sonnet) has it.
+    if live.needs_live_info(user_message) or live.weather_request(user_message):
+        try:
+            data = live.prefetch(user_message, search=_web_search)
+        except Exception as e:
+            log.warning("live prefetch failed: %s", e)
+            data = ""
+        if data:
+            ctx += "\n\n" + data  # ctx goes to the router (Sonnet) and the local model alike
+        else:
+            extras.append(live.LIVE_NUDGE)
     d = router.decide(user_message, ctx)
     vault.journal(f"route={d['route']} by={d.get('by')} - {user_message[:80]!r}")
     news_text = ("\n\n" + "\n".join(f"(Update: {n['text']})" for n in news)) if news else ""
@@ -201,6 +212,13 @@ def t_project_update(args, **kw):
     return json.dumps({"ok": True, "project": name})
 
 
+def t_weather(args, **kw):
+    try:
+        return live.weather(args.get("location") or None, args.get("day", "tomorrow"))
+    except Exception as e:
+        return f"Weather service unavailable right now ({type(e).__name__}). Tell the user and try web_search."
+
+
 def t_rate_finding(args, **kw):
     events.log("feedback", finding=args.get("finding_id"), useful=bool(args.get("useful")),
                note=args.get("note", "")[:300])
@@ -235,13 +253,31 @@ TOOLS = [
              "'Decisions', 'Goal', 'Resources'. Do not log chit-chat.",
              {"project": {"type": "string"}, "action": {"type": "string"}, "text": {"type": "string"}},
              ["project", "action", "text"]), t_project_update),
+    (_schema("weather", "Get the weather forecast. Use for ANY weather question. Leave location empty to use the "
+             "user's saved home city; if the result says NO_LOCATION, ask the user for their city.",
+             {"location": {"type": "string", "description": "City, e.g. 'Fargo, ND'. Empty = saved home city."},
+              "day": {"type": "string", "enum": ["today", "tomorrow", "week"]}}, []), t_weather),
     (_schema("rate_finding", "Record whether a proactive suggestion from Waggle was useful (the user's reaction).",
              {"finding_id": {"type": "string"}, "useful": {"type": "boolean"}, "note": {"type": "string"}},
              ["finding_id", "useful"]), t_rate_finding),
 ]
 
 
+_ctx = None
+
+
+def _web_search(query):
+    """Run Hermes's own web_search tool (keyless free tier) on the user's behalf."""
+    if _ctx is None:
+        return None
+    out = _ctx.dispatch_tool("web_search", {"query": query[:300]})
+    events.log("web_search", query=query[:200], chars=len(out or ""), preview=(out or "")[:300])
+    return out
+
+
 def register(ctx):
+    global _ctx
+    _ctx = ctx
     vault.init()
     for schema, handler in TOOLS:
         ctx.register_tool(name=schema["name"], toolset="waggle", schema=schema, handler=handler)
