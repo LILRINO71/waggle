@@ -1,9 +1,16 @@
 """`waggle` command: setup and inspection outside of Hermes."""
 import argparse
 import json
+import sys
+from pathlib import Path
 
-from . import jobs, learn, memory, ollama, quota, router, vault
-from .config import Settings
+if not __package__:
+    # Run as a plain file (python waggle\cli.py): make the package importable.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    __package__ = "waggle"
+
+from . import jobs, learn, memory, ollama, quota, router, vault  # noqa: E402
+from .config import Settings  # noqa: E402
 
 
 def main(argv=None):
