@@ -217,3 +217,10 @@ def test_cap_rises_when_usage_passes_it_without_a_limit(settings, monkeypatch):
     from waggle.config import Settings
     assert Settings.load().window_units_estimate == pytest.approx(11.5)
     assert ok  # uncalibrated: the 11.5 is only a lower bound
+
+
+def test_build_usage_counts_toward_share_but_not_twice(settings, monkeypatch):
+    monkeypatch.setattr(quota, "window_usage", lambda *a, **k: 0.0)
+    quota.record("claude-opus-5-5", {"input_tokens": 600_000}, "build:x", headless=False)
+    assert quota.waggle_usage() == pytest.approx(1.0)
+    assert all(not r["headless"] for r in quota.ledger())  # window_usage skips it (transcript has it)

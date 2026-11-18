@@ -104,7 +104,10 @@ def run(job_id, resume=False):
         update(job_id, status="failed", error=str(e), finished=time.time())
         notify.send(f"Build '{job['title']}' could not start: {e}", urgent=True)
         return
-    session_id, result, is_error, _ = parse_stream(log.read_text(encoding="utf-8", errors="replace"))
+    session_id, result, is_error, usage = parse_stream(log.read_text(encoding="utf-8", errors="replace"))
+    # The session transcript already counts toward the Pro window; this row counts it toward Waggle's share.
+    quota.record(claude_cli.MODEL_IDS.get(s.builder_model, s.builder_model), usage, f"build:{job_id}",
+                 headless=False, ok=not is_error)
     if session_id:
         update(job_id, session_id=session_id)
     if is_error and "limit" in result.lower():
