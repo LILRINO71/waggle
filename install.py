@@ -1,0 +1,56 @@
+"""Install Waggle into Hermes: copy the plugin, point it at this repo, set the local model, create the vault.
+
+    python install.py            (re-run any time after pulling changes)
+"""
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent
+HERMES_HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+HERMES = HERMES_HOME / "bin" / ("hermes.exe" if os.name == "nt" else "hermes")
+
+sys.path.insert(0, str(REPO))
+from waggle import vault  # noqa: E402
+from waggle.config import Settings  # noqa: E402
+
+
+def hermes(*args):
+    env = dict(os.environ, HERMES_HOME=str(HERMES_HOME))
+    r = subprocess.run([str(HERMES), *args], capture_output=True, text=True, env=env,
+                       encoding="utf-8", errors="replace")
+    print(f"$ hermes {' '.join(args)} -> {r.returncode}")
+    if r.returncode:
+        print((r.stdout + r.stderr)[-800:])
+    return r
+
+
+def main():
+    s = Settings.load()
+    s.save()
+    print("vault:", vault.init(s))
+
+    dest = HERMES_HOME / "plugins" / "waggle"
+    if dest.exists():
+        shutil.rmtree(dest)
+    shutil.copytree(REPO / "hermes_plugin" / "waggle", dest,
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    (dest / "repo_path.txt").write_text(str(REPO), encoding="utf-8")
+    print("plugin:", dest)
+
+    if not HERMES.exists():
+        print("Hermes not found at", HERMES, "- install Hermes first.")
+        return
+    hermes("config", "set", "model.provider", "custom")
+    hermes("config", "set", "model.base_url", f"{s.ollama_url}/v1")
+    hermes("config", "set", "model.default", s.local_model)
+    # Hermes refuses windows under 64k, but qwen3:8b really holds 40,960 tokens: compress well before that.
+    hermes("config", "set", "model.context_length", "65536")
+    hermes("config", "set", "compression.threshold_tokens", "30000")
+    hermes("plugins", "enable", "waggle")
+
+
+if __name__ == "__main__":
+    main()

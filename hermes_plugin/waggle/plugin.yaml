@@ -1,0 +1,14 @@
+name: waggle
+version: 0.1.0
+description: Waggle brain - Obsidian memory, Sonnet routing, Opus background builds, Pro-quota budget, guardrails
+author: LILRINO71
+provides_tools:
+  - vault_search
+  - remember
+  - start_build
+  - build_status
+  - waggle_status
+provides_hooks:
+  - pre_llm_call
+  - post_llm_call
+  - pre_tool_call
