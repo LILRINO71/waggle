@@ -136,13 +136,15 @@ def test_reindex_and_search(settings):
                for h in memory.search("flywheel", settings=settings, embedder=bag_embed))
 
 
-def test_context_block_survives_errors(settings):
+def test_search_falls_back_to_keywords_when_embeddings_fail(settings):
     vault.init(settings)
+    vault.write("Projects/Robot", "# Robot\nFTC shooter flywheel and intake design notes.", settings)
 
     def broken(texts):
         raise RuntimeError("ollama down")
-    block = memory.context_block("hi", settings, embedder=broken)
-    assert "Profile" in block and "unavailable" in block
+    block = memory.context_block("how is the flywheel doing", settings, embedder=broken)
+    assert "Profile" in block and "flywheel" in block and "ollama down" not in block
+    assert memory.search("zzzz qqqq", settings=settings, embedder=broken)[0]["score"] == 0.0
 
 
 # ---- learning ------------------------------------------------------------------------------------

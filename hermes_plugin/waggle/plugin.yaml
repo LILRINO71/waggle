@@ -15,3 +15,4 @@ provides_hooks:
   - pre_llm_call
   - post_llm_call
   - pre_tool_call
+  - transform_llm_output

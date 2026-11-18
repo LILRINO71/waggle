@@ -57,3 +57,18 @@ def test_every_decision_is_logged(settings):
     ev = events.read("route")
     assert ev and ev[-1]["route"] == "local" and "latency_s" in ev[-1]
     assert events.summary()["messages"] == 1
+
+
+def test_hand_over_swaps_reply_and_keeps_message(monkeypatch):
+    import importlib.util, sys
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location("waggle_plugin", Path(__file__).parents[1] / "hermes_plugin" / "waggle" / "__init__.py")
+    plug = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(plug)
+    monkeypatch.setattr(plug.ollama, "is_up", lambda settings=None: True)
+    out = plug._hand_over("s1", "explain PID", "Sonnet's long answer")
+    assert "action" not in out and "Reply with exactly: OK" in out["context"]  # turn not blocked
+    assert plug.on_transform_llm_output(response_text="OK", session_id="s1") == "Sonnet's long answer"
+    assert plug.on_transform_llm_output(response_text="normal", session_id="s1") is None  # one-shot
+    monkeypatch.setattr(plug.ollama, "is_up", lambda settings=None: False)
+    assert plug._hand_over("s2", "q", "r")["action"] == "block"  # local model down: block fallback

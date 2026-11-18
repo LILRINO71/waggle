@@ -21,7 +21,7 @@ _repo = Path(__file__).with_name("repo_path.txt")
 if _repo.exists() and _repo.read_text(encoding="utf-8").strip() not in sys.path:
     sys.path.insert(0, _repo.read_text(encoding="utf-8").strip())
 
-from waggle import events, jobs, learn, memory, notify, projects, quota, router, security, vault
+from waggle import events, jobs, learn, memory, notify, ollama, projects, quota, router, security, vault
 from waggle.config import Settings
 
 log = logging.getLogger("waggle")
@@ -78,8 +78,7 @@ def on_pre_llm_call(session_id=None, user_message="", platform="", **kwargs):
     vault.journal(f"route={d['route']} by={d.get('by')} - {user_message[:80]!r}")
     news_text = ("\n\n" + "\n".join(f"(Update: {n['text']})" for n in news)) if news else ""
     if d["route"] == "sonnet" and d.get("reply"):
-        learn.learn_async(user_message, d["reply"])
-        return {"action": "block", "message": d["reply"] + news_text}
+        return _hand_over(session_id, user_message, d["reply"] + news_text)
     if d["route"] == "opus" and d.get("build_prompt"):
         title = d.get("title") or "Build"
         proj = (projects.find(user_message) or [None])[0]
@@ -87,12 +86,39 @@ def on_pre_llm_call(session_id=None, user_message="", platform="", **kwargs):
         jobs.launch(job_id)
         msg = (f"On it. I gave this to Opus as a background build: **{title}**.\n"
                f"I'll ping you when it's done (job `{job_id}`). Ask \"build status\" any time.{news_text}")
-        learn.learn_async(user_message, msg)
-        return {"action": "block", "message": msg}
+        return _hand_over(session_id, user_message, msg)
     if d.get("looked_big"):
         extras.append("Claude is unavailable right now (" + d.get("reason", "") + "). Do the best you can locally, "
                       "and tell the user a stronger version can run once the Claude limit resets.")
     return {"context": "\n\n".join([ctx] + extras)}
+
+
+# Replies written by Claude, waiting to replace the local model's placeholder for that session's turn.
+_pending = {}
+_pending_lock = threading.Lock()
+PLACEHOLDER = ("A specialist has already written the complete reply to this message and it will be shown to the "
+               "user. Do not answer the message yourself and do not call tools. Reply with exactly: OK")
+
+
+def _hand_over(session_id, user_message, reply):
+    """Deliver a Claude-written reply while keeping the user's real message in the history.
+
+    The old way (blocking the turn) made Hermes store the user's message as "[Message withheld]",
+    so follow-ups lost context. Now the local model writes a one-word placeholder and
+    transform_llm_output swaps the real reply in before it is saved or sent.
+    If the local model is down it cannot write the placeholder, so we fall back to blocking."""
+    if not session_id or not ollama.is_up():
+        learn.learn_async(user_message, reply)
+        return {"action": "block", "message": reply}
+    with _pending_lock:
+        _pending[session_id] = reply
+    return {"context": PLACEHOLDER}
+
+
+def on_transform_llm_output(response_text="", session_id="", **kwargs):
+    with _pending_lock:
+        reply = _pending.pop(session_id, None)
+    return reply  # None leaves the local model's own reply unchanged
 
 
 def on_post_llm_call(user_message="", assistant_response="", **kwargs):
@@ -221,6 +247,11 @@ def register(ctx):
         ctx.register_tool(name=schema["name"], toolset="waggle", schema=schema, handler=handler)
     ctx.register_hook("pre_llm_call", on_pre_llm_call)
     ctx.register_hook("post_llm_call", on_post_llm_call)
+    # hold_stream: the user only ever sees the final reply, never the local model's "OK" placeholder.
+    try:
+        ctx.register_hook("transform_llm_output", on_transform_llm_output, hold_stream=True)
+    except TypeError:  # older Hermes without hold_stream
+        ctx.register_hook("transform_llm_output", on_transform_llm_output)
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
     ctx.register_command("waggle", lambda raw: json.dumps(quota.status(), indent=2),
                          description="Waggle quota and status")
