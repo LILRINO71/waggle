@@ -107,7 +107,7 @@ Upstream: H = Hermes Agent, OJ = OpenJarvis, W = Waggle original.
 | Goal decomposition + dependencies | mission | — | — | Sonnet plan, <=8 steps, deps only on earlier steps | test_objectives | **live** |
 | Background execution + recovery | mission | — | — | detached worker per objective; routines tick supervises/restarts every 5 min | test_objectives | **live** |
 | Step verification + retry + block | mission | — | tool success taken as task success | verify each step against done_when; 1 retry; then blocked + notify | test_objectives | **live** |
-| Approvals inside background work | mission | 30-min approvals | background steps would expire | 24 h approvals for objective/routine sessions; "yes" resumes | test_objectives | **live** |
+| Approvals inside background work | mission | 30-min approvals | background steps would expire | 24 h approvals for objective/routine sessions; `approve <code>` resumes (mission 3: a bare "yes" no longer does) | test_objectives, test_trust | **live** |
 | Completion reports | mission | — | — | Haiku report -> project log + vault note Objectives/<slug> + notify | test_objectives | **live** |
 | Start from any interface | mission | — | — | "objective: ..." in voice/Telegram/CLI; objective_create tool for agents | test_objectives | **live** |
 | Knowledge graph (projects, people, ideas, decisions) | mission/OJ | flat vault | no relationships | graph.py from vault links + dated Decisions + local-model chat extraction | test_graph | **live** |
@@ -119,3 +119,36 @@ Upstream: H = Hermes Agent, OJ = OpenJarvis, W = Waggle original.
 | Proactive objective watch | mission | stale projects only | stuck objectives silent | blocked 12 h / waiting yes 3 h / stalled 2 h -> important finding, weekly dedupe | test_proactive | **live** |
 | Objectives in Command Center + HQ | mission | — | — | panels with step progress, linked notes | test_dashboard, test_hq | **live** |
 
+## Mission 3: reliability, trust, independent operation (deployed 2026-11-19, 0ef7d38 + docs)
+
+| Capability | Before | Approach | Tests | Status |
+|---|---|---|---|---|
+| Daily background Claude budget | none (only the shared 30 % window share) | budget.py, `background_daily_units` (config.json or `waggle budget set N`) | test_trust | **live-verified** |
+| Interactive vs background accounting | one ledger | budget.db rows tagged kind/objective/step/purpose/model; ledger rows tagged too | test_trust | **live-verified** |
+| Measured vs estimated | units only | tokens as the CLI reported them (`measured=1`); failed calls with no usage count an estimate (`measured=0`) | test_trust | live |
+| Workers can't overspend together | — | atomic reservations, max 2 concurrent background calls, crashed workers' reservations expire | test_trust (6 threads) | tested |
+| Chat keeps priority | — | background stops at 60 % of the window (chat at 85 %), waits 60 s after a message (not for work the user just started) | test_trust | **live-verified** |
+| Queue + resume at reset / when raised | — | `deferred_until` parking; supervisor resumes at reset or when the limit is raised | test_trust | **live-verified** |
+| Cheaper model when low | — | Sonnet -> Haiku under 25 % left (not coder/robotics), logged | test_trust | tested |
+| Deferral/downgrade log | — | budget.db `decisions`, shown in the Command Center and `waggle budget` | test_trust | **live-verified** |
+| One worker per objective | PID check, racy | lease (worker_pid + lease_until) by compare-and-swap; PID reuse after reboot handled by lease expiry | test_trust | tested |
+| No duplicate step execution | — | conditional UPDATE claim of each step | test_trust | tested |
+| Crash after work never re-runs it | step re-ran | `verifying` checkpoint | test_trust | tested |
+| Interrupted step | re-ran blind | re-run told it was interrupted; blocks after 3 | test_trust | **live-verified** (worker killed) |
+| Unverifiable != done | verify error passed the step | strict verify: waits and re-checks | test_trust | tested |
+| Deliverable really exists | report-only check | promised vault/absolute files checked on disk first | test_trust | **live-verified** |
+| Exactly-once completion | — | conditional finish; one notification | test_trust | **live-verified** |
+| Finished objectives stay finished | resume could reopen | allowed-transition table | test_trust | tested |
+| Approval codes, session-bound, one use | hash, any session | approvals.db, `approve/deny <code>`, describe() with expiry | test_trust | **live-verified** |
+| Bare "yes" safety | approved the first pending objective | lists open requests with codes instead | test_trust | **live-verified** |
+| Expired/denied approvals | waited forever | supervisor blocks + tells the user; lost resumes healed | test_trust | **live-verified** (deny) |
+| Atomic vault writes | direct write | temp file + os.replace (retries if Obsidian holds the file) | test_trust | tested |
+| Decisions vs ideas | everything a decision | `status: decided/considering`; ideas never filed into Decisions | test_graph | tested |
+| Grounded extraction | model output trusted | names must appear in the user's words; no new free topics, time words, file names, vault folders; requests to the assistant rejected | test_graph | **live-verified** (real traces: 3 clean nodes vs 15) |
+| Changed decisions | duplicates piled up | `replaces` -> old one superseded, struck in the note, "changed from" in context | test_graph | tested |
+| Note is the source of truth | stale nodes | deleted lines retract, struck lines supersede on rebuild | test_graph | tested |
+| Duplicates | exact key only | aliases from project frontmatter + punctuation/plural-insensitive key | test_graph | **live-verified** (BIOBUZZ aliases) |
+| Source refs + quotes | — | `source_ref` (session + time of the exact turn), `quote` | test_graph | tested |
+| Corrections | none | `graph_correct` tool: retract / confirm / merge / update | test_graph | tested |
+| False relationships | substring project match ("Claude" -> "Kalshi Claude Desk") | exact/alias/spelling-variant match only | test_graph | **live-verified** |
+| Command Center operations view | objectives list only | budget, approvals with codes, active/parked/blocked, failures, workers, last recovery, local vs Claude | test_dashboard, test_trust | **live-verified** (screenshot) |

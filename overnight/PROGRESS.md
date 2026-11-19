@@ -50,3 +50,61 @@
     verified it, wrote `Inbox/Waggle deploy check.md`, reported: **done in 21.9 s, no human input**.
   - Earlier: direct objective test (2 steps, 41.9 s) and the nightly-project-review routine ran at 21:30
     (status "quiet": nothing worth reporting).
+
+## Mission 3 (reliability, trust, independent operation), 2026-11-19 06:20-07:25
+
+Audit first (before changing anything): branch `overnight` = main = `b69987c`, clean. 3 of the 222 tests failed when
+run between 23:00 and 07:00 (they expected a phone message during quiet hours), fixed in the test setup. Found in the
+code: a bare "yes" approved the *first* pending objective approval of any objective; a verifier error passed the step
+unchecked (`agents.verify` returned True on exceptions); two workers could run the same step (check-then-set PID, no
+lease); approvals were a JSON file rewritten by several processes; no background budget at all (objectives only had
+the shared 30 % Waggle share of the 5-hour window).
+
+What shipped (all on `overnight`, deployed to main, pushed):
+- **6faf467** `waggle/budget.py`: daily background allowance (`background_daily_units`, default 4 weighted units),
+  separate interactive/background accounting in `~/.waggle/budget.db` per objective/step/purpose/model, measured
+  tokens vs estimated limit cost (`measured` flag), atomic reservations (`BEGIN IMMEDIATE`) so parallel workers can't
+  take the last slot, max 2 background calls at once, background stops at 60 % of the 5-hour window (chat keeps going
+  to 85 %), background waits 60 s after the user's last message, downgrade Sonnet -> Haiku when < 25 % is left
+  (never for coder/robotics: those wait), every deferral/downgrade logged with its reason, backstop inside
+  `claude_cli.ask` and `agent.run` so no background call can skip the check. Objective engine: worker lease
+  (compare-and-swap), one-claim steps, `verifying` checkpoint (work saved before it is judged; a crash never re-runs
+  it), interrupted steps re-run with an "interrupted, check what exists, never repeat irreversible actions" note and
+  block after 3 interruptions, a check that can't run waits instead of passing, exactly-once finish, done/cancelled
+  objectives can't be restarted, budget parking (`deferred_until`) + supervisor resume. Approvals moved to
+  `approvals.db` with 4-letter codes, bound to their session, one use, `approve <code>` / `deny <code>`; a bare "yes"
+  never approves background work. Atomic vault writes (temp file + replace).
+- **35b0118** Command Center panels (background budget, waiting approvals with codes/expiry, active/parked/blocked
+  objectives, recent failures, live workers, last recovery, local vs Claude turns, model usage by kind); doctor check
+  "Background work"; routines, proactive, brief and learning cron jobs run as background (routines reserve budget).
+- **5761363 / 0ef7d38** knowledge graph quality (see FEATURE_MATRIX mission 3).
+- **386f2b6, a605445, 3ac8099, 51065e7, 4323846, 884c6b3**: fixes found by the live end-to-end runs (below).
+
+Live end-to-end runs (real gateway, real Claude, real vault; `hermes chat -q` = the terminal interface):
+1. `objective: Read my BIOBUZZ Robot project note and write ... Inbox/M3 test - BIOBUZZ open problems.md` ->
+   **found bug**: the objective the user had just started was parked 5 min by the "user is chatting" yield. Fixed
+   (386f2b6). The supervisor cron resumed it at the next tick.
+2. Killed the worker (`Stop-Process`) 3 s into step 2 -> next supervisor tick re-queued step 2 as interrupted; the
+   re-run saw the orphaned run had already written the note and **left it unchanged**; done, one notification, file
+   content correct.
+3. Budget set to 0.01 -> new objective parked ("background budget used: 0.07 of 0.01 units today", retry 04:00),
+   nothing ran, Command Center showed it. Raised to 4 -> resumed at the next tick (a605445 added this).
+   **Found bug**: the note landed in `C:\Users\hiheo\Claude\Inbox\` (agent's working folder) and the report-only
+   check passed it. Fixed (4323846): steps are told where the vault is, and a file a step promises must exist on
+   disk. Misplaced test file removed.
+4. Approval: create + delete a test note -> step 2 asked `[3REH] deleting files`. Bare "yes" -> listed the request
+   with its code, approved nothing. `approve 3REH` -> **found bug**: the re-run sent the same `rm` with a different
+   free-text description and was asked again (`AP3T`). Fixed (51065e7: shell approvals match the command). `deny
+   AP3T` -> objective blocked "you said no to ...". `retry objective c6b88aea` (new chat session) -> asked `373M`
+   -> `approve 373M` -> re-run used it exactly once (`used`), file actually deleted, done. Also found: approval pauses
+   counted as failed attempts (884c6b3).
+5. Failure reporting: `objective: Copy the exact text of C:\Users\hiheo\m3-missing-source.txt into a note` ->
+   agent refused to invent text, disk check confirmed no note, 1 retry, **blocked** (not done), message delivered on
+   the next chat turn. The gateway was restarted in the middle of this run: the detached worker carried on.
+6. Regression: "what is 17 times 23?" -> 391; BIOBUZZ focus/decisions question answered from the vault; doctor
+   13/13; no Waggle errors in `errors.log` / `gateway.log` since the deploy.
+7. Graph job on the live graph: old noise cleaned; the fake "decision" an old run had filed into `Projects/Waggle.md`
+   is retracted and struck through there (0ef7d38: before that fix the rebuild restored it).
+
+Tests: **272 passed** (222 before; +50 in `test_trust.py`/`test_graph.py`/`test_dashboard.py`). Rollback point:
+tag `known-good-pre-m3` = `b69987c`.

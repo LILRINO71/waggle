@@ -13,17 +13,26 @@ section) -> BLOCKERS.md.
 - Rollback: `git reset --keep 0e74e97` in the live checkout + `.\reload-waggle.ps1` (pre-phase-2 main).
 
 ## State
-- Phase 1 (agent stack, learning, dashboard, reliability) and phase 2 (objectives, knowledge graph, continuity,
-  verified skills, proactive objective watch) are all deployed and live-verified.
-- Open blockers: B-04 (try voice once), B-05 (calendar may be a different Google account).
+- Phase 1 (agent stack, learning, dashboard, reliability), phase 2 (objectives, knowledge graph, continuity,
+  verified skills, proactive objective watch) and mission 3 (background budget, crash-safe objectives, approval
+  codes, graph quality, operations panels) are deployed. Mission 3 live runs are in PROGRESS.md.
+- Rollback: `git reset --keep known-good-pre-m3` (= b69987c) in the live checkout + `.\reload-waggle.ps1`.
+  Data written by mission 3 (budget.db, approvals.db, new objectives/graph columns) is ignored by the old code.
+- Budget: `python -m waggle.cli budget` (status) / `budget set 6` (units per day). Units are weighted-token
+  estimates (~0.06 per Haiku agent step, ~0.2 per Sonnet step); look at a few days of `waggle budget` before tuning.
+- Approvals: "approve K7QH" / "deny K7QH". A bare "yes" only answers what the same chat was just asked.
+- Open blockers: B-04 (voice), B-05 (calendar account), B-06 (wake-word mic).
 
 ## Next tasks, in order
-1. **Objective step budget per window**: objectives currently check `quota.can_escalate` per step; add a per-day
-   cap on objective runs in config (`objective_daily_runs`) so a big goal can't eat the week's Claude budget.
-2. **Graph quality**: review `~/.waggle/graph.db` after a few days of chats (`python -m waggle.graph` prints
-   nothing; inspect `~/.waggle/graph_last.json` and `graph.stats()`); tune EXTRACT_SYSTEM if entities are noisy.
-3. **Objective templates**: common goals (weekly robot report, study plan from a syllabus, research brief) as
-   presets the planner starts from.
-4. **Voice for objectives**: speak a one-line "started" / "finished" through Kokoro when the voice window is open.
-5. **Learning loop on objectives**: feed objective step failures into `learning.analyze` so repeated failures
-   become skill drafts.
+1. **Telegram leg**: when the user is back, have them send `objective: ...` and an `approve <code>` from Telegram
+   (the plugin path is the same as the terminal one tested live, but Telegram itself wasn't driven in mission 3).
+2. **Approval matching for non-shell tools**: shell commands now match on the command; Write/Edit/MCP calls still
+   match on all arguments, so a re-run that changes e.g. file content is asked again. Decide per tool what
+   identifies "the same action" (path for Write? never for messaging).
+3. **Planner hedging**: the failure-test plan had a step "Write note or report failure" and step 1's verifier
+   accepted "file missing" as done. Tell PLAN_SYSTEM that a step's done_when must be the success condition only.
+4. **Budget calibration**: after 3-5 days compare budget.db background units with the real plan usage page and
+   adjust `background_daily_units` / AGENT_COST defaults.
+5. **Ground truth beyond files**: the disk check covers vault and absolute file paths; emails, calendar events and
+   web results still rely on the Haiku check of the agent's report.
+6. From the old list: objective templates, voice "started/finished" lines, objective failures -> learning loop.
