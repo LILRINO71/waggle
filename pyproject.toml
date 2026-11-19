@@ -13,7 +13,7 @@ dependencies = []
 waggle = "waggle.cli:main"
 
 [tool.setuptools]
-packages = ["waggle"]
+packages = ["waggle", "waggle.core"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
