@@ -121,7 +121,10 @@ def run(name, task, context="", session="", hard=False, settings=None, timeout=9
 
 
 VERIFY_SYSTEM = """Check whether an AI agent actually completed a task. Reply JSON {"complete": true/false,
-"missing": "what is missing or wrong, empty if complete"}. Judge only from the task and the agent's report."""
+"missing": "what is missing or wrong, empty if complete"}. Judge only from the task and the agent's report.
+Fail it when something the task or its "Done when" condition requires is missing, wrong, or claimed without
+evidence. Do not add requirements the task does not state (citation style, which file a fact came from, extra
+sections) and do not fail it over wording or helpful extra detail."""
 
 
 def verify(task, report, asker=None, settings=None, strict=False):
