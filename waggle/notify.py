@@ -55,8 +55,37 @@ def to_phone(text, settings=None):
         return False
 
 
-def send(text, urgent=False, settings=None, phone=True):
-    """Queue for your next message + desktop toast; phone too unless it's quiet hours (urgent ignores those)."""
+def ntfy_topic(settings=None):
+    """The private ntfy channel (random, created once). Anyone who knows it can read alerts, so it is long."""
+    s = settings or Settings.load()
+    if not s.ntfy_topic:
+        import secrets
+        s.ntfy_topic = "waggle-" + secrets.token_hex(12)
+        s.save()
+    return s.ntfy_topic
+
+
+def to_ntfy(text, title="Waggle", priority=5, tags=("bee",), settings=None, post=None):
+    """Push to the ntfy app (iPhone/Android). priority 5 = urgent: on iPhone a Time-Sensitive alert that breaks
+    through Focus; 3 = normal. Free, no account. True on success."""
+    import urllib.request
+    s = settings or Settings.load()
+    body = {"topic": ntfy_topic(s), "title": title[:120], "message": text[:3500], "priority": int(priority),
+            "tags": list(tags)}
+    if post:
+        return post(s.ntfy_server, body)
+    try:
+        req = urllib.request.Request(s.ntfy_server, data=json.dumps(body).encode("utf-8"),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return 200 <= r.status < 300
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def send(text, urgent=False, settings=None, phone=True, push=None):
+    """Queue for your next message + desktop toast; phone too unless it's quiet hours (urgent ignores those).
+    Urgent also goes out as an ntfy alarm (Time-Sensitive on iPhone) unless push=False."""
     quiet = in_quiet_hours(settings)
     row = {"time": time.time(), "text": text, "urgent": urgent, "seen": False}
     with open(data_path("notifications.jsonl"), "a", encoding="utf-8") as f:
@@ -65,8 +94,12 @@ def send(text, urgent=False, settings=None, phone=True):
         _toast(text)
         if phone:
             row["phoned"] = to_phone(f"🐝 {text}", settings)
+    if urgent if push is None else push:
+        row["pushed"] = to_ntfy(text, title="🚨 Waggle needs you", priority=5, tags=("rotating_light",),
+                                settings=settings)
     from . import events
-    events.log("notify", text=text[:200], urgent=urgent, quiet=quiet, phoned=row.get("phoned", False))
+    events.log("notify", text=text[:200], urgent=urgent, quiet=quiet, phoned=row.get("phoned", False),
+               pushed=row.get("pushed", False))
     return row
 
 

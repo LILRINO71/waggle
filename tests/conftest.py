@@ -15,6 +15,9 @@ def isolated_home(tmp_path, monkeypatch):
     sent = []
     monkeypatch.setattr(notify, "_toast", lambda text: None)
     monkeypatch.setattr(notify, "to_phone", lambda text, settings=None: sent.append(text) or True)
+    real_ntfy = notify.to_ntfy
+    monkeypatch.setattr(notify, "to_ntfy", lambda text, *a, post=None, **k: real_ntfy(
+        text, *a, post=post or (lambda url, body: sent.append("ntfy:" + body["message"]) or True), **k))
     monkeypatch.setattr(notify, "PHONE_LOG", sent, raising=False)
     s = Settings(vault=str(tmp_path / "vault"), jobs_dir=str(tmp_path / "jobs"))
     s.save()

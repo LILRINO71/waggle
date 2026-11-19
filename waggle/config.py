@@ -35,6 +35,9 @@ class Settings:
     max_calls_per_day: int = 2
     vision_model: str = "gemma4"
     max_selfbuilds_per_day: int = 3
+    ntfy_server: str = "https://ntfy.sh"
+    ntfy_topic: str = ""  # generated on first use; private channel for urgent push alerts
+    brief_time: str = "30 7 * * *"  # morning brief (cron)
     stale_days: int = 7
     phone_target: str = "telegram"
     # Saved by install.py: cron scripts run with a trimmed environment and may not see LOCALAPPDATA.
