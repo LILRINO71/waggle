@@ -36,3 +36,19 @@ def test_morning_brief_facts_and_fallback(monkeypatch):
     out = brief.compose(s, chat=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("ollama down")))
     assert out.startswith("🐝 Good morning.") and "Tune the shooter" in out
     assert brief.compose(s, chat=lambda m, settings=None: "Morning. Sunny, 72.") == "🐝 Morning. Sunny, 72."
+
+
+def test_brief_includes_calendar_when_connected(settings, monkeypatch):
+    from waggle import brief, claude_cli
+    monkeypatch.setattr(claude_cli, "mcp_servers", lambda *a, **k: ["mcp__claude_ai_Google_Calendar"])
+    monkeypatch.setattr(brief.live, "weather", lambda *a, **k: "NO_LOCATION")
+    seen = {}
+
+    def asker(prompt, **kw):
+        seen.update(kw)
+        return {"text": "15:30 Robotics practice; 18:00 Math study group"}
+    assert brief.calendar_today(settings, asker=asker).startswith("15:30 Robotics")
+    assert seen["connectors"] == ["Google_Calendar"]
+    assert brief.calendar_today(settings, asker=lambda *a, **k: {"text": "NONE"}) == ""
+    monkeypatch.setattr(claude_cli, "mcp_servers", lambda *a, **k: [])
+    assert brief.calendar_today(settings, asker=lambda *a, **k: 1 / 0) == ""

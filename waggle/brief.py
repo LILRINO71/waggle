@@ -38,6 +38,9 @@ def facts(settings=None, now=None):
             out.append(f"Build still running: {j.get('title')}")
         elif j.get("status") == "done" and j.get("finished", 0) > now.timestamp() - 86400:
             out.append(f"Build finished overnight: {j.get('title')}")
+    cal = calendar_today(s)
+    if cal:
+        out.append("Calendar today: " + cal)
     pending = notify.unseen(mark=False)
     if pending:
         out.append(f"{len(pending)} update(s) waiting: " + "; ".join(n["text"][:80] for n in pending[:3]))
@@ -48,6 +51,27 @@ def facts(settings=None, now=None):
     if m:
         out.insert(0, f"The user's name: {m.group(1).strip()} (greet them by name).")
     return out
+
+
+def calendar_today(settings=None, asker=None):
+    """Today's events from the user's Google Calendar connector (one Haiku call), or '' when not connected."""
+    from . import claude_cli, quota
+    s = settings or Settings.load()
+    try:
+        if "Google_Calendar" not in claude_cli.available_connectors(()):
+            return ""
+        ok, _ = quota.can_escalate(s.router_model, s)
+        if not ok:
+            return ""
+        res = (asker or claude_cli.ask)(
+            f"List today's events ({dt.date.today():%A %B %d}) on my calendar as 'HH:MM title' separated by '; '. "
+            "If there are none, reply exactly NONE.", model=s.router_model, purpose="brief", effort="low",
+            connectors=["Google_Calendar"], timeout=90,
+            system="You read the user's Google Calendar and reply with only the requested list.")
+        text = " ".join((res.get("text") or "").split())
+        return "" if not text or text.upper().startswith("NONE") else text[:400]
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def compose(settings=None, chat=None):
