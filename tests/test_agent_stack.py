@@ -277,3 +277,24 @@ def test_traces_redact_secrets():
 def test_hermes_tool_rules(tool, args, want):
     assert policy.decide(tool, args).action == want
     assert policy.decide("mcp__waggle__hermes_tool", {"name": tool, "args": args}).action == want
+
+
+def test_skill_search_semantic_and_whole_words(tmp_path):
+    root = tmp_path / "s2"
+    _make_skill(root, "humanizer", "Remove AI-writing patterns so text reads naturally")
+    _make_skill(root, "solana", "Query Solana wallets and tokens")
+    skills.reindex([("official", root, "t")])
+    # whole words: a fragment like "sol" no longer matches "solana"
+    assert [h["name"] for h in skills.search("sol", k=3)] == []
+
+    def embed(texts, kind):  # fake meaning: anything about AI-sounding text points one way
+        return [[1.0, 0.0] if ("ai" in t.lower() or "natural" in t.lower()) else [0.0, 1.0] for t in texts]
+    hits = skills.search("rewrite it so it doesn't sound robotic or AI", k=2, embed=embed)
+    assert hits[0]["name"] == "humanizer"
+
+
+def test_skill_bench_evaluator():
+    from waggle import learning
+    r = learning.evaluate_skills([{"query": "q", "want": ["a"]}, {"query": "z", "want": ["b"]}],
+                                 search=lambda q: [{"name": "a"}, {"name": "c"}])
+    assert r["accuracy"] == 0.5 and r["misses"][0]["query"] == "z"

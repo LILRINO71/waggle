@@ -220,6 +220,21 @@ def evaluate_router(system=None, cases=None, asker=None, settings=None):
     return {"accuracy": round(hits / n, 3) if n else None, "n": n, "misses": misses}
 
 
+def evaluate_skills(cases=None, k=3, search=None):
+    """Skill discovery quality: share of queries whose expected skill is in the top k (no model calls)."""
+    cases = cases if cases is not None else load_cases("skills.json")
+    search = search or (lambda q: skills.search(q, k=k))
+    hits, misses = 0, []
+    for c in cases:
+        got = [h["name"] for h in search(c["query"])][:k]
+        if any(w in got for w in c["want"]):
+            hits += 1
+        else:
+            misses.append({"query": c["query"], "want": c["want"], "got": got})
+    n = len(cases)
+    return {"top_k": k, "accuracy": round(hits / n, 3) if n else None, "n": n, "misses": misses}
+
+
 OPT_SYSTEM = """You improve the system prompt of a request router for a personal AI assistant. You see the current
 prompt and requests it routed wrongly (with the right answer). Rewrite the prompt so those cases would route
 correctly WITHOUT breaking others: keep every route name and its meaning, keep it concise, keep the JSON fields

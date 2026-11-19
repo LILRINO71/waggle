@@ -1,0 +1,22 @@
+[
+  {"query": "make slides for my robotics presentation", "want": ["pptx", "pptx-author", "microsoft-office"]},
+  {"query": "find recent papers on reinforcement learning", "want": ["arxiv", "deep-research", "rigorous-research"]},
+  {"query": "pull the text out of this pdf", "want": ["pdf"]},
+  {"query": "summarize a youtube video", "want": ["youtube-content"]},
+  {"query": "triage my inbox", "want": ["email-inbox-triage", "google-workspace"]},
+  {"query": "deploy my site to cloudflare workers", "want": ["cloudflare-deploy"]},
+  {"query": "design an intake mechanism for our FTC robot", "want": ["ftc-mechanical-design"]},
+  {"query": "look at how other FTC teams built their lift", "want": ["ftc-reference-research"]},
+  {"query": "decompile this exe and explain what it does", "want": ["reverse-engineer-anything"]},
+  {"query": "set up a three.js scene with a camera", "want": ["threejs-fundamentals"]},
+  {"query": "check my web page against accessibility guidelines", "want": ["web-design-guidelines", "impeccable"]},
+  {"query": "edit an excel spreadsheet", "want": ["microsoft-office", "xlsx"]},
+  {"query": "turn meeting notes into action items", "want": ["document-to-action-items", "meeting-action-items"]},
+  {"query": "make a math animation video", "want": ["manim-video"]},
+  {"query": "convert a video to ascii art", "want": ["ascii-video"]},
+  {"query": "rewrite this so it doesn't sound like AI wrote it", "want": ["humanizer"]},
+  {"query": "check a solana wallet balance", "want": ["solana"]},
+  {"query": "hand this coding task to claude code", "want": ["claude-code"]},
+  {"query": "do deep research on a topic and write a report", "want": ["deep-research", "rigorous-research"]},
+  {"query": "find a skill that can help me with something new", "want": ["find-skills", "hermes-agent"]}
+]

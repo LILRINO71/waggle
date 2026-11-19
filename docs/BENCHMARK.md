@@ -58,3 +58,15 @@ answer / act / connected / deep / opus (the five routes after the local heuristi
 
 The held-out set was never shown to the optimiser. With 20 cases, one miss is 5 points, so treat it as a
 regression guard rather than a precise score.
+
+## Skill search (deterministic, no model calls) — 2026-11-18
+
+`bench/skills.json`: 20 natural requests, each with the skill(s) that should come up. Agents see the top 8.
+
+| Search | Top-1 | Top-3 |
+|---|---|---|
+| Substring keywords | 65% | 90% |
+| + local embeddings (nomic-embed-text) | 70% | 90% |
+| + whole-word matching + stop words | **70%** | **100%** |
+
+Caveat: the stop-word list was adjusted while looking at these same 20 cases, so this is a tuning-set score.

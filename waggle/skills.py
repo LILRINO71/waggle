@@ -250,20 +250,77 @@ def ensure_index(max_age=6 * 3600):
 
 # ---- search / load ------------------------------------------------------------------------------
 
-def search(query, k=8, category=None, platform="windows"):
-    """Keyword-ranked skills (name x3, tags x2, description/category x1), boosted by trust and past quality."""
+def _vec_db():
+    con = sqlite3.connect(data_path("skills.db"))
+    con.execute("CREATE TABLE IF NOT EXISTS skill_vecs (name TEXT PRIMARY KEY, hash TEXT, vec TEXT)")
+    return con
+
+
+def _default_embed(texts, kind):
+    from . import ollama
+    return ollama.embed(texts, kind)
+
+
+def ensure_vectors(embed=None, rows=None):
+    """Embed each skill's name + description once (local nomic-embed-text); re-embed when it changes."""
+    embed = embed or _default_embed
+    rows = rows if rows is not None else _rows()
+    con = _vec_db()
+    have = {n: h for n, h in con.execute("SELECT name, hash FROM skill_vecs")}
+    todo = [r for r in rows if have.get(r["name"]) != r["hash"]]
+    for i in range(0, len(todo), 32):
+        batch = todo[i:i + 32]
+        vecs = embed([f"{r['name'].replace('-', ' ')}: {r['description']} ({r['tags']})" for r in batch], "document")
+        con.executemany("INSERT OR REPLACE INTO skill_vecs VALUES (?,?,?)",
+                        [(r["name"], r["hash"], json.dumps([round(x, 5) for x in v])) for r, v in zip(batch, vecs)])
+    con.commit()
+    out = {n: json.loads(v) for n, v in con.execute("SELECT name, vec FROM skill_vecs")}
+    con.close()
+    return out
+
+
+def _cos(a, b):
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(y * y for y in b) ** 0.5
+    return dot / (na * nb) if na and nb else 0.0
+
+
+def _stem(w):
+    for suf in ("ing", "ers", "es", "ed", "er", "s"):
+        if len(w) > len(suf) + 3 and w.endswith(suf):
+            return w[: -len(suf)]
+    return w
+
+
+def _tokens(text):
+    """Whole words (stemmed): 'so' must not match 'solana', 'teams' must not match 'teams-meeting-...' by accident."""
+    return {_stem(w) for w in re.findall(r"[a-z0-9+#]+", (text or "").lower().replace("-", " ").replace(".", " "))}
+
+
+def search(query, k=8, category=None, platform="windows", embed=None):
+    """Hybrid ranking: keywords (name x3, tags x2, description x1, light stemming) + meaning (local embedding
+    similarity, so "make it not sound like AI" finds humanizer), boosted by trust and past quality.
+    Falls back to keywords alone when the embedding model is unavailable."""
     ensure_index()
-    words = [w for w in re.findall(r"[a-z0-9+#.-]{2,}", (query or "").lower()) if w not in _STOP]
+    words = [w for w in _tokens(query) if w not in _STOP and len(w) > 1]
     rows = _rows("WHERE category=?" if category else "", (category,) if category else ())
+    qv, vecs = None, {}
+    try:
+        vecs = ensure_vectors(embed, rows)
+        qv = (embed or _default_embed)([query], "query")[0]
+    except Exception:
+        qv = None
     scored = []
     for r in rows:
         if platform and r["platforms"] and platform not in r["platforms"].lower():
             continue
-        name, tags = r["name"].lower(), r["tags"].lower()
-        text = (r["description"] + " " + r["category"]).lower()
-        s = sum(3 * (w in name) + 2 * (w in tags) + (w in text) for w in words) if words else 1
-        if s <= 0:
+        name, tags, text = _tokens(r["name"]), _tokens(r["tags"]), _tokens(r["description"] + " " + r["category"])
+        kw = sum(3 * (w in name) + 2 * (w in tags) + (w in text) for w in words) if words else 1
+        sem = _cos(qv, vecs[r["name"]]) if qv is not None and r["name"] in vecs else 0.0
+        if kw <= 0 and sem < 0.62:
             continue
+        s = kw + 12 * max(0.0, sem - 0.5)
         s += 0.3 * TIER_RANK.get(r["tier"], 0) + (r["quality"] or 0) + min(r["uses"], 20) * 0.02
         scored.append((s, r))
     scored.sort(key=lambda x: -x[0])
@@ -272,7 +329,8 @@ def search(query, k=8, category=None, platform="windows"):
 
 
 _STOP = {"the", "and", "for", "with", "how", "can", "you", "use", "my", "to", "of", "in", "on", "a", "an", "is",
-         "do", "it", "me", "i", "what", "this", "that", "from", "into", "help", "please", "make"}
+         "do", "it", "me", "i", "what", "this", "that", "from", "into", "help", "please", "make", "so", "doesn",
+         "don", "t", "wrote", "write", "other", "set", "up", "look", "at", "find", "some", "get", "like", "want"}
 
 
 def get(name):

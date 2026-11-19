@@ -13,6 +13,11 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setattr(router, "local_sort", lambda text, s=None, chat=None: ("unsure", 0.0))
     import waggle.claude_cli as claude_cli
     monkeypatch.setattr(claude_cli, "mcp_servers", lambda claude=None, refresh=False: [])  # no real `claude mcp list`
+    import waggle.skills as skills
+
+    def no_embed(texts, kind):
+        raise ConnectionError("no embeddings in tests")
+    monkeypatch.setattr(skills, "_default_embed", no_embed)  # keyword-only unless a test passes embed=
     import waggle.notify as notify
     sent = []
     monkeypatch.setattr(notify, "_toast", lambda text: None)
