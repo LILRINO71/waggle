@@ -7,6 +7,7 @@ import datetime as dt
 import json
 import math
 import queue
+import re
 import threading
 
 from . import claude_cli, ollama, quota, vault
@@ -16,26 +17,83 @@ FILES = {"like": "Me/Likes.md", "dislike": "Me/Dislikes.md", "preference": "Me/L
          "goal": "Me/Learned.md", "fact": "Me/Learned.md", "person": "People/People.md",
          "project": "Projects/Projects.md", "idea": "Ideas/Ideas.md"}
 
-EXTRACT_SYSTEM = """Extract durable facts about the USER from this exchange: things worth remembering for months.
-Only include facts the user stated or clearly showed (not guesses, not facts about the world, not the assistant).
-Return JSON: {"facts": [{"kind": "like|dislike|preference|goal|fact|person|project|idea", "text": "short sentence"}]}
-Return {"facts": []} if nothing is worth remembering. Most messages have nothing."""
+FILES["about"] = "Me/Profile.md"  # personal details live in the profile's "About me" section
+
+# Single-value details: a new one replaces the old line instead of piling up.
+ABOUT_KEYS = ["home", "school", "grade", "age", "job", "schedule", "routine", "place", "family", "health", "other"]
+SINGLE = {"home", "school", "grade", "age", "job"}
+
+EXTRACT_SYSTEM = """You read ONE message the user typed to their personal assistant and pull out lasting facts
+about the USER themself, worth remembering for months. Ignore questions, requests and anything about the world.
+
+kinds:
+- about: personal details. Also give "key": home (where they live), school, grade, age, job, schedule (classes,
+  practice times), routine, place (places they go: gym, practice, work), family, health, other
+- like / dislike: things they enjoy or don't
+- preference: how they want answers or work done
+- goal, person (someone in their life + who they are), project, idea
+
+Examples:
+"what's the weather tomorrow?" -> {"facts": []}
+"I'm a junior at Paloma Valley High" -> {"facts": [{"kind":"about","key":"school","text":"Goes to Paloma Valley High"},
+  {"kind":"about","key":"grade","text":"Junior (11th grade)"}]}
+"robotics practice is Tuesdays and Thursdays 3-6" -> {"facts": [{"kind":"about","key":"schedule",
+  "text":"Robotics practice Tuesdays and Thursdays 3-6 pm"}]}
+"I hate long answers" -> {"facts": [{"kind":"preference","text":"Wants short answers"}]}
+
+Return JSON {"facts": [...]}. Most messages have nothing: return {"facts": []}."""
+
+# The small model sometimes "learns" search results or forecasts; those are never facts about the user.
+WORLD_FACT = re.compile(r"\b(forecast|chance of (rain|snow)|°[FC]|mph|high of|low of|announced|championship will|"
+                        r"news|according to|wind speeds?)\b", re.I)
 
 
-def extract(user_msg, reply, settings=None, chat=None):
+def extract(user_msg, reply=None, settings=None, chat=None):
+    """Facts from the user's OWN words only (the assistant reply is ignored on purpose)."""
     chat = chat or ollama.chat_json
+    msg = (user_msg or "").strip()
+    if len(msg) < 4:
+        return []
     try:
         out = chat([{"role": "system", "content": EXTRACT_SYSTEM},
-                    {"role": "user", "content": f"USER: {user_msg[:3000]}\n\nASSISTANT: {reply[:1500]}"}],
-                   settings=settings)
+                    {"role": "user", "content": msg[:3000]}], settings=settings)
     except Exception:
         return []
     facts = out.get("facts") if isinstance(out, dict) else None
     clean = []
     for f in facts or []:
-        if isinstance(f, dict) and f.get("kind") in FILES and 8 <= len(str(f.get("text", ""))) <= 300:
-            clean.append({"kind": f["kind"], "text": str(f["text"]).strip()})
+        if not (isinstance(f, dict) and f.get("kind") in FILES):
+            continue
+        text = str(f.get("text", "")).strip()
+        if not 6 <= len(text) <= 300 or WORLD_FACT.search(text):
+            continue
+        item = {"kind": f["kind"], "text": text}
+        if f["kind"] == "about":
+            item["key"] = f.get("key") if f.get("key") in ABOUT_KEYS else "other"
+        clean.append(item)
     return clean[:5]
+
+
+def set_about(key, text, settings=None):
+    """Write one personal detail into Profile -> About me. Single-value keys replace their old line."""
+    s = settings or Settings.load()
+    text = text.strip().rstrip(".")
+    prof = vault.read("Me/Profile.md", s) or "# Profile\n"
+    line = f"- **{key.capitalize()}:** {text} ({dt.date.today():%Y-%m-%d})"
+    m = re.search(r"## About me\n(.*?)(?=\n## |\Z)", prof, re.S)
+    lines = [l for l in (m.group(1).strip().splitlines() if m else []) if l.strip()]
+    if key in SINGLE:
+        lines = [l for l in lines if not l.startswith(f"- **{key.capitalize()}:**")]
+    elif any(text.lower() in l.lower() for l in lines):
+        return False
+    lines.append(line)
+    block = "## About me\n" + "\n".join(lines) + "\n"
+    if m:
+        prof = prof[:m.start()] + block + "\n" + prof[m.end():].lstrip("\n")
+    else:
+        prof = prof.replace("## Basics", block + "\n## Basics", 1) if "## Basics" in prof else prof + "\n" + block
+    vault.write("Me/Profile.md", prof, s)
+    return True
 
 
 def _cos(a, b):
@@ -50,6 +108,10 @@ def file_facts(facts, settings=None, embedder=None, threshold=0.9):
     embedder = embedder or (lambda t: ollama.embed(t, "document", s))
     filed = []
     for f in facts:
+        if f["kind"] == "about":
+            if set_about(f.get("key", "other"), f["text"], s):
+                filed.append(f)
+            continue
         rel = FILES[f["kind"]]
         existing = [l[2:].split(" (")[0] for l in vault.read(rel, s).splitlines() if l.startswith("- ")]
         if existing:

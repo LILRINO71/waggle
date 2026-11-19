@@ -48,6 +48,12 @@ def remember_city(place, settings=None):
     s = settings or Settings.load()
     s.home_location = place
     s.save()
+    try:  # also in the vault profile, where the user can see and edit it
+        from .learn import set_about
+        geo = geocode(place)
+        set_about("home", geo["label"] if geo else place, s)
+    except Exception:
+        pass
 
 
 def weather(place=None, day="tomorrow", settings=None, fetch=None, today=None):

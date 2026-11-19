@@ -155,6 +155,29 @@ def test_extract_filters_bad_facts(settings):
                                         {"kind": "dislike", "text": "x"}]}
     facts = learn.extract("I love bee names", "ok", settings, chat=fake)
     assert facts == [{"kind": "like", "text": "Likes bee-themed project names"}]
+    seen = []
+    learn.extract("weather tomorrow?", "It will rain, high of 57°F", settings,
+                  chat=lambda msgs, **k: seen.append(msgs) or {"facts": [
+                      {"kind": "fact", "text": "Tomorrow there is an 84% chance of rain"},
+                      {"kind": "fact", "text": "The championship will be announced in May"}]})
+    assert "57" not in seen[0][1]["content"]  # the assistant's reply is never shown to the extractor
+    assert learn.extract("weather?", None, settings, chat=lambda m, **k: {"facts": [
+        {"kind": "fact", "text": "Forecast says high of 57°F tomorrow"}]}) == []
+
+
+def test_about_me_section(settings):
+    vault.init(settings)
+    assert learn.set_about("home", "Menifee, California, US", settings)
+    assert learn.set_about("grade", "Sophomore", settings)
+    assert learn.set_about("grade", "Junior (11th grade)", settings)  # replaces, not piles up
+    assert learn.set_about("place", "Robotics practice at school", settings)
+    assert not learn.set_about("place", "Robotics practice at school", settings)  # duplicate
+    prof = vault.read("Me/Profile.md", settings)
+    assert prof.count("**Grade:**") == 1 and "Junior" in prof and "Sophomore" not in prof
+    assert prof.index("## About me") < prof.index("## Basics")
+    filed = learn.file_facts([{"kind": "about", "key": "school", "text": "Goes to Paloma Valley High"}], settings,
+                             embedder=bag_embed)
+    assert filed and "**School:** Goes to Paloma Valley High" in vault.read("Me/Profile.md", settings)
 
 
 def test_file_facts_dedupes(settings):
