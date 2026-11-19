@@ -21,5 +21,7 @@ End If
 
 home = sh.ExpandEnvironmentStrings("%USERPROFILE%") & "\.hermes"
 sh.Environment("Process")("HERMES_HOME") = home
+' Hermes's own ffmpeg: Telegram voice notes (speech in and out) need it.
+sh.Environment("Process")("PATH") = home & "\tools\ffmpeg-9.0.1-win32-x64\bin;" & sh.ExpandEnvironmentStrings("%PATH%")
 ' A second copy exits on its own if the gateway is already running (it holds a lock).
 sh.Run """" & home & "\bin\hermes.exe"" gateway run", 0, False

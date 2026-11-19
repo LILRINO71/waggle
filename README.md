@@ -55,6 +55,25 @@ An hourly Hermes cron job (script only, no LLM in Hermes) runs `waggle/proactive
 
 Findings are deduplicated for a week. Replying `useful <id>` / `not useful <id>` is logged as feedback.
 
+## Voice (all local, free)
+
+| Piece | Engine | Notes |
+|---|---|---|
+| Wake word "hey jarvis" | sherpa-onnx open-vocabulary keyword spotting | No training; any phrase works |
+| Push-to-talk | Hermes voice mode, `Ctrl+B` | Silence detection ends the recording |
+| Speech-to-text | faster-whisper `small` | Also transcribes Telegram voice notes |
+| Spoken replies | Piper `en_GB-alan-medium` | Sentence-by-sentence streaming |
+
+**Waggle Voice.bat** opens a small window that listens for the wake word (it also starts minimized at login).
+Voice turns go through the same Waggle brain: routing, memory, project state and live data.
+
+## Learning about you
+
+Only the user's own words are mined for facts (never the assistant's replies or search results). Personal
+details (home, school, grade, schedule, places) go to **Profile > About me**, where single-value details
+replace their old line; likes, dislikes and preferences go to their own notes. Everything stays in the local
+Obsidian vault and can be edited by hand.
+
 ## Event log = benchmark data
 
 Every route decision, Claude call, build job, finding, notification and piece of feedback goes to
@@ -102,7 +121,7 @@ python -m pytest -q      # 56 tests: routing, local sort, quota, memory, project
 
 ## Roadmap
 
-- **Phase 3:** voice: "hey jarvis" wake word (openWakeWord), push-to-talk, faster-whisper, Piper replies; phone calls via Twilio
+- **Phase 3:** voice: "hey jarvis" wake word (sherpa), Ctrl+B push-to-talk, faster-whisper, Piper replies (done); phone calls via Twilio (next)
 - **Phase 4:** screen: on-request screenshots read by a local vision model, mouse/keyboard control, background watching
 - **Phase 5:** budgeted specialist roles (sequential, not parallel) + the Waggle benchmark (success, quality, quota, latency, autonomy, reliability, proactivity)
 - **Phase 6:** a small Jarvis panel on top of Hermes's dashboard: live jobs, quota, project status
