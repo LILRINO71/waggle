@@ -4,7 +4,7 @@ $h = "$env:HERMES_HOME\bin\hermes.exe"
 Set-Location $PSScriptRoot
 python install.py --cron | Select-String "plugin:|enable|persona:|cron"
 & "$PSScriptRoot\install-startup.ps1" | Select-String "Installed"
-& $h gateway stop
+& $h gateway stop --yes
 Start-Sleep -Seconds 3
 wscript "$PSScriptRoot\Waggle Gateway.vbs"
 Start-Sleep -Seconds 20

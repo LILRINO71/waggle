@@ -102,6 +102,9 @@ def setup_obsidian(s):
 
 def main():
     s = Settings.load()
+    if s.router_model == "sonnet":  # 2026-11-18: Haiku is the default brain (fast; Sonnet = "deep" route)
+        s.router_model = "haiku"
+    s.ollama_url = s.ollama_url.replace("//localhost:", "//127.0.0.1:")  # "localhost" adds ~2 s per call
     from waggle.claude_cli import find_claude
     s.claude_bin = find_claude() or s.claude_bin
     s.save()
@@ -123,9 +126,9 @@ def main():
     hermes("config", "set", "model.provider", "custom")
     hermes("config", "set", "model.base_url", f"{s.ollama_url}/v1")
     hermes("config", "set", "model.default", s.local_model)
-    # Hermes refuses windows under 64k; it is told 65536 while Ollama really runs 32k (see below).
+    # Hermes refuses windows under 64k (it checks Ollama's real window); 64k fits the GPU with the 8-bit KV cache.
     hermes("config", "set", "model.context_length", "65536")
-    # The real window is 32k (ollama/Modelfile.waggle-4b, so it fits the GPU): compress well before that.
+    # Compress early: a shorter prompt is a faster reply.
     hermes("config", "set", "compression.threshold_tokens", "24000")
     # Small local models fumble Hermes's tool-search meta-tool; show every tool directly.
     hermes("config", "set", "tools.tool_search.enabled", "off")

@@ -13,11 +13,13 @@ CONFIG_FILE = HOME / "config.json"
 class Settings:
     vault: str = str(Path.home() / "WaggleVault")
     jobs_dir: str = str(Path.home() / "Claude" / "waggle-jobs")
-    ollama_url: str = "http://localhost:11434"
+    ollama_url: str = "http://127.0.0.1:11434"  # not "localhost": on Windows that adds ~2 s per request
     local_model: str = "waggle-4b"
     fallback_coder: str = "hf.co/mradermacher/Huihui-Qwen3-Coder-30B-A3B-Instruct-abliterated-i1-GGUF:Q4_K_M"
     embed_model: str = "nomic-embed-text"
-    router_model: str = "sonnet"
+    router_model: str = "haiku"  # decides AND answers most messages (~2.3 s via the Claude Code CLI)
+    deep_model: str = "sonnet"  # hard reasoning the router hands up; also the second-opinion reviewer
+    review_enabled: bool = False  # second-opinion pass on robotics/code answers (adds ~10 s)
     builder_model: str = "opus"
     # Share of the Pro limit Waggle may use, and the point where it stops escalating at all.
     waggle_share: float = 0.30

@@ -9,8 +9,10 @@ import urllib.request
 
 from .config import Settings
 
-LIVE_HINT = re.compile(r"\b(weather|forecast|rain|snow|temperature|news|score|scores|price|stock|today|tomorrow|"
-                       r"tonight|this week|latest|right now|currently|open now|traffic)\b", re.I)
+# Only things that need the web. Plain time words ("tonight", "today") used to trigger a 5-10 s search on
+# questions like "what should I work on tonight?"; weather has its own detector (weather_request).
+LIVE_HINT = re.compile(r"\b(weather|forecast|news|headlines?|scores?|who won|standings|prices?|stocks?|"
+                       r"latest|release date|open now|traffic|what happened)\b", re.I)
 WMO = {0: "clear", 1: "mostly clear", 2: "partly cloudy", 3: "overcast", 45: "fog", 48: "freezing fog",
        51: "light drizzle", 53: "drizzle", 55: "heavy drizzle", 61: "light rain", 63: "rain", 65: "heavy rain",
        66: "freezing rain", 67: "heavy freezing rain", 71: "light snow", 73: "snow", 75: "heavy snow",

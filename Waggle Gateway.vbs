@@ -6,11 +6,14 @@ local = sh.ExpandEnvironmentStrings("%LOCALAPPDATA%")
 Function OllamaUp()
   On Error Resume Next
   Set http = CreateObject("MSXML2.XMLHTTP")
-  http.Open "GET", "http://localhost:11434/api/version", False
+  http.Open "GET", "http://127.0.0.1:11434/api/version", False
   http.Send
   OllamaUp = (Err.Number = 0 And http.Status = 200)
 End Function
 
+' Flash attention + 8-bit KV cache: the 64k-token window then fits the GPU (otherwise 30% runs on the CPU).
+sh.Environment("Process")("OLLAMA_FLASH_ATTENTION") = "1"
+sh.Environment("Process")("OLLAMA_KV_CACHE_TYPE") = "q8_0"
 If Not OllamaUp() Then
   sh.Run """" & local & "\Programs\Ollama\ollama app.exe""", 0, False
   For i = 1 To 30

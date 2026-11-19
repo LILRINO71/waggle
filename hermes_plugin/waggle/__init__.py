@@ -76,6 +76,11 @@ def on_pre_llm_call(session_id=None, user_message="", platform="", **kwargs):
         log.warning("project context failed: %s", e)
     if platform in SKIP_ROUTING_PLATFORMS or not user_message:
         return {"context": "\n\n".join([ctx] + extras)}
+    # Whoever answers (Haiku, Sonnet or the local model) sees the last few exchanges, so it's a conversation.
+    recent = _recent(session_id)
+    if recent:
+        ctx += "\n\n<recent_conversation>\n" + recent + "\n</recent_conversation>"
+    _remember_turn(session_id, "User", user_message)
 
     # The last turn asked "which city?" -> this short reply is the city.
     asked = _awaiting_city.pop(session_id, None)
@@ -140,26 +145,38 @@ def on_pre_llm_call(session_id=None, user_message="", platform="", **kwargs):
     return {"context": "\n\n".join([ctx] + extras)}
 
 
-# Replies written by Claude, waiting to replace the local model's placeholder for that session's turn.
+# Kept for a turn in flight across a plugin reload; nothing new is queued here since replies are delivered
+# directly by _hand_over.
 _pending = {}
 _pending_lock = threading.Lock()
-PLACEHOLDER = ("A specialist has already written the complete reply to this message and it will be shown to the "
-               "user. Do not answer the message yourself and do not call tools. Reply with exactly: OK")
 
 
 def _hand_over(session_id, user_message, reply):
-    """Deliver a Claude-written reply while keeping the user's real message in the history.
+    """Deliver a Claude-written reply immediately: the turn ends here with no local-model call.
 
-    The old way (blocking the turn) made Hermes store the user's message as "[Message withheld]",
-    so follow-ups lost context. Now the local model writes a one-word placeholder and
-    transform_llm_output swaps the real reply in before it is saved or sent.
-    If the local model is down it cannot write the placeholder, so we fall back to blocking."""
-    if not session_id or not ollama.is_up():
-        learn.learn_async(user_message, reply)
-        return {"action": "block", "message": reply}
-    with _pending_lock:
-        _pending[session_id] = reply
-    return {"context": PLACEHOLDER}
+    (The old placeholder trick made the local model write "OK" first, 3-9 s wasted per message.) Hermes stores
+    a vetoed turn's user text as "[Message withheld]", but that no longer matters for context: Waggle keeps its
+    own transcript (_convo) and hands it to whichever model answers next."""
+    _remember_turn(session_id, "Waggle", reply)
+    learn.learn_async(user_message, reply)
+    threading.Thread(target=_refresh_hq, daemon=True).start()
+    return {"action": "block", "message": reply}
+
+
+_convo = {}  # session_id -> recent (speaker, text) pairs
+_CONVO_TURNS = 12
+
+
+def _remember_turn(session_id, who, text):
+    if not session_id or not text:
+        return
+    turns = _convo.setdefault(session_id, [])
+    turns.append((who, " ".join(str(text).split())[:1200]))
+    del turns[:-_CONVO_TURNS]
+
+
+def _recent(session_id):
+    return "\n".join(f"{who}: {text}" for who, text in _convo.get(session_id, []))
 
 
 def on_transform_llm_output(response_text="", session_id="", **kwargs):
@@ -172,6 +189,7 @@ def on_transform_llm_output(response_text="", session_id="", **kwargs):
     except Exception as e:
         log.warning("selfbuild failed: %s", e)
         swap = None
+    _remember_turn(session_id, "Waggle", swap or final)
     return swap if swap else reply  # None leaves the model's own reply unchanged
 
 
@@ -392,9 +410,42 @@ def _web_search(query):
     return out
 
 
+def _wake_starts_conversation():
+    """Saying "waggle" starts a back-and-forth conversation instead of a single command.
+
+    Hermes's wake word captures ONE utterance, then you must say the wake word again. Its push-to-talk mode
+    already does real conversation (keeps listening after each reply, lets you interrupt, ends after three
+    silent turns or when you say "stop"). This switches the wake word into that mode. Runtime wrap from the
+    plugin, no Hermes files edited; if Hermes renames these internals it quietly does nothing."""
+    try:
+        from hermes_cli.cli_voice_mixin import CLIVoiceMixin
+    except Exception:
+        return False
+    original = getattr(CLIVoiceMixin, "_on_wake_word", None)
+    if original is None or getattr(original, "_waggle_wrapped", False):
+        return False
+
+    def on_wake(self, *a, **k):
+        busy = getattr(self, "_agent_running", False) or getattr(self, "_voice_recording", False)
+        out = original(self, *a, **k)
+        if not busy and getattr(self, "_voice_mode", False):  # the wake was accepted and a capture started
+            lock = getattr(self, "_voice_lock", None)
+            if lock is not None:
+                with lock:
+                    self._voice_continuous = True
+            else:
+                self._voice_continuous = True
+        return out
+
+    on_wake._waggle_wrapped = True
+    CLIVoiceMixin._on_wake_word = on_wake
+    return True
+
+
 def register(ctx):
     global _ctx
     _ctx = ctx
+    _wake_starts_conversation()
     vault.init()
     for schema, handler in TOOLS:
         ctx.register_tool(name=schema["name"], toolset="waggle", schema=schema, handler=handler)

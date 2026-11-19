@@ -1,5 +1,5 @@
 FROM qwen3:4b-instruct-2507-q4_K_M
-# 32k fits the whole model on a 12 GB GPU (64k pushed 30% onto the CPU: ~13 GB). Hermes is told 65536 because it
-# refuses less, but it compresses the chat at 24k tokens (compression.threshold_tokens), so 32k is never exceeded.
-PARAMETER num_ctx 32768
+# Hermes refuses a runtime window under 64k. With flash attention + an 8-bit KV cache (set by Waggle Gateway.vbs
+# and tune-ollama.ps1) 64k fits a 12 GB GPU completely; without them it needs ~13 GB and spills onto the CPU.
+PARAMETER num_ctx 65536
 PARAMETER temperature 0.6

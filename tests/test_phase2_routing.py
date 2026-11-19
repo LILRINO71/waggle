@@ -18,7 +18,7 @@ def test_low_confidence_simple_goes_to_sonnet(settings, monkeypatch):
     ans = {"route": "local", "reason": "fine locally", "reply": "", "build_prompt": "", "title": ""}
     d = router.decide("rename my notes folder", settings=settings, asker=lambda *a, **k: {"json": ans},
                       sorter=lambda t, s: ("simple", 0.4))
-    assert d["by"] == "sonnet" and d["sort"] == "simple"
+    assert d["by"] == "haiku" and d["sort"] == "simple"
 
 
 @pytest.mark.parametrize("cat", ["reasoning", "build", "unsure"])
@@ -59,16 +59,18 @@ def test_every_decision_is_logged(settings):
     assert events.summary()["messages"] == 1
 
 
-def test_hand_over_swaps_reply_and_keeps_message(monkeypatch):
-    import importlib.util, sys
+def test_hand_over_is_instant_and_keeps_conversation(monkeypatch):
+    import importlib.util
     from pathlib import Path
     spec = importlib.util.spec_from_file_location("waggle_plugin", Path(__file__).parents[1] / "hermes_plugin" / "waggle" / "__init__.py")
     plug = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(plug)
-    monkeypatch.setattr(plug.ollama, "is_up", lambda settings=None: True)
-    out = plug._hand_over("s1", "explain PID", "Sonnet's long answer")
-    assert "action" not in out and "Reply with exactly: OK" in out["context"]  # turn not blocked
-    assert plug.on_transform_llm_output(response_text="OK", session_id="s1") == "Sonnet's long answer"
-    assert plug.on_transform_llm_output(response_text="normal", session_id="s1") is None  # one-shot
-    monkeypatch.setattr(plug.ollama, "is_up", lambda settings=None: False)
-    assert plug._hand_over("s2", "q", "r")["action"] == "block"  # local model down: block fallback
+    monkeypatch.setattr(plug.learn, "learn_async", lambda *a: None)
+    monkeypatch.setattr(plug, "_refresh_hq", lambda: None)
+    plug._remember_turn("s1", "User", "explain PID")
+    out = plug._hand_over("s1", "explain PID", "Haiku's answer")
+    assert out == {"action": "block", "message": "Haiku's answer"}  # no local-model placeholder round trip
+    assert plug._recent("s1") == "User: explain PID\nWaggle: Haiku's answer"
+    for i in range(20):
+        plug._remember_turn("s1", "User", f"m{i}")
+    assert len(plug._convo["s1"]) == plug._CONVO_TURNS and plug._recent("s1").endswith("User: m19")

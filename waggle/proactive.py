@@ -159,14 +159,14 @@ def verify(finding, settings, asker=None):
     used = st.get("verifications", {}).get(day, 0)
     if used >= settings.max_verifications_per_day:
         return None
-    ok, _ = quota.can_escalate(settings.router_model, settings)
+    ok, _ = quota.can_escalate(settings.deep_model, settings)
     if not ok:
         return None
     asker = asker or claude_cli.ask
     note = vault.read(f"Projects/{finding['project']}", settings)[:6000] if finding.get("project") else ""
     prompt = f"Project notes:\n{note}\n\nFlagged:\n{finding['title']}\n{finding['detail']}"
     try:
-        res = asker(prompt, model=settings.router_model, system=VERIFY_SYSTEM, schema=VERIFY_SCHEMA,
+        res = asker(prompt, model=settings.deep_model, system=VERIFY_SYSTEM, schema=VERIFY_SCHEMA,
                     purpose="verify-finding")
     except claude_cli.ClaudeError:
         return None

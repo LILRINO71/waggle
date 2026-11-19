@@ -28,7 +28,7 @@ def test_sonnet_route_and_opus_route(settings, monkeypatch):
     monkeypatch.setattr(quota, "window_usage", lambda *a, **k: 0.0)
     ans = {"route": "sonnet", "reason": "r", "reply": "Here's why.", "build_prompt": "", "title": ""}
     d = router.decide("explain PID tuning", settings=settings, asker=lambda *a, **k: {"json": ans})
-    assert d["route"] == "sonnet" and d["reply"] == "Here's why." and d["by"] == "sonnet"
+    assert d["route"] == "sonnet" and d["reply"] == "Here's why." and d["by"] == "haiku" and d["answered_by"] == "haiku"
     ans = {"route": "opus", "reason": "big", "reply": "", "build_prompt": "Build X fully", "title": "Food bank app"}
     d = router.decide("build me an app for a nonprofit", settings=settings, asker=lambda *a, **k: {"json": ans})
     assert d["route"] == "opus" and d["build_prompt"] == "Build X fully"

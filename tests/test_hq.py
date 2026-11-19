@@ -10,7 +10,7 @@ def test_hq_dashboard_and_canvas():
     vault.init(s)
     projects.create("Robot", s, goal="win", next_actions=["Fix intake"])
     projects.create("Old Game", s, status="done")
-    events.log("route", route="sonnet", latency_s=9.2, specialist="robotics")
+    events.log("route", route="sonnet", latency_s=9.2, specialist="robotics", answered_by="sonnet")
     events.log("screen_look", seconds=1.4, how="windows")
     events.log("desktop", action="open_type", app="notepad", ok=True)
     jid = jobs.create("Build scouting app", "prompt", "req", s)

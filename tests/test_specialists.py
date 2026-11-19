@@ -60,7 +60,29 @@ def test_router_uses_specialist_and_review():
             return {"json": {"route": "sonnet", "reason": "r", "reply": LONG, "build_prompt": "", "title": ""}}
         return {"json": {"ok": True, "reply": LONG, "issues": ""}}
 
-    d = router.decide("what gear ratio for our FTC robot shooter?", asker=asker, sorter=lambda t, s: ("reasoning", .9),
-                      review_allowed=lambda s: (True, "ok"))
+    s = Settings(review_enabled=True)
+    d = router.decide("what gear ratio for our FTC robot shooter?", settings=s, asker=asker,
+                      sorter=lambda t, s: ("reasoning", .9), review_allowed=lambda s: (True, "ok"))
     assert d["specialist"] == "robotics" and d["reviewed"] is True and d["reply"] == LONG
     assert "FTC mentor" in systems[0] and len(systems) == 2
+
+
+def test_haiku_answers_and_hands_hard_ones_to_sonnet():
+    calls = []
+
+    def asker(prompt, **kw):
+        calls.append((kw["model"], kw["purpose"]))
+        if kw["purpose"] == "route":
+            return {"json": {"route": "deep", "reason": "proof", "reply": "", "build_prompt": "", "title": ""}}
+        return {"text": "Careful answer."}
+
+    d = router.decide("prove the derivative of sin x is cos x", settings=Settings(), asker=asker)
+    assert calls == [("haiku", "route"), ("sonnet", "deep")]  # no local sort step with Haiku as router
+    assert d["route"] == "sonnet" and d["reply"] == "Careful answer." and d["answered_by"] == "sonnet"
+
+    calls.clear()
+    asker2 = lambda p, **kw: calls.append(kw["model"]) or {"json": {"route": "answer", "reason": "chat",
+                                                                     "reply": "Hey Pranav!", "build_prompt": "",
+                                                                     "title": ""}}
+    d = router.decide("how's it going", settings=Settings(), asker=asker2)
+    assert calls == ["haiku"] and d["reply"] == "Hey Pranav!" and d["answered_by"] == "haiku"

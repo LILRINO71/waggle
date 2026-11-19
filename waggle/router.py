@@ -27,9 +27,9 @@ BIG_TASK_HINTS = [r"\b(build|make|create|write|code|develop|design)\b.{0,40}\b(a
 ROUTE_SCHEMA = {
     "type": "object",
     "properties": {
-        "route": {"type": "string", "enum": ["local", "sonnet", "opus"]},
+        "route": {"type": "string", "enum": ["local", "answer", "deep", "opus"]},
         "reason": {"type": "string"},
-        "reply": {"type": "string", "description": "Your full answer to the user when route=sonnet, else empty"},
+        "reply": {"type": "string", "description": "Your full answer to the user when route=answer, else empty"},
         "build_prompt": {"type": "string",
                          "description": "When route=opus: a complete, detailed prompt for the builder, else empty"},
         "title": {"type": "string", "description": "3-6 word title for a build job, else empty"},
@@ -37,11 +37,13 @@ ROUTE_SCHEMA = {
     "required": ["route", "reason", "reply", "build_prompt", "title"],
 }
 
-ROUTER_SYSTEM = """You are the routing brain of Waggle, a personal AI agent. Pick who handles the user's message:
-- "local": quick tasks a small local 8B model with tools can do well (simple questions, controlling apps or
-  files, short summaries, chit-chat, quick lookups).
-- "sonnet": needs real reasoning or knowledge but finishes in one reply (explanations, plans, advice, writing,
-  study help, reviewing ideas). Write the full reply yourself in "reply".
+ROUTER_SYSTEM = """You are the brain of Waggle, a personal AI agent. Pick who handles the user's message:
+- "answer": you answer it yourself, right now, in "reply". This is the default for conversation, questions,
+  advice, explanations, plans, writing and study help. Speak like a quick, natural human conversation partner.
+- "local": the job needs the PC's tools (control an app or the desktop, read/write files, run a command, set a
+  timer or reminder); a small local model with those tools does it.
+- "deep": only when a stronger model clearly matters: hard math or proofs, tricky debugging, detailed engineering
+  trade-offs, long careful writing. A bigger model will answer instead of you.
 - "opus": a big multi-step build that needs a strong coding agent working for a long time (apps, websites, games,
   multi-file code, research projects). Write "build_prompt": restate the goal, who it's for, must-have features,
   tech choices that suit a student with a Windows PC and $0 budget, what "done" means, and that the result should
@@ -49,6 +51,10 @@ ROUTER_SYSTEM = """You are the routing brain of Waggle, a personal AI agent. Pic
 Use the user's notes below to personalise. Prefer the cheapest route that will do the job well.
 Write "reply" in Waggle's voice: calm, sharp, dry wit used sparingly, no filler, length matched to the ask,
 offering the obvious next step only when it is genuinely useful."""
+
+
+DEEP_SYSTEM = """You are Waggle, a calm, sharp personal assistant, answering a question that needs careful
+reasoning. Use the user's notes to personalise. Be correct first, then concise; no filler."""
 
 
 def heuristic(text):
@@ -111,7 +117,7 @@ def decide(text, memory_ctx="", settings=None, asker=None, sorter=None, review_a
     d["latency_s"] = round(time.time() - t0, 2)
     events.log("route", route=d["route"], by=d.get("by"), sort=d.get("sort"), reason=d.get("reason", "")[:200],
                latency_s=d["latency_s"], chars=len(text or ""), specialist=d.get("specialist"),
-               reviewed=d.get("reviewed", False))
+               reviewed=d.get("reviewed", False), answered_by=d.get("answered_by"))
     return d
 
 
@@ -121,11 +127,14 @@ def _decide(text, memory_ctx="", settings=None, asker=None, sorter=None, review_
     if h == "trivial":
         return {"route": "local", "reason": "trivial request", "reply": "", "build_prompt": "", "title": "",
                 "by": "heuristic"}
-    cat, conf = (sorter or local_sort)(text, s)
-    cat = adjust(text, cat)
-    if cat == "simple" and conf >= 0.7:
-        return {"route": "local", "reason": f"local sort: simple ({conf:.2f})", "reply": "", "build_prompt": "",
-                "title": "", "by": "local-sort", "sort": cat}
+    if sorter is None and s.router_model == "haiku":
+        cat = "unsure"  # Haiku is as fast as the local sort and far better at judging: let it decide
+    else:
+        cat, conf = (sorter or local_sort)(text, s)
+        cat = adjust(text, cat)
+        if cat == "simple" and conf >= 0.7:
+            return {"route": "local", "reason": f"local sort: simple ({conf:.2f})", "reply": "", "build_prompt": "",
+                    "title": "", "by": "local-sort", "sort": cat}
     allowed, why = quota.can_escalate(s.router_model, s)
     if not allowed:
         out = local_route(text, memory_ctx, s)
@@ -136,23 +145,38 @@ def _decide(text, memory_ctx="", settings=None, asker=None, sorter=None, review_
     spec = specialists.pick(text)
     try:
         res = asker(prompt, model=s.router_model, system=ROUTER_SYSTEM + specialists.guide(spec, s),
-                    schema=ROUTE_SCHEMA, purpose="route")
+                    schema=ROUTE_SCHEMA, purpose="route", effort="low" if s.router_model == "haiku" else "medium")
     except claude_cli.ClaudeError as e:
         out = local_route(text, memory_ctx, s)
-        out["reason"] = f"Sonnet unavailable ({e.kind}): {e}"
+        out["reason"] = f"Claude unavailable ({e.kind}): {e}"
         return out
     d = res.get("json") or {}
-    if d.get("route") not in ("local", "sonnet", "opus"):
+    if d.get("route") == "sonnet":  # older schema name
+        d["route"] = "answer"
+    if d.get("route") not in ("local", "answer", "deep", "opus"):
         return local_route(text, memory_ctx, s)
+    if d["route"] == "deep" and s.deep_model != s.router_model:
+        ok, why = quota.can_escalate(s.deep_model, s)
+        if ok:
+            try:
+                deep = asker(prompt, model=s.deep_model, system=DEEP_SYSTEM + specialists.guide(spec, s),
+                             purpose="deep")
+                d["reply"], d["answered_by"] = (deep.get("text") or "").strip(), s.deep_model
+            except claude_cli.ClaudeError:
+                pass  # keep whatever the router wrote
+        d["route"] = "answer"
+    if d["route"] == "answer":
+        d.setdefault("answered_by", s.router_model)
+        d["route"] = "sonnet" if d.get("reply") else "local"  # "sonnet" = a Claude-written reply (legacy name)
     if d["route"] == "opus":
         ok, why = quota.can_escalate(s.builder_model, s)
         if not ok:
             # Sonnet already wrote a great prompt; the local model works from it now.
             d.update(route="local", reason=f"wanted Opus but {why}", looked_big=True)
-    d["by"] = "sonnet"
+    d["by"] = s.router_model
     d["sort"] = cat
     d["specialist"] = spec
-    if d["route"] == "sonnet":
+    if d["route"] == "sonnet" and s.review_enabled:  # off by default: "deep" already covers hard questions
         d["reply"], d["reviewed"] = specialists.review(text, d.get("reply", ""), spec, s, asker=asker,
                                                        allowed=review_allowed)
     return d

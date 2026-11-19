@@ -36,8 +36,10 @@ def ago(t, now=None):
 def describe(e):
     k = e.get("kind")
     if k == "route":
-        who = {"local": "the local model", "sonnet": "Sonnet", "opus": "an Opus build"}.get(e.get("route"),
+        who = {"local": "the local model", "sonnet": "Claude", "opus": "an Opus build"}.get(e.get("route"),
                                                                                           e.get("route"))
+        if e.get("route") == "sonnet" and e.get("answered_by"):
+            who = str(e["answered_by"]).capitalize()
         spec = f" · {e['specialist']}" if e.get("specialist") not in (None, "general") else ""
         return f"Answered by {who}{spec} in {e.get('latency_s', 0):.0f} s"
     if k == "screen_look":

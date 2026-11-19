@@ -76,7 +76,7 @@ def guide(name, settings=None):
 def review_allowed(settings=None):
     """A second opinion only while Waggle has used under half its share of the window."""
     s = settings or Settings.load()
-    ok, why = quota.can_escalate(s.router_model, s)
+    ok, why = quota.can_escalate(s.deep_model, s)
     if not ok:
         return False, why
     st = quota.status(s)
@@ -97,7 +97,7 @@ def review(text, reply, name, settings=None, asker=None, allowed=None):
     from . import claude_cli
     asker = asker or claude_cli.ask
     try:
-        res = asker(f"User message:\n{text}\n\nDraft reply:\n{reply}", model=s.router_model,
+        res = asker(f"User message:\n{text}\n\nDraft reply:\n{reply}", model=s.deep_model,
                     system=REVIEW_SYSTEM + guide(name, s), schema=REVIEW_SCHEMA, purpose="review")
     except Exception as e:  # noqa: BLE001
         events.log("review", specialist=name, ran=False, why=f"error: {e}"[:200])
