@@ -130,7 +130,7 @@ def snapshot():
         "cron": _cached("cron", 30, cron_jobs),
         "approvals": policy.pending(),
         "ops": _cached("ops", 5, lambda: __import__("waggle.objectives", fromlist=["x"]).ops()),
-        "budget": _cached("budget", 15, lambda: __import__("waggle.budget", fromlist=["x"]).status(s)),
+        "budget": _cached("budget", 30, lambda: __import__("waggle.budget", fromlist=["x"]).status(s)),
         "audit": [a for a in _jsonl_tail("audit.jsonl", 200) if a.get("decision") != "allow"][-12:],
         "notifications": _jsonl_tail("notifications.jsonl", 10),
         "skills": _cached("skills", 300, skills.stats),
