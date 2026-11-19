@@ -1,6 +1,6 @@
 """Kokoro text-to-speech for Waggle (local, free). Hermes calls this as a TTS "command provider".
 
-    kokoro_say.py --in text.txt --out reply.wav [--voice bm_george] [--speed 1.15]
+    kokoro_say.py --in text.txt --out reply.wav [--voice bm_daniel] [--speed 1.3]
     kokoro_say.py --serve        keep the model loaded on 127.0.0.1:8899 (started at login)
 
 Each call first asks the warm server (no model load, ~1.3 s faster); if it isn't running, the model
@@ -92,8 +92,8 @@ def main(argv=None):
     p.add_argument("--in", dest="inp", help="text file (default: read stdin)")
     p.add_argument("--text")
     p.add_argument("--out")
-    p.add_argument("--voice", default="bm_george")
-    p.add_argument("--speed", type=float, default=1.15)
+    p.add_argument("--voice", default="bm_daniel")
+    p.add_argument("--speed", type=float, default=1.3)
     a = p.parse_args(argv)
     if a.serve:
         serve()
