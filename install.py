@@ -86,6 +86,10 @@ def main():
     hermes("config", "set", "compression.threshold_tokens", "30000")
     # Small local models fumble Hermes's tool-search meta-tool; show every tool directly.
     hermes("config", "set", "tools.tool_search.enabled", "off")
+    # Hermes's image tool + Telegram photos: the local vision model (the chat model is text-only).
+    hermes("config", "set", "auxiliary.vision.provider", "main")
+    hermes("config", "set", "auxiliary.vision.model", s.vision_model)
+    hermes("config", "set", "auxiliary.vision.timeout", "120")
     hermes("plugins", "enable", "waggle")
     soul = HERMES_HOME / "SOUL.md"
     shutil.copyfile(REPO / "persona" / "SOUL.md", soul)
