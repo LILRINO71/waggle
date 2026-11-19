@@ -521,3 +521,16 @@ def test_raising_the_limit_unparks_budget_waits_at_the_next_tick(settings, quiet
     budget.set_limit(4)
     assert objectives.supervise(kick_fn=lambda o: None) == [oid]
     assert objectives.status(oid)["deferred_until"] is None
+
+
+def test_rerun_after_approval_matches_the_same_command_with_a_new_description():
+    """Found live: the re-run sent the same rm command with a different 'description' and was asked again."""
+    a = {"command": 'rm -- "/v/Inbox/x.md"', "description": "Delete test note"}
+    d = policy.check("Bash", a, session="objective-live")
+    item = policy.get(d.approval_id)
+    assert item["summary"] == 'Bash: $ rm -- "/v/Inbox/x.md"'
+    policy.grant(code=item["code"])
+    b = {"command": 'rm --  "/v/Inbox/x.md"', "description": "Remove the test note file", "timeout": 30000}
+    assert policy.check("Bash", b, session="objective-live").allowed
+    assert policy.check("Bash", b, session="objective-live").action == "ask"  # still one use only
+    assert policy.check("Bash", {"command": 'rm -- "/v/Inbox/y.md"'}, session="objective-live").action == "ask"

@@ -223,7 +223,21 @@ SENSITIVE_WEB = re.compile(r"checkout|/cart|payment|billing|paypal|venmo|zelle|s
                            r"\b(send|post|tweet|publish|submit order)\b", re.I)
 
 
+SHELL_TOOLS = {"bash", "powershell"}
+
+
+def _key_args(tool, args):
+    """What identifies a call for approval. Shell tools: only the command, whitespace-normalised (the free-text
+    description or timeout often differ when a step is re-run after the yes). Everything else: all arguments."""
+    if (tool or "").lower().split("__")[-1] in SHELL_TOOLS and isinstance(args, dict) and args.get("command"):
+        return {"command": " ".join(str(args["command"]).split())}
+    return args or {}
+
+
 def _short(tool, args):
+    key_args = _key_args(tool, args)
+    if set(key_args) == {"command"} and (tool or "").lower().split("__")[-1] in SHELL_TOOLS:
+        return redact(f"{tool}: $ {key_args['command']}")[:300]
     try:
         body = json.dumps(args, sort_keys=True, default=str)
     except TypeError:
@@ -322,7 +336,7 @@ def _ttl(item):
 
 
 def _fingerprint(tool, args):
-    body = json.dumps(args or {}, sort_keys=True, default=str)
+    body = json.dumps(_key_args(tool, args), sort_keys=True, default=str)
     return hashlib.sha256(f"{(tool or '').lower()}|{body}".encode()).hexdigest()[:16]
 
 
