@@ -43,7 +43,10 @@ def synth(k, text, out, voice, speed):
     import soundfile as sf
     k._waggle_speed = speed
     samples, rate = k.create(text, voice=voice, speed=speed, lang="en-gb" if voice.startswith("b") else "en-us")
-    sf.write(out, samples, rate)
+    if str(out).lower().endswith((".ogg", ".opus")):  # Telegram voice bubbles need Opus; no ffmpeg on this PC
+        sf.write(out, samples, rate, format="OGG", subtype="OPUS")
+    else:
+        sf.write(out, samples, rate)
     return len(samples) / rate
 
 
