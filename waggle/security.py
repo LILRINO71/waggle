@@ -16,6 +16,15 @@ INJECTION_PATTERNS = [
     r"do not (tell|inform) the user",
     r"(send|forward|email) (this|the|all|your) .{0,40}(password|token|key|credentials|cookies)",
     r"run (this|the following) (command|script)",
+    # Adapted from OpenJarvis's injection scanner (Apache-2.0).
+    r"(ignore|disregard|forget) (all |any )?(previous|prior|above|earlier|your) (instructions|prompts|rules|programming)",
+    r"pretend (you )?(have )?no (restrictions|limitations|rules|filters)",
+    r"\b(dan|do anything now) (mode|prompt|jailbreak)",
+    r"(send|post|upload|exfiltrate|transmit) (to |data |all |everything )*(to )?(https?://|my server)",
+    r"base64 encode (and )?(send|include|append)",
+    r"```(system|assistant)\b", r"<\|(im_start|im_end|system|assistant)\|>",
+    r"(;|\||&&)\s*(rm|curl|wget|nc|ncat|bash|sh|powershell|iex)\s",
+    r"(as an? )?(ai|assistant|agent) (reading|processing) this,? (you must|please)",
 ]
 
 # Tool calls that need the user's yes no matter how autonomous Waggle is.

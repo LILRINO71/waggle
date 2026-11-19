@@ -46,6 +46,9 @@ AGENTS = {
 }
 SPECIALIST_TO_AGENT = {"coder": "coder", "robotics": "robotics", "tutor": "tutor", "planner": "planner"}
 RESEARCH = re.compile(r"\b(research|investigate|look into|find out|compare .* sources|deep dive|literature)\b", re.I)
+SCHEDULING = re.compile(r"\b(remind me|every (day|morning|night|week|weekday|monday|tuesday|wednesday|thursday|"
+                        r"friday|saturday|sunday|\d+ ?(min|minutes|hours?|h))|daily|weekly|each (day|week)|routine|"
+                        r"schedule)\b", re.I)
 MAX_DEPTH = 2
 
 
@@ -59,6 +62,8 @@ def choose(text, hard=False):
     """Which agent should take a request (cheap, deterministic)."""
     if RESEARCH.search(text or ""):
         return "researcher"
+    if SCHEDULING.search(text or ""):
+        return "planner"  # "every weekday remind me about the robot" is scheduling, not robotics
     spec = specialists.pick(text or "")
     return SPECIALIST_TO_AGENT.get(spec, "general")
 

@@ -199,3 +199,8 @@ def test_learned_cap_never_locks_waggle_out(settings, monkeypatch):
     assert 20.0 / cap < s.stop_at  # after raising the cap, usage sits below the stop line
     ok, why = quota.can_escalate("haiku", s, used=20.0)
     assert ok, why
+
+
+def test_scheduling_goes_to_planner():
+    assert agents.choose("Every weekday at 6:45am, remind me to pack my robot batteries") == "planner"
+    assert agents.choose("design a better intake for our FTC robot") == "robotics"
