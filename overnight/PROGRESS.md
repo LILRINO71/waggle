@@ -108,3 +108,27 @@ Live end-to-end runs (real gateway, real Claude, real vault; `hermes chat -q` = 
 
 Tests: **272 passed** (222 before; +50 in `test_trust.py`/`test_graph.py`/`test_dashboard.py`). Rollback point:
 tag `known-good-pre-m3` = `b69987c`.
+
+## First real Telegram session (user at school), 2026-11-19 08:10-08:50
+
+What went wrong for the user, from the traces: voice note transcribed as "BioBus Robot ... PDF I can use for for for
+extra bodies" (whisper `small`); the robotics agent built the portfolio PDF but could not deliver it (no file tool;
+mailing it to the user's own Gmail needed approval; "Send it to the email" in between lost the in-chat "yes"; the next
+"yes" re-ran and was blocked again, showing an internal hex id); Haiku claimed Waggle can't send email.
+School Wi-Fi blocks Telegram on the phone ("Connecting..."): mobile data works.
+
+Fixed and deployed (d81a055, e4bf9aa, e44d4e3, 453fe07; 277 tests):
+- `send_to_me` MCP tool: text and/or files (PDF, images, up to ~50 MB) to the user's Telegram via `hermes send
+  MEDIA:<path>`; allowed without approval. Live: "send me <note> here on Telegram as a file" -> delivered in 16 s.
+- Mail whose recipients are all in `self_emails` (local config.json only) needs no approval.
+- Hook approval text shows the 4-letter code, never the internal id.
+- Chat models separate from background: `chat_model`/`chat_agent_model` = sonnet, `chat_deep_model` = opus (local
+  config); background verify/report/objective steps keep haiku/sonnet. `local_first` off (Claude answers everything
+  non-trivial). Chat turn from the terminal ~13-16 s.
+- Router: act covers "send it here / to me"; file paths containing "Inbox" and send-to-me requests no longer go to the
+  read-only Gmail answerer (it said "I can't send files" and triggered a useless Opus self-build, which was killed).
+- Hermes STT (config.yaml, not in repo): `stt.local.model: turbo`, `language: en`, `initial_prompt` with the user's
+  vocabulary. On the user's real voice note: "BioBus ... extra bodies" -> "BIOBUZZ robot repositories ... PDF I can use
+  for portfolio", 0.3 s on the GPU.
+- Voice: three Kokoro samples (A current bm_daniel 1.25x, B af_heart 1.05x, C am_michael 1.05x) sent to Telegram;
+  waiting for the user's pick.
