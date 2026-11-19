@@ -208,6 +208,19 @@ WAGGLE_SAFE = {"vault_search", "remember", "project_status", "project_update", "
                "agent_note", "routine_add", "routine_list", "routine_pause", "routine_resume", "memory_review"}
 
 
+HERMES_READ = {"memory", "session_search", "todo_list", "skills_list", "skill_view", "text_to_speech", "read_terminal",
+               "read_window_below", "desktop_preview", "drive_preview", "annotate_preview", "focus_pane", "show_tip",
+               "gui_tour", "delegate_task", "look_at_screen", "vault_search", "project_status", "build_status",
+               "waggle_status", "weather", "remember", "project_update", "rate_finding", "start_build"}
+HERMES_ALLOW_UNLESS_DELETE = {"cronjob_manage", "skill_manage", "process_manage", "todo"}
+HERMES_CONFIG = {"manage_catalog", "manage_connections", "set_theme", "setup_beat", "desktop_project",
+                 "close_terminal", "call_me"}
+SENSITIVE_WEB = re.compile(r"checkout|/cart|payment|billing|paypal|venmo|zelle|stripe|bank|coinbase|robinhood|kalshi|"
+                           r"wallet|purchase|buy now|place order|password|/login|signin|sign-in|oauth|"
+                           r"mail\.google|outlook\.live|web\.whatsapp|discord\.com/channels|messenger|"
+                           r"\b(send|post|tweet|publish|submit order)\b", re.I)
+
+
 def _short(tool, args):
     try:
         body = json.dumps(args, sort_keys=True, default=str)
@@ -271,6 +284,22 @@ def decide(tool_name, args=None, settings=None):
                 "browser_console", "vision_analyze", "text_to_speech", "skills_list", "skill_view", "read_file",
                 "search_files", "list_directory", "cronjob_list", "session_search", "clarify", "todo"}:
         return Decision(ALLOW)
+    # The rest of the live Hermes registry (bridge), tool by tool.
+    blob = json.dumps(args, default=str).lower()
+    if name in HERMES_READ:
+        return Decision(ALLOW)
+    if name.startswith("browser_") and name != "browser_vault":
+        if SENSITIVE_WEB.search(blob):
+            return Decision(ASK, "browser action on a payment, account or messaging page")
+        return Decision(ALLOW)
+    if name == "browser_vault":
+        return Decision(ASK, "using saved passwords / autofill")
+    if name in HERMES_ALLOW_UNLESS_DELETE:
+        if re.search(r"\b(delete|remove|kill|terminate|uninstall|purge)\b", blob):
+            return Decision(ASK, f"{name}: removes or stops something")
+        return Decision(ALLOW)
+    if name in HERMES_CONFIG:
+        return Decision(ASK, f"{name}: changes Hermes settings")
     if name in {"write_file", "patch"}:
         return decide("write", {"file_path": args.get("path") or args.get("file_path") or "",
                                 "content": args.get("content", "")}, settings)

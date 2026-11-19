@@ -261,3 +261,19 @@ def test_traces_feedback_and_recall():
 def test_traces_redact_secrets():
     tid = traces.record("my token=supersecretvalue123 please save it", reply="ok")
     assert "supersecretvalue123" not in traces.get(tid)["request"]
+
+
+@pytest.mark.parametrize("tool,args,want", [
+    ("browser_exec", {"code": "page.goto('https://ftc-resources.firstinspires.org')"}, "allow"),
+    ("browser_exec", {"code": "page.goto('https://amazon.com/checkout')"}, "ask"),
+    ("browser_exec", {"code": "page.click('Send')"}, "ask"),
+    ("browser_vault", {}, "ask"),
+    ("cronjob_manage", {"action": "list"}, "allow"),
+    ("cronjob_manage", {"action": "delete", "id": "x"}, "ask"),
+    ("session_search", {"query": "x"}, "allow"),
+    ("set_theme", {"name": "dark"}, "ask"),
+    ("call_me", {"message": "hi"}, "ask"),
+])
+def test_hermes_tool_rules(tool, args, want):
+    assert policy.decide(tool, args).action == want
+    assert policy.decide("mcp__waggle__hermes_tool", {"name": tool, "args": args}).action == want
