@@ -126,6 +126,7 @@ def snapshot():
         "jobs": [{k: j.get(k) for k in ("id", "title", "status", "created", "project")} for j in js[:8]],
         "agents": _cached("agents", 30, agents.status),
         "routines": routines.listing(),
+        "objectives": _cached("objectives", 10, lambda: __import__("waggle.objectives", fromlist=["x"]).status()[:8]),
         "cron": _cached("cron", 30, cron_jobs),
         "approvals": policy.pending(),
         "audit": [a for a in _jsonl_tail("audit.jsonl", 200) if a.get("decision") != "allow"][-12:],
@@ -243,6 +244,7 @@ footer{color:var(--dim);font-size:12px;padding:0 28px 24px}
 <div class="sub" style="margin-top:8px" id="qtext"></div></section>
 <section class="card s7"><h2>Activity</h2><div class="feed"><table id="activity"></table></div></section>
 <section class="card s5"><h2>Needs you</h2><div id="approvals"></div><h2 style="margin-top:16px">Running</h2><div id="running"></div></section>
+<section class="card s12"><h2>Objectives</h2><div id="objectives"></div></section>
 <section class="card s4"><h2>Agents</h2><div id="agents"></div></section>
 <section class="card s4"><h2>Routines</h2><div id="routines"></div></section>
 <section class="card s4"><h2>Learning</h2><div id="learning"></div></section>
@@ -277,6 +279,7 @@ function render(d){
  const run=(d.jobs||[]).filter(j=>["running","queued","paused_limit"].includes(j.status));
  $("running").innerHTML=run.length?run.map(j=>`<div class="row"><span><span class="dot ok live" style="display:inline-block"></span> ${esc(j.title)}</span><span class="tag">${esc(j.status)}</span></div>`).join(""):empty("No background builds running.");
  const ag=d.agents||{};const ak=Object.keys(ag);$("agents").innerHTML=ak.length?ak.map(k=>`<div class="row"><span>${esc(k)}</span><span class="dim">${ag[k].runs} runs · ${Math.round(100*ag[k].ok/ag[k].runs)}% ok · ${ag[k].median_s??"–"}s</span></div>`).join(""):empty("No agent runs this week yet.");
+ const ob=d.objectives||[];$("objectives").innerHTML=ob.length?ob.map(o=>`<div class="row"><span>${esc(o.title||o.id)}${o.project?` <span class="tag">${esc(o.project)}</span>`:""}</span><span class="dim">${o.done}/${o.total} steps · ${esc((o.status||"").replace("_"," "))}</span></div>`).join(""):empty("No objectives yet. Say \"objective: ...\" to start one.");
  const ro=d.routines||[];$("routines").innerHTML=ro.length?ro.map(r=>`<div class="row"><span>${r.enabled?"":"⏸ "}${esc(r.name)} <span class="tag">${esc(r.agent)}</span></span><span class="dim">next ${esc(r.next||"–")}${r.last_status?" · "+esc(r.last_status):""}</span></div>`).join(""):empty("No routines.");
  const l=d.learning||{};const rp=l.router_prompt||{};
  $("learning").innerHTML=`<div class="row"><span>Router prompt</span><span>v${rp.active||0} <span class="dim">(${Object.keys(rp.versions||{}).length} tried)</span></span></div>

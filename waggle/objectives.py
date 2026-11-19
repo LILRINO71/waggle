@@ -472,7 +472,7 @@ def status(key=None):
         con.close()
         return obj
     rows = [dict(r) for r in con.execute(
-        "SELECT o.id, o.title, o.status, o.updated, o.project, (SELECT COUNT(*) FROM steps s WHERE s.objective_id=o.id"
+        "SELECT o.id, o.title, o.status, o.updated, o.project, o.note_path, (SELECT COUNT(*) FROM steps s WHERE s.objective_id=o.id"
         " AND s.status='done') AS done, (SELECT COUNT(*) FROM steps s WHERE s.objective_id=o.id) AS total "
         "FROM objectives o ORDER BY (o.status IN ('done','failed','cancelled')), o.updated DESC LIMIT 20")]
     con.close()

@@ -121,3 +121,45 @@ def test_feedback_counts_in_summary(settings):
     events.log("feedback", finding="abc", useful=True)
     events.log("feedback", finding="def", useful=False)
     assert events.summary()["useful_rate"] == 0.5
+
+
+def _objective(status, hours_ago, error=None, log_kind=None):
+    from waggle import objectives
+    oid = objectives.create("Write the scouting sheet", title="Scouting sheet", plan_now=False)
+    con = objectives._db()
+    t = time.time() - hours_ago * 3600
+    con.execute("UPDATE objectives SET status=?, updated=?, error=? WHERE id=?", (status, t, error, oid))
+    con.execute("DELETE FROM log WHERE objective_id=?", (oid,))
+    if log_kind:
+        con.execute("INSERT INTO log VALUES (?,?,?,?)", (oid, t, log_kind, "budget: window"))
+    con.commit()
+    con.close()
+    return oid
+
+
+def test_objective_watch_flags_what_needs_the_user(settings):
+    _objective("blocked", 13, error="step 2 failed: no shooter data")
+    _objective("waiting_approval", 4)
+    _objective("active", 1)  # fresh: fine
+    titles = [f["title"] for f in proactive.objective_watch()]
+    assert any("still blocked" in t for t in titles) and any("waiting for your yes" in t for t in titles)
+    assert len(titles) == 2
+
+
+def test_objective_watch_stalled_vs_waiting_for_budget(settings):
+    _objective("active", 5, log_kind="waiting")
+    assert proactive.objective_watch() == []  # parked for the Claude window: expected
+    _objective("active", 3)
+    found = proactive.objective_watch()
+    assert len(found) == 1 and found[0]["title"].endswith("has stalled") and "worker" in found[0]["detail"]
+
+
+def test_objective_reminder_is_delivered_once(proj, monkeypatch):
+    monkeypatch.setattr(quota, "window_usage", lambda *a, **k: 0.0)
+    _objective("waiting_approval", 5)
+    quiet = lambda msgs, **k: {"insights": []}
+    proactive.run(proj, chat=quiet)
+    first = [n["text"] for n in notify.unseen()]
+    assert any("waiting for your yes" in t for t in first)
+    proactive.run(proj, chat=quiet)
+    assert notify.unseen() == []  # reading marked it seen; no repeat within the week

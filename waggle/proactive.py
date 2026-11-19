@@ -113,6 +113,45 @@ def stale_watch(settings, today=None):
     return out
 
 
+def objective_watch(now=None):
+    """Background objectives that need the user: still blocked, waiting for a yes, or stalled with no activity.
+    Titles stay fixed per objective+state so each reminder fires at most once a week."""
+    from . import objectives
+    now = now or time.time()
+    try:
+        con = objectives._db()
+        rows = [dict(r) for r in con.execute(
+            "SELECT o.id, o.title, o.status, o.updated, o.error, o.project, "
+            "(SELECT MAX(time) FROM log l WHERE l.objective_id=o.id) AS last_log, "
+            "(SELECT kind FROM log l WHERE l.objective_id=o.id ORDER BY time DESC LIMIT 1) AS last_kind "
+            "FROM objectives o WHERE o.status IN ('blocked','failed','waiting_approval','active','planning')")]
+        con.close()
+    except Exception:
+        return []
+    out = []
+    for o in rows:
+        last = max(o["updated"] or 0, o["last_log"] or 0) or now
+        hours = (now - last) / 3600
+        name = (o["title"] or o["id"])[:60]
+        base = {"source": "objective", "project": o["project"] or "", "confidence": 1.0, "verified": True}
+        if o["status"] in ("blocked", "failed") and hours >= 12:
+            out.append({**base, "tier": "important", "title": f"Objective '{name}' is still {o['status']}",
+                        "detail": f"{(o['error'] or 'It needs you.')[:200]} Fix it and say 'resume objective "
+                                  f"{name}', or say 'cancel objective {name}'."})
+        elif o["status"] == "waiting_approval" and hours >= 3:
+            out.append({**base, "tier": "important", "title": f"Objective '{name}' is waiting for your yes",
+                        "detail": f"It paused {int(hours)} h ago for an approval (approvals expire after 24 h). "
+                                  "Reply yes to let it continue."})
+        elif o["status"] in ("active", "planning") and hours >= 2:
+            waiting = o["last_kind"] == "waiting" or (o["error"] or "").startswith("waiting for budget")
+            if waiting and hours < 12:
+                continue  # parked until the Claude window resets: expected
+            out.append({**base, "tier": "important", "title": f"Objective '{name}' has stalled",
+                        "detail": f"No progress for {int(hours)} h" + (" (waiting for Claude budget)" if waiting else
+                                  "; its worker may have stopped") + ". Check it with 'objective status'."})
+    return out
+
+
 # ---- local review + Sonnet verification -----------------------------------------------------------
 
 REVIEW_SYSTEM = """You review one of the user's projects to find things worth telling them proactively:
@@ -191,7 +230,7 @@ def run(settings=None, now=None, chat=None, asker=None, deliver_phone=None):
     week = 7 * 86400
     st["seen"] = {k: v for k, v in st.get("seen", {}).items() if now - v < week}
 
-    candidates = git_watch(s, now) + stale_watch(s)
+    candidates = git_watch(s, now) + stale_watch(s) + objective_watch(now)
     active = [p["name"] for p in projects.all_projects(s) if p["status"] == "active"]
     if active:
         project = active[st.get("rr", 0) % len(active)]

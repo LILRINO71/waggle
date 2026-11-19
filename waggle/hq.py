@@ -107,6 +107,11 @@ def snapshot(settings=None, now=None):
     learned = [l[2:] for l in vault.read("Me/Learned", s).splitlines() if l.startswith("- ")][-6:][::-1]
     from . import call
     try:
+        from . import objectives
+        objs = [o for o in objectives.status() if o["status"] not in ("cancelled",)][:6]
+    except Exception:
+        objs = []
+    try:
         from . import prompts, routines
         rts = routines.listing()
         meta = prompts.versions("router")
@@ -126,7 +131,7 @@ def snapshot(settings=None, now=None):
                   "screen": sum(e.get("kind") == "screen_look" for e in todays),
                   "calls": sum(e.get("kind") == "call" and e.get("ok") for e in todays)},
         "quota_pct": q.get("window_pct"), "projects": projs, "learned": learned,
-        "calls_ready": call.configured(), "routines": rts, "learning": learning,
+        "calls_ready": call.configured(), "routines": rts, "learning": learning, "objectives": objs,
     }
 
 
@@ -167,6 +172,14 @@ def render_md(snap, settings=None):
             lines.append(">")
         lines += [f"> > [!hq-card|{p.get('status', 'active')}] [[{p['name']}]]",
                   f"> > `{p.get('status', 'active')}` · {nxt}"]
+    if snap.get("objectives"):
+        icon = {"done": "✅", "active": "⏳", "planning": "📝", "blocked": "⛔", "failed": "❌",
+                "waiting_approval": "✋", "paused": "⏸️"}
+        lines += ["", "## 🎯 Objectives"]
+        lines += [f"- {icon.get(o['status'], '•')} "
+                  + (f"[[{o['note_path']}|{o['title']}]]" if o.get("note_path") else f"**{o['title']}**")
+                  + f" · {o['done']}/{o['total']} steps · "
+                  f"{o['status'].replace('_', ' ')}" for o in snap["objectives"]]
     if snap.get("routines"):
         lines += ["", "## 🔁 Routines"]
         lines += [f"- {'⏸️ ' if not r['enabled'] else ''}**{r['name']}** · {r['schedule']} · next {r['next'] or '–'}"

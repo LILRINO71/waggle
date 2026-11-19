@@ -13,6 +13,8 @@ def test_hq_dashboard_and_canvas():
     events.log("route", route="sonnet", latency_s=9.2, specialist="robotics", answered_by="sonnet")
     events.log("screen_look", seconds=1.4, how="windows")
     events.log("desktop", action="open_type", app="notepad", ok=True)
+    from waggle import objectives
+    objectives.create("Scout the top 10 teams", title="Scout top teams", plan_now=False)
     jid = jobs.create("Build scouting app", "prompt", "req", s)
     jobs.update(jid, status="running")
     canvas = hq.write(s)
@@ -20,6 +22,7 @@ def test_hq_dashboard_and_canvas():
     md = vault.read("Waggle HQ", s)
     assert "cssclasses: [waggle-hq]" in md and "Build scouting app" in md and "[!hq-live]" in md
     assert "[!hq-card|active] [[Robot]]" in md and "Next: Fix intake" in md and "[!hq-card|done] [[Old Game]]" in md
+    assert "## 🎯 Objectives" in md and "**Scout top teams** · 0/0 steps · planning" in md
     assert "Answered by Sonnet · robotics" in md and "Looked at your screen (windows" in md and "Opened and typed in notepad" in md
 
     c = json.loads(canvas.read_text(encoding="utf-8"))
