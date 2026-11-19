@@ -68,8 +68,9 @@ ROUTE_SCHEMA = {
     "properties": {
         "route": {"type": "string", "enum": ["answer", "act", "connected", "deep", "opus", "local"]},
         "reason": {"type": "string"},
-        "hard": {"type": "boolean", "description": "route=act only: true when the task needs careful multi-step "
-                 "reasoning (debugging, research with many sources, engineering), false for quick jobs"},
+        "hard": {"type": "boolean", "description": "route=act or deep: true when the task needs careful multi-step "
+                 "reasoning (debugging, research with many sources, engineering, proofs), false for quick jobs. "
+                 "deep+hard goes to the strongest model, so keep it for genuinely hard problems"},
         "reply": {"type": "string", "description": "Your full answer to the user when route=answer, else empty"},
         "build_prompt": {"type": "string",
                          "description": "When route=opus: a complete, detailed prompt for the builder, else empty"},
@@ -80,7 +81,10 @@ ROUTE_SCHEMA = {
 
 ROUTER_SYSTEM = """You are the brain of Waggle, a personal AI agent. Pick who handles the user's message:
 - "answer": you answer it yourself, right now, in "reply". This is the default for conversation, questions,
-  advice, explanations, plans, writing and study help. Speak like a quick, natural human conversation partner.
+  advice, technical explanations, plans, project help, writing and study help. Answer at full quality: correct,
+  specific to the user's projects, as long as the question needs and no longer. Speak like a sharp, natural
+  conversation partner. When the answer involves numbers, units or a derivation, work it out in "reason" first,
+  then state the checked result in "reply". "Quick" means answer directly: no quiz, no lecture.
 - "connected": the job needs the user's Gmail, Google Drive or Google Docs (reading mail, finding a file or doc,
   drafting a reply). Another call with those connectors answers; leave "reply" empty.
 - "act": the job means DOING something with tools, not just talking: files or folders on the PC, running a
@@ -90,7 +94,8 @@ ROUTER_SYSTEM = """You are the brain of Waggle, a personal AI agent. Pick who ha
   A Claude agent with real tools does it; leave "reply" empty. Set "hard" for complex jobs.
 - "local": only for a trivial PC action a small local model can do alone (open an app, a quick timer).
 - "deep": only when a stronger model clearly matters: hard math or proofs, tricky debugging, detailed engineering
-  trade-offs, long careful writing. A bigger model will answer instead of you.
+  trade-offs, long careful writing. A bigger model will answer instead of you; set "hard" only for problems that
+  need the strongest model.
 - "opus": a big multi-step build that needs a strong coding agent working for a long time (apps, websites, games,
   multi-file code, research projects). Write "build_prompt": restate the goal, who it's for, must-have features,
   tech choices that suit a student with a Windows PC and $0 budget, what "done" means, and that the result should
@@ -101,7 +106,9 @@ offering the obvious next step only when it is genuinely useful."""
 
 
 DEEP_SYSTEM = """You are Waggle, a calm, sharp personal assistant, answering a question that needs careful
-reasoning. Use the user's notes to personalise. Be correct first, then concise; no filler."""
+reasoning. Use the user's notes and the recent conversation to personalise and to resolve what "that" or "it"
+refers to. Work it out properly and check numbers before stating them. Be correct first, then concise; lead with
+the answer, no filler, no closing offers."""
 
 
 RECURRING = re.compile(r"\b(every|each|daily|weekly|monthly|weekdays?|weekends?|nightly|hourly)\b")
@@ -212,6 +219,7 @@ def decide(text, memory_ctx="", settings=None, asker=None, sorter=None, review_a
 
 def _decide(text, memory_ctx="", settings=None, asker=None, sorter=None, review_allowed=None):
     s = settings or Settings.load()
+    hardest = s.chat_deep_model or s.deep_model  # chat's strongest model, for deep+hard questions only
     if s.chat_model or s.chat_agent_model or s.chat_deep_model:  # chat gets the stronger models
         import dataclasses
         s = dataclasses.replace(s, router_model=s.chat_model or s.router_model,
@@ -265,15 +273,8 @@ def _decide(text, memory_ctx="", settings=None, asker=None, sorter=None, review_
             d.update(route="local", reason=f"wanted a tool agent but {why}", looked_big=bool(d.get("hard")))
     if d.get("route") not in ("local", "answer", "deep", "opus", "act"):
         return local_route(text, memory_ctx, s)
-    if d["route"] == "deep" and s.deep_model != s.router_model:
-        ok, why = quota.can_escalate(s.deep_model, s)
-        if ok:
-            try:
-                deep = asker(prompt, model=s.deep_model, system=DEEP_SYSTEM + specialists.guide(spec, s),
-                             purpose="deep")
-                d["reply"], d["answered_by"] = (deep.get("text") or "").strip(), s.deep_model
-            except claude_cli.ClaudeError:
-                pass  # keep whatever the router wrote
+    if d["route"] == "deep":
+        d.update(_deep_answer(prompt, spec, s, asker, hardest if d.get("hard") else s.deep_model))
         d["route"] = "answer"
     if d["route"] == "answer":
         d.setdefault("answered_by", s.router_model)
@@ -293,6 +294,29 @@ def _decide(text, memory_ctx="", settings=None, asker=None, sorter=None, review_
         d["reply"], d["reviewed"] = specialists.review(text, d.get("reply", ""), spec, s, asker=asker,
                                                        allowed=review_allowed)
     return d
+
+
+def _deep_answer(prompt, spec, s, asker, model):
+    """A careful free-text answer (medium effort, not squeezed into the routing JSON). The strongest model gets
+    a time limit and falls back to the chat model, so a slow Opus never leaves the user with nothing."""
+    tried = []
+    for m, timeout in ((model, 150), (s.router_model, 120)):
+        if m in tried:
+            continue
+        tried.append(m)
+        ok, why = quota.can_escalate(m, s)
+        if not ok:
+            continue
+        try:
+            res = asker(prompt, model=m, system=DEEP_SYSTEM + specialists.guide(spec, s), purpose="deep",
+                        effort="medium", timeout=timeout)
+        except claude_cli.ClaudeError as e:
+            events.log("deep_fallback", model=m, error=str(e)[:200])
+            continue
+        text = (res.get("text") or "").strip()
+        if text:
+            return {"reply": text, "answered_by": m}
+    return {}  # keep whatever the router wrote
 
 
 def local_answer(text, memory_ctx="", settings=None):

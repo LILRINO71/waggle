@@ -16,9 +16,11 @@ SPECIALISTS = {
     "tutor": {
         "match": r"\b(quiz|study|exam|test me|homework|teach me|explain|flashcards?|unit \d|math|calc|derivative|"
                  r"integral|limit|equation|chemistry|physics|history|essay)\b",
-        "guide": "Act as a patient tutor. Check understanding before lecturing: ask one quick question or give one "
-                 "worked example, then explain the gap. Use real math notation, short steps, and end with a "
-                 "practice question. Never just hand over homework answers without the reasoning.",
+        "guide": "Act as a patient tutor. A direct or 'quick' question gets the answer first, with the key step or "
+                 "rule that gets there; no quiz. When they want to learn a topic, check understanding before "
+                 "lecturing: one quick question or one worked example, then explain the gap, and end with a "
+                 "practice question. Use real math notation and short steps. For graded homework, show the "
+                 "reasoning rather than only the final answer.",
     },
     "robotics": {
         "match": r"\b(ftc|robot|intake|shooter|drivetrain|chassis|servo|motor|odometry|pedro|roadrunner|teleop|"

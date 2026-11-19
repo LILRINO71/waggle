@@ -81,8 +81,14 @@ def _pre_llm(session_id=None, user_message="", platform="", **kwargs):
         events.log("feedback", finding=m.group(2), useful=useful, platform=platform)
         return {"action": "block", "message": "Noted, thanks. " + ("I'll look for more like that." if useful
                                                                    else "I'll be pickier about those.")}
+    # A voice note arrives as '"<transcript>"\n[User sent audio: <path>]': answer what was said, not the wrapper.
+    from waggle import voice_turn
+    user_message, kind = voice_turn.parse(user_message, Settings.load().voice_fixes)
+    if kind == "voice_failed":
+        events.log("voice_failed", platform=platform)
+        return {"action": "block", "message": voice_turn.FAILED_REPLY}
     _reindex_soon()
-    _turn[session_id] = {"t0": time.time(), "platform": platform}
+    _turn[session_id] = {"t0": time.time(), "platform": platform, "voice": kind == "voice"}
     prev_msg_at = _last_msg_at.get(session_id, 0.0)
     if session_id and user_message:
         _last_msg[session_id] = user_message
@@ -123,7 +129,10 @@ def _pre_llm(session_id=None, user_message="", platform="", **kwargs):
             ctx += "\n\n" + past
     except Exception as e:
         log.warning("recall failed: %s", e)
+    _restore_convo(session_id)
     recent = _recent(session_id)
+    if _turn.get(session_id, {}).get("voice"):
+        ctx += "\n\n" + voice_turn.VOICE_HINT
     if len(_convo.get(session_id, [])) < 2:  # new conversation here: carry over what was just said elsewhere
         try:
             other = traces.recent_elsewhere(session_id)
@@ -403,15 +412,30 @@ def _run_agent(session_id, request, ctx, model, platform, approved_note="", hard
 
 
 _convo = {}  # session_id -> recent (speaker, text) pairs
-_CONVO_TURNS = 12
+_CONVO_TURNS = 16  # 8 exchanges
+_TURN_CHARS = {"User": 1500, "Waggle": 2500}  # long enough that "that" in a follow-up still points at something
 
 
 def _remember_turn(session_id, who, text):
     if not session_id or not text:
         return
+    _restore_convo(session_id)
     turns = _convo.setdefault(session_id, [])
-    turns.append((who, " ".join(str(text).split())[:1200]))
+    turns.append((who, " ".join(str(text).split())[:_TURN_CHARS.get(who, 1500)]))
     del turns[:-_CONVO_TURNS]
+
+
+def _restore_convo(session_id):
+    """After a gateway restart the in-memory history is empty: rebuild it from this session's traces once."""
+    if not session_id or session_id in _convo:
+        return
+    turns = _convo.setdefault(session_id, [])
+    try:
+        for req, reply in traces.session_turns(session_id, n=_CONVO_TURNS // 2):
+            turns.append(("User", " ".join(req.split())[:_TURN_CHARS["User"]]))
+            turns.append(("Waggle", " ".join(reply.split())[:_TURN_CHARS["Waggle"]]))
+    except Exception as e:
+        log.warning("conversation restore failed: %s", e)
 
 
 def _recent(session_id):

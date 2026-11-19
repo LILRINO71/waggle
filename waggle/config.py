@@ -33,6 +33,8 @@ class Settings:
     local_first: bool = False  # let the local model answer "simple" chat itself (faster, much less smart)
     # The user's own addresses: mail to these needs no approval (it reaches only the user). Set in config.json.
     self_emails: list = field(default_factory=list)
+    # Speech-recognition fixes for voice notes, regex -> replacement (e.g. a robot name it keeps mishearing).
+    voice_fixes: dict = field(default_factory=dict)
     agent_workdir: str = ""  # default: ~/Claude
     extra_write_roots: list = field(default_factory=list)
     # Share of the Pro limit Waggle may use, and the point where it stops escalating at all.

@@ -1,0 +1,11 @@
+[
+ {"id": "smalltalk", "kind": "conversation", "prompt": "ugh I'm kind of stressed, I have a robotics meet Saturday and a math test Friday. how should I split my time this week?"},
+ {"id": "flywheel", "kind": "technical", "prompt": "Why does a flywheel shooter lose consistency as the battery drains, and what are two ways to fix it in FTC code?"},
+ {"id": "drive-math", "kind": "reasoning", "prompt": "A goBILDA 312 RPM motor drives a 96 mm wheel 1:1. At 80% power, ignoring slip and acceleration, how far does the robot go in 2.5 seconds? Show the math briefly.", "check": "about 3.1 m (0.3016 m circumference x 4.16 rev/s x 2.5 s)"},
+ {"id": "pid-ff", "kind": "technical", "prompt": "Explain the difference between PID and feedforward like I'm about to explain it to a new team member."},
+ {"id": "biobuzz", "kind": "project", "prompt": "What's the biggest open problem on my BIOBUZZ robot right now, and what would you try first?"},
+ {"id": "follow-parts", "kind": "follow-up", "follow_up": true, "prompt": "ok what parts would I need for that?"},
+ {"id": "follow-time", "kind": "follow-up", "follow_up": true, "prompt": "and roughly how long would that take our team to build?"},
+ {"id": "voice-garbled", "kind": "voice", "prompt": "\"what's the next thing I should do on the bio bus robot for ethics\" [User sent audio: C:\\cache\\audio\\audio_test.ogg]", "check": "should read as BIOBUZZ + FTC and answer with the project's next actions"},
+ {"id": "deriv", "kind": "conversation", "prompt": "quick: derivative of x^2 sin x?", "check": "2x sin x + x^2 cos x"}
+]

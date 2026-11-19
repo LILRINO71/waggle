@@ -191,6 +191,17 @@ def stats(since=0.0):
             "denied": sum(1 for s in steps if s["denied"])}
 
 
+def session_turns(session, n=8, within_s=12 * 3600):
+    """The last n exchanges of one chat session, oldest first: rebuilds the conversation after a gateway restart."""
+    if not session:
+        return []
+    con = _db()
+    rows = con.execute("SELECT request, reply FROM traces WHERE session=? AND time>? AND reply IS NOT NULL AND "
+                       "reply != '' ORDER BY id DESC LIMIT ?", (session, time.time() - within_s, n)).fetchall()
+    con.close()
+    return [(r[0] or "", r[1] or "") for r in reversed(rows)]
+
+
 def recent_elsewhere(session, within_s=7200, n=4):
     """The last few exchanges from OTHER sessions (voice, Telegram, terminal) in the last couple of hours, so a
     conversation started on one interface continues on another."""
