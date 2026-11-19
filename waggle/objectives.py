@@ -297,7 +297,8 @@ def run_step(oid, idx=None, settings=None, run_fn=None, verify_fn=None):
         con.close()
         return "waiting_budget"
     if res.approvals:
-        _set_step(con, oid, step["idx"], status="pending", result=text[:6000])
+        _set_step(con, oid, step["idx"], status="pending", result=text[:6000],
+                  attempts=step["attempts"])  # waiting for a yes is not a failed attempt
         _set(con, oid, status="waiting_approval",
              approval_ids=json.dumps({"step": step["idx"], "ids": [a.get("id") for a in res.approvals]}))
         _log(con, oid, "approval", "; ".join(f"[{a.get('code', '?')}] {a['reason']}" for a in res.approvals))

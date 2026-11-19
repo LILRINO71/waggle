@@ -558,3 +558,17 @@ def test_a_delete_step_is_not_failed_for_the_file_being_gone(settings, quiet):
     oid = objectives.create("goal goal goal", asker=_planner([step]), settings=settings)
     assert objectives.run_step(oid, settings=settings, run_fn=_ok_runner([]),
                                verify_fn=lambda *a, **k: (True, "")) == "done"
+
+
+def test_waiting_for_approval_is_not_a_failed_attempt(settings, quiet):
+    oid = objectives.create("goal goal goal", asker=_planner([STEP]), settings=settings)
+    for cmd in ("rm a1", "rm a2", "rm a3"):
+        policy.check("Bash", {"command": cmd}, session=f"objective-{oid}")
+        objectives.run_step(oid, settings=settings,
+                            run_fn=_ok_runner([], approvals=policy.pending(f"objective-{oid}")))
+        con = objectives._db()
+        objectives._set(con, oid, status="active")
+        con.commit()
+        con.close()
+        policy.deny(code=policy.pending(f"objective-{oid}")[0]["code"])
+    assert objectives.status(oid)["steps"][0]["attempts"] == 0
