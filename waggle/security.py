@@ -43,12 +43,41 @@ def wrap_untrusted(source, text, limit=20000):
     return f'<untrusted source="{source}"{warn}>\n{body}\n</untrusted>'
 
 
+# Screen control: looking is free; acting inside these apps, or typing secrets/money details, needs a yes.
+SCREEN_READ_ONLY = {"capture", "wait", "list_apps", "list_windows", "scroll"}
+SENSITIVE_APPS = re.compile(
+    r"bank|paypal|venmo|cash ?app|zelle|stripe|coinbase|robinhood|kalshi|wallet|checkout|amazon|"
+    r"password|1password|bitwarden|lastpass|keychain|credential|settings|control panel|regedit|"
+    r"defender|security|mail|outlook|gmail|discord|whatsapp|messages|telegram|slack|teams|instagram", re.I)
+SECRET_TEXT = re.compile(r"\b(?:\d[ -]?){13,19}\b|passw|\bpin\b|\bcvv\b|\bssn\b|api[_ -]?key|token", re.I)
+
+
+def screen_risk(args):
+    """Why a computer_use action needs the user's OK, or '' if it can run on its own."""
+    action = str(args.get("action", "")).lower()
+    if action in SCREEN_READ_ONLY:
+        return ""
+    app = str(args.get("app", ""))
+    if action == "focus_app" and not SENSITIVE_APPS.search(app):
+        return ""
+    if SENSITIVE_APPS.search(app):
+        return f"{action} in {app}"
+    text = str(args.get("text", "")) + " " + str(args.get("value", ""))
+    if action in ("type", "set_value") and SECRET_TEXT.search(text):
+        return "typing what looks like a password, card number or key"
+    return ""
+
+
 def check_tool_call(tool_name, args):
     """None = allowed. Otherwise a Hermes pre_tool_call directive."""
     name = (tool_name or "").lower()
     if name in APPROVAL_TOOLS or any(k in name for k in ("payment", "purchase", "checkout")):
         return {"action": "approve", "message": f"Waggle wants to use {tool_name}. This affects other "
                                                 "people or money, so it needs your OK."}
+    if name == "computer_use":
+        why = screen_risk(args)
+        if why:
+            return {"action": "approve", "message": f"Waggle wants to control your screen ({why}). OK?"}
     if name in {"terminal", "shell", "bash", "powershell", "execute_command", "run_command"}:
         cmd = str(args.get("command") or args.get("cmd") or "")
         for pat in DESTRUCTIVE_SHELL:

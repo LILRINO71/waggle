@@ -124,6 +124,10 @@ python -m pytest -q      # 56 tests: routing, local sort, quota, memory, project
 - **Phase 3 (done):** voice: "hey jarvis" wake word (sherpa), Ctrl+B push-to-talk, faster-whisper, Kokoro replies
   (British voice, kept warm so a reply is ~0.8 s); phone calls via Twilio: verified critical alerts (max 2/day,
   never in quiet hours) and "call me in 10 minutes about X". One-time setup: `Setup Calls.bat`.
+- **Phase 4 (screen):** "what's this error on my screen?" -> screenshot -> local vision model (gemma4 in Ollama,
+  nothing leaves the PC) -> answer. Screen control is Hermes's `computer_use` (cua-driver); Waggle adds a
+  guardrail so acting in banking, password, settings or messaging apps, or typing anything that looks like a
+  password, card number or key, needs your OK.
 - **Phase 4:** screen: on-request screenshots read by a local vision model, mouse/keyboard control, background watching
 - **Phase 5:** budgeted specialist roles (sequential, not parallel) + the Waggle benchmark (success, quality, quota, latency, autonomy, reliability, proactivity)
 - **Phase 6:** a small Jarvis panel on top of Hermes's dashboard: live jobs, quota, project status

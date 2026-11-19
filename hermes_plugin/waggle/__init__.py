@@ -21,7 +21,8 @@ _repo = Path(__file__).with_name("repo_path.txt")
 if _repo.exists() and _repo.read_text(encoding="utf-8").strip() not in sys.path:
     sys.path.insert(0, _repo.read_text(encoding="utf-8").strip())
 
-from waggle import call, events, jobs, learn, live, memory, notify, ollama, projects, quota, router, security, vault
+from waggle import (call, events, jobs, learn, live, memory, notify, ollama, projects, quota, router, screen,
+                    security, vault)
 from waggle.config import Settings
 
 log = logging.getLogger("waggle")
@@ -89,6 +90,9 @@ def on_pre_llm_call(session_id=None, user_message="", platform="", **kwargs):
     want = call.parse_request(user_message)
     if want:
         return {"context": "\n\n".join([ctx, _call_me(*want)] + extras)}
+    # "What's this error on my screen?": local vision model looks first, any brain answers from it.
+    if screen.wants_look(user_message):
+        ctx += "\n\n" + screen.context(user_message)
     # Live data first, so whichever brain answers (local or Sonnet) has it.
     if live.needs_live_info(user_message) or live.weather_request(user_message):
         try:
@@ -256,6 +260,13 @@ def t_call_me(args, **kw):
     return _call_me(float(args.get("minutes") or 0), args.get("message", ""))
 
 
+def t_look_at_screen(args, **kw):
+    try:
+        return screen.look(args.get("question", "What is on my screen?"))
+    except Exception as e:
+        return f"Could not look at the screen ({type(e).__name__}: {e})."
+
+
 def t_rate_finding(args, **kw):
     events.log("feedback", finding=args.get("finding_id"), useful=bool(args.get("useful")),
                note=args.get("note", "")[:300])
@@ -297,6 +308,9 @@ TOOLS = [
     (_schema("call_me", "Phone the user (a real call) now or after some minutes, reading out a short message.",
              {"message": {"type": "string"}, "minutes": {"type": "number", "description": "0 = now"}},
              ["message"]), t_call_me),
+    (_schema("look_at_screen", "Take a screenshot of the user's PC screen and have a local vision model answer a "
+             "question about it (read errors, describe windows). Stays on the PC.",
+             {"question": {"type": "string"}}, ["question"]), t_look_at_screen),
     (_schema("rate_finding", "Record whether a proactive suggestion from Waggle was useful (the user's reaction).",
              {"finding_id": {"type": "string"}, "useful": {"type": "boolean"}, "note": {"type": "string"}},
              ["finding_id", "useful"]), t_rate_finding),

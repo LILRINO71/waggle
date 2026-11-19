@@ -33,6 +33,7 @@ class Settings:
     extra_repos: list = field(default_factory=list)
     max_verifications_per_day: int = 4
     max_calls_per_day: int = 2
+    vision_model: str = "gemma4"
     stale_days: int = 7
     phone_target: str = "telegram"
     # Saved by install.py: cron scripts run with a trimmed environment and may not see LOCALAPPDATA.

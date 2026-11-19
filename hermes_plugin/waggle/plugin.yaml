@@ -13,6 +13,7 @@ provides_tools:
   - rate_finding
   - weather
   - call_me
+  - look_at_screen
 provides_hooks:
   - pre_llm_call
   - post_llm_call
