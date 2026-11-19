@@ -28,7 +28,7 @@ BIG_TASK_HINTS = [r"\b(build|make|create|write|code|develop|design)\b.{0,40}\b(a
 CONNECTED_HINT = re.compile(r"\b(e-?mails?|inbox|gmail|unread|mailbox|g-?drive|google (?:drive|docs?)|my (?:docs|drive))\b",
                             re.I)
 CONNECTED_SYSTEM = """You are Waggle, the user's personal assistant, with read access to their Gmail, Google Drive
-and Google Docs. Use the tools to answer from their real data. Never invent emails or files. You may create a
+and Google Docs (and Google Calendar when it is connected). Use the tools to answer from their real data. Never invent emails or files. You may create a
 draft when asked, but you cannot send, delete or share: say the draft is waiting for them. Answer like a quick,
 natural spoken reply: lead with what matters (who, what, any deadline), skip promos and newsletters unless asked,
 2-4 sentences unless they want the full list."""
@@ -36,9 +36,24 @@ CONNECTORS = ["Gmail", "Google_Drive", "Google_Docs"]
 PC_CONTROL = re.compile(r"^\s*(please\s+)?(close|minimi[sz]e|maximi[sz]e|switch to|focus|move|resize|arrange)\b", re.I)
 
 
+CALENDAR_HINT = re.compile(r"\b(calendar|my (events|meetings|appointments)|what'?s on (my|today|tomorrow)|"
+                           r"am i (free|busy)|when is my (next|first) (class|meeting|event))\b", re.I)
+
+
+def _calendar_connected():
+    try:
+        return any(c in ("Google_Calendar", "Gcal") for c in claude_cli.available_connectors(()))
+    except Exception:
+        return False
+
+
 def wants_connectors(text):
-    """Mail/Drive/Docs request (not 'close the window with my email', which is screen control)."""
-    return bool(CONNECTED_HINT.search(text or "")) and not PC_CONTROL.search(text or "")
+    """Mail/Drive/Docs (and Calendar, once connected) request - not 'close the window with my email', which is
+    screen control."""
+    t = text or ""
+    if PC_CONTROL.search(t):
+        return False
+    return bool(CONNECTED_HINT.search(t)) or (bool(CALENDAR_HINT.search(t)) and _calendar_connected())
 
 ROUTE_SCHEMA = {
     "type": "object",
@@ -169,7 +184,8 @@ def connected_answer(text, memory_ctx="", settings=None, asker=None):
         return ""
     try:
         res = asker(f"{memory_ctx}\n\nUser message:\n{text}", model=s.router_model, system=CONNECTED_SYSTEM,
-                    purpose="connected", effort="low", connectors=CONNECTORS, timeout=120)
+                    purpose="connected", effort="low", connectors=claude_cli.available_connectors(CONNECTORS),
+                    timeout=120)
     except claude_cli.ClaudeError:
         return ""
     return (res.get("text") or "").strip()

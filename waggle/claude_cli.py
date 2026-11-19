@@ -114,14 +114,28 @@ def mcp_servers(claude=None, refresh=False):
 
 
 def connector_flags(connectors, servers):
-    """Allow only the read tools of `connectors`; hide every other MCP server (the user's set adds ~150k tokens)."""
+    """Allow the read tools of `connectors` (whole server for ones without a known list, e.g. Calendar, which the
+    PreToolUse policy hook then filters: no sending, deleting, sharing or inviting); hide every other MCP server
+    (the user's full set adds ~150k tokens)."""
     wanted = {f"mcp__claude_ai_{c}" for c in connectors}
     allowed = [f"mcp__claude_ai_{c}__{t}" for c in connectors for t in CONNECTOR_TOOLS.get(c, [])]
+    allowed += [f"mcp__claude_ai_{c}" for c in connectors if c not in CONNECTOR_TOOLS]
     hidden = [s for s in servers if s not in wanted]
-    flags = ["--tools", "", "--no-session-persistence", "--disable-slash-commands", "--allowedTools", *allowed]
+    from .agent import settings_json  # the same policy hook the tool agents use
+    flags = ["--tools", "", "--no-session-persistence", "--disable-slash-commands",
+             "--settings", json.dumps(settings_json()), "--allowedTools", *allowed]
     if hidden:
         flags += ["--disallowedTools", *hidden]
     return flags
+
+
+OPTIONAL_CONNECTORS = ("Google_Calendar", "Gcal", "Google_Tasks", "Google_Sheets")
+
+
+def available_connectors(base=("Gmail", "Google_Drive", "Google_Docs")):
+    """The base connectors plus Calendar / Tasks / Sheets once the user has connected them on claude.ai."""
+    servers = set(mcp_servers())
+    return list(base) + [c for c in OPTIONAL_CONNECTORS if f"mcp__claude_ai_{c}" in servers]
 
 
 def ask(prompt, model="sonnet", system=None, schema=None, effort="medium", purpose="ask", timeout=300,

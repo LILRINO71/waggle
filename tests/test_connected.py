@@ -52,3 +52,15 @@ def test_connected_failure_falls_back_to_normal_routing(tmp_path, monkeypatch):
 
     d = router.decide("any new emails?", settings=Settings(vault=str(tmp_path)), asker=asker)
     assert d["route"] == "sonnet" and d["by"] != "connected"
+
+
+def test_calendar_joins_once_connected(monkeypatch):
+    monkeypatch.setattr(claude_cli, "mcp_servers", lambda *a, **k: ["mcp__claude_ai_Gmail",
+                                                                     "mcp__claude_ai_Google_Calendar"])
+    assert claude_cli.available_connectors() == ["Gmail", "Google_Drive", "Google_Docs", "Google_Calendar"]
+    assert router.wants_connectors("what's on my calendar tomorrow?")
+    flags = claude_cli.connector_flags(["Gmail", "Google_Calendar"], ["mcp__claude_ai_Gmail",
+                                                                      "mcp__claude_ai_Google_Calendar", "mcp__rea"])
+    assert "mcp__claude_ai_Google_Calendar" in flags and "--settings" in flags  # whole server, policy hook filters
+    monkeypatch.setattr(claude_cli, "mcp_servers", lambda *a, **k: ["mcp__claude_ai_Gmail"])
+    assert not router.wants_connectors("what's on my calendar tomorrow?")

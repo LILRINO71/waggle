@@ -11,6 +11,8 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "HOME", tmp_path / "home")
     monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "home" / "config.json")
     monkeypatch.setattr(router, "local_sort", lambda text, s=None, chat=None: ("unsure", 0.0))
+    import waggle.claude_cli as claude_cli
+    monkeypatch.setattr(claude_cli, "mcp_servers", lambda claude=None, refresh=False: [])  # no real `claude mcp list`
     import waggle.notify as notify
     sent = []
     monkeypatch.setattr(notify, "_toast", lambda text: None)
