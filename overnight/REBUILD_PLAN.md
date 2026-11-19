@@ -55,6 +55,11 @@ What the audits and reviews measured:
 9. **Autonomous work runs through the objectives engine:** an activity model from the user's real work, a miner
    for repeated work, a proof step, three shadow runs with no outward effect, then the user switches it on.
    Standing goals with indicators make progress between conversations measurable.
+10. **Every turn and every fact carries its origin.** Origins: the user's own channels, test, canary, bench,
+    agent. Only the user's own words may feed the profile, facts, the digest, the quiz or the activity model.
+    Development tests never run against the live home; end-to-end checks use a marked test chat. Found in real
+    use: 50 of the first 78 recorded turns were development prompts sent through the CLI, one of them was filed
+    in the profile as a fact, and Waggle then told the user about a test and a meet that do not exist.
 
 ## Architecture
 
@@ -139,3 +144,15 @@ logic for outreach (paused at a checkpoint until step 1 exists). Nothing beyond 
 `rebuild/core` (runtime store first, then the always-on process) and `rebuild/guard` (the safety core). Step 0
 is still unproven: no real Telegram message has arrived since the restart. The checks only the user can do are
 in `overnight/USER_TESTS.md`.
+
+2026-11-19 14:28: step 0 is proven for typed turns. Three real Telegram messages were all answered by Claude
+(15.7 s, 3.1 s, 24.9 s); the second waited behind the first; the local model answered none. Two faults showed:
+
+- Wrong facts volunteered from the profile. Cause: the per-message extractor filed development test prompts as
+  profile facts (decision 10). Done: extractor retired (84cc091), the six machine-written lines moved out of the
+  profile into a history note. Still open: the knowledge build must filter by origin before it learns from
+  recorded turns, and test notes left in the real vault need the same clean-up.
+- The agent said GitHub was not signed in. The same agent chain works from a normal shell, so the fault is in the
+  environment of the gateway that was started from a tool session. The real output is unknown because agent tool
+  results are not recorded anywhere. Step 3 must record them; a turn that falls back to memory because a tool
+  failed must count as a failed task, not a success.
