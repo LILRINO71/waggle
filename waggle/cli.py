@@ -26,6 +26,14 @@ def main(argv=None):
     sub.add_parser("consolidate", help="Sonnet cleans up your profile note")
     sub.add_parser("jobs", help="list build jobs")
     sub.add_parser("login", help="open the Claude CLI in a new window so you can /login")
+    sub.add_parser("doctor", help="health check of every part of Waggle, with fixes")
+    sub.add_parser("models", help="hardware, installed models and recommendations")
+    sub.add_parser("skills", help="rebuild the skill index and show stats")
+    sub.add_parser("learn", help="run the learning pass now (analysis, skill discovery)")
+    sub.add_parser("bench", help="routing benchmark on the labelled cases (real Haiku calls)")
+    sub.add_parser("routines", help="list scheduled routines")
+    c = sub.add_parser("connectors", help="re-read which claude.ai connectors are available")
+    c.add_argument("--refresh", action="store_true")
     a = p.parse_args(argv)
     st = Settings.load()
 
@@ -56,6 +64,39 @@ def main(argv=None):
         flags = subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0
         subprocess.Popen([exe], creationflags=flags)
         print("A Claude window opened. Type /login there, sign in, then close it.")
+    elif a.cmd == "doctor":
+        from . import doctor
+        print(doctor.report(doctor.run_all(st)))
+    elif a.cmd == "models":
+        from . import models
+        cat = models.catalog(st, refresh=True)
+        print(json.dumps(cat["hardware"], indent=2))
+        for m in cat["local"]:
+            print(f"  {m['name'][:48]:<48} {m['size_gb']:>5} GB  {m['where']:<14} ctx {m['context']}"
+                  f"{'  vision' if m['vision'] else ''}{'  tools' if m['tools'] else ''}")
+        for t in models.recommendations(cat, st):
+            print("tip:", t)
+    elif a.cmd == "skills":
+        from . import skills
+        print(skills.reindex(force=True), json.dumps(skills.stats(), indent=2))
+    elif a.cmd == "learn":
+        from . import learning
+        out = learning.run(settings=st)
+        print(json.dumps({k: out[k] for k in ("candidates", "drafted")}, indent=2, default=str))
+    elif a.cmd == "bench":
+        from . import learning
+        for name in ("routes.json", "routes_holdout.json"):
+            r = learning.evaluate_router(cases=learning.load_cases(name), settings=st)
+            print(f"{name}: {r['accuracy']} ({r['n']} cases)")
+            for m in r["misses"]:
+                print(f"  want {m['want']:<9} got {m['got']:<9} {m['text']}")
+    elif a.cmd == "routines":
+        from . import routines
+        for r in routines.listing():
+            print(f"{'  ' if r['enabled'] else '# '}{r['name']:<28} {r['schedule']:<18} next {r['next']}  {r['agent']}")
+    elif a.cmd == "connectors":
+        from . import claude_cli
+        print("\n".join(claude_cli.mcp_servers(refresh=True)))
     elif a.cmd == "jobs":
         for j in jobs.load().values():
             print(f"{j['id']}  {j.get('status')}  {j.get('title')}  {j.get('workdir')}")

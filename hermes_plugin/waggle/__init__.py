@@ -415,6 +415,22 @@ def _bridge_pre(name, args):
     return _targeting(name, args, "bridge")
 
 
+def _startup_upkeep():
+    """Once per gateway start: resume builds a crash or reboot interrupted, refresh skills, default routines."""
+    time.sleep(20)
+    for name, fn in (("recover jobs", lambda: jobs.recover()), ("routines", _ensure_routines),
+                     ("skills", lambda: __import__("waggle.skills", fromlist=["x"]).ensure_index())):
+        try:
+            fn()
+        except Exception as e:
+            log.warning("startup upkeep (%s) failed: %s", name, e)
+
+
+def _ensure_routines():
+    from waggle import routines
+    routines.ensure_defaults()
+
+
 def _start_bridge():
     """Let Claude agents use Hermes's tools through this gateway (127.0.0.1 + token, see waggle/bridge.py).
     Only the gateway hosts it: an interactive `hermes chat` window would otherwise steal the port file."""
@@ -424,6 +440,7 @@ def _start_bridge():
         from waggle import bridge
         port, _ = bridge.start(_dispatch, _list_tools, pre=_bridge_pre)
         log.info("waggle bridge on 127.0.0.1:%s", port)
+        threading.Thread(target=_startup_upkeep, daemon=True, name="waggle-upkeep").start()
     except Exception as e:
         log.warning("waggle bridge failed to start: %s", e)
 

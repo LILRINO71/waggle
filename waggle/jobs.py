@@ -94,7 +94,8 @@ def run(job_id, resume=False):
     job = load()[job_id]
     log = Path(job["workdir"]) / f".waggle-{job_id}.log"
     prompt = job["prompt"] if not resume else "Continue where you left off and finish the task."
-    update(job_id, status="running", started=time.time(), log=str(log))
+    update(job_id, status="running", started=time.time(), log=str(log), runner_pid=os.getpid(),
+           attempts=job.get("attempts", 0) + 1)
     try:
         if resume and job.get("session_id"):
             claude = claude_cli.find_claude()
@@ -152,6 +153,51 @@ def resume_paused():
         _spawn("resume", job_id)
         started.append(job_id)
     return started
+
+
+def _alive(pid):
+    """Is a process still running? (Windows-safe: os.kill(pid, 0) would send Ctrl+C there.)"""
+    if not pid:
+        return False
+    if os.name == "nt":
+        import ctypes
+        h = ctypes.windll.kernel32.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return False
+        code = ctypes.c_ulong()
+        ok = ctypes.windll.kernel32.GetExitCodeProcess(h, ctypes.byref(code))
+        ctypes.windll.kernel32.CloseHandle(h)
+        return bool(ok) and code.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except OSError:
+        return False
+
+
+def recover(max_attempts=2, spawn=None, alive=None):
+    """After a restart or crash: jobs stuck as 'running'/'queued' whose process is gone get resumed (their
+    Claude session continues) or relaunched, at most max_attempts times; then they're marked interrupted."""
+    spawn, alive = spawn or _spawn, alive or _alive
+    out = []
+    now = time.time()
+    for job_id, job in load().items():
+        if job.get("status") not in ("running", "queued"):
+            continue
+        if alive(job.get("runner_pid")):
+            continue
+        if job.get("status") == "queued" and now - job.get("created", now) < 600:
+            continue  # just queued; its process may still be starting
+        if job.get("attempts", 0) >= max_attempts:
+            update(job_id, status="interrupted", finished=now)
+            notify.send(f"Build '{job.get('title')}' was interrupted twice and stopped. Say 'build status' to see it.")
+            out.append((job_id, "gave up"))
+            continue
+        update(job_id, status="queued", recovered=now)
+        spawn("resume" if job.get("session_id") else "run", job_id)
+        events.log("job", job=job_id, status="recovered")
+        out.append((job_id, "resumed" if job.get("session_id") else "relaunched"))
+    return out
 
 
 if __name__ == "__main__":

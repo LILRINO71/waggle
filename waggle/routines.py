@@ -233,6 +233,11 @@ def tick(settings=None, run_fn=None, verify_fn=None, now=None):
 
 def main():
     ensure_defaults()
+    try:
+        from . import jobs
+        jobs.recover()
+    except Exception:
+        pass
     tick()
 
 

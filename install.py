@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent
@@ -125,6 +126,59 @@ def main():
     if not HERMES.exists():
         print("Hermes not found at", HERMES, "- install Hermes first.")
         return
+    backup = backup_config()
+    configure_hermes(s)
+    if not config_ok():
+        if backup:
+            shutil.copyfile(backup, HERMES_HOME / "config.yaml")
+        print("!! Hermes config failed validation after changes; restored", backup)
+        return
+    soul = HERMES_HOME / "SOUL.md"
+    shutil.copyfile(REPO / "persona" / "SOUL.md", soul)
+    print("persona:", soul)
+    if "--cron" in sys.argv:
+        install_cron(s)
+    try:
+        from waggle import skills
+        print("skills:", skills.reindex())
+    except Exception as e:
+        print("skills index skipped:", e)
+
+
+MOJIBAKE = ("Ã¢", "Ã©", "â€™", "â€œ", "Ã°Å¸", "ðŸ")
+
+
+def backup_config():
+    """Copy config.yaml (bytes, so encoding/BOM/line endings are untouched) before Waggle changes anything."""
+    src = HERMES_HOME / "config.yaml"
+    if not src.exists():
+        return None
+    dst_dir = HERMES_HOME / "backups"
+    dst_dir.mkdir(exist_ok=True)
+    dst = dst_dir / f"config.yaml.{time.strftime('%Y%m%d-%H%M%S')}.waggle.bak"
+    dst.write_bytes(src.read_bytes())
+    olds = sorted(dst_dir.glob("config.yaml.*.waggle.bak"))
+    for old in olds[:-10]:  # keep the last 10
+        old.unlink()
+    return dst
+
+
+def config_ok():
+    """Hermes config still parses and has no double-encoded characters."""
+    p = HERMES_HOME / "config.yaml"
+    text = p.read_text(encoding="utf-8", errors="replace")
+    if any(m in text for m in MOJIBAKE):
+        return False
+    try:
+        import yaml
+        return isinstance(yaml.safe_load(text), dict)
+    except ImportError:
+        return True
+    except Exception:
+        return False
+
+
+def configure_hermes(s):
     hermes("config", "set", "model.provider", "custom")
     hermes("config", "set", "model.base_url", f"{s.ollama_url}/v1")
     hermes("config", "set", "model.default", s.local_model)
@@ -142,11 +196,6 @@ def main():
     for platform in ("cli", "telegram"):
         hermes("tools", "disable", "--platform", platform, *UNUSED_TOOLSETS)
     hermes("plugins", "enable", "waggle")
-    soul = HERMES_HOME / "SOUL.md"
-    shutil.copyfile(REPO / "persona" / "SOUL.md", soul)
-    print("persona:", soul)
-    if "--cron" in sys.argv:
-        install_cron(s)
 
 
 if __name__ == "__main__":
