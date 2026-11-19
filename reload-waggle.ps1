@@ -5,6 +5,9 @@ Set-Location $PSScriptRoot
 python install.py --cron | Select-String "plugin:|enable|persona:|cron"
 & "$PSScriptRoot\install-startup.ps1" | Select-String "Installed"
 & $h gateway stop --yes
+# The Command Center is its own process; stop it so the launcher starts it on the new code.
+Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'waggle.dashboard\.py' } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 Start-Sleep -Seconds 3
 wscript "$PSScriptRoot\Waggle Gateway.vbs"
 Start-Sleep -Seconds 20
