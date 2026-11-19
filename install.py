@@ -61,6 +61,8 @@ def install_cron(s):
                "--catch-up", "off")
 
 
+UNUSED_TOOLSETS = ["image_gen", "todo", "memory", "session_search", "delegation", "connections"]
+
 GRAPH_GROUPS = [  # Obsidian graph colours by folder (rgb ints)
     ("path:Projects", 0xF5B301), ("path:Me", 0x3ED2F0), ("path:Jobs", 0xA78BFA),
     ("path:Ideas", 0x3DDC84), ("path:Journal", 0x5F6676), ("file:\"Waggle HQ\"", 0xFF5D5D),
@@ -121,15 +123,19 @@ def main():
     hermes("config", "set", "model.provider", "custom")
     hermes("config", "set", "model.base_url", f"{s.ollama_url}/v1")
     hermes("config", "set", "model.default", s.local_model)
-    # Hermes refuses windows under 64k, but qwen3:8b really holds 40,960 tokens: compress well before that.
+    # Hermes refuses windows under 64k; it is told 65536 while Ollama really runs 32k (see below).
     hermes("config", "set", "model.context_length", "65536")
-    hermes("config", "set", "compression.threshold_tokens", "30000")
+    # The real window is 32k (ollama/Modelfile.waggle-4b, so it fits the GPU): compress well before that.
+    hermes("config", "set", "compression.threshold_tokens", "24000")
     # Small local models fumble Hermes's tool-search meta-tool; show every tool directly.
     hermes("config", "set", "tools.tool_search.enabled", "off")
     # Hermes's image tool + Telegram photos: the local vision model (the chat model is text-only).
     hermes("config", "set", "auxiliary.vision.provider", "main")
     hermes("config", "set", "auxiliary.vision.model", s.vision_model)
     hermes("config", "set", "auxiliary.vision.timeout", "120")
+    # Every enabled toolset is re-read by the model on every turn; drop the ones Waggle covers or never uses.
+    for platform in ("cli", "telegram"):
+        hermes("tools", "disable", "--platform", platform, *UNUSED_TOOLSETS)
     hermes("plugins", "enable", "waggle")
     soul = HERMES_HOME / "SOUL.md"
     shutil.copyfile(REPO / "persona" / "SOUL.md", soul)

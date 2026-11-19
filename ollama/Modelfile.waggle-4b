@@ -1,3 +1,5 @@
 FROM qwen3:4b-instruct-2507-q4_K_M
-PARAMETER num_ctx 65536
+# 32k fits the whole model on a 12 GB GPU (64k pushed 30% onto the CPU: ~13 GB). Hermes is told 65536 because it
+# refuses less, but it compresses the chat at 24k tokens (compression.threshold_tokens), so 32k is never exceeded.
+PARAMETER num_ctx 32768
 PARAMETER temperature 0.6
