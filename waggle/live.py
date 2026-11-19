@@ -44,6 +44,12 @@ def geocode(place, fetch=None):
     return {"lat": r["latitude"], "lon": r["longitude"], "label": label, "tz": r.get("timezone", "auto")}
 
 
+def remember_city(place, settings=None):
+    s = settings or Settings.load()
+    s.home_location = place
+    s.save()
+
+
 def weather(place=None, day="tomorrow", settings=None, fetch=None, today=None):
     """Plain-text forecast for today/tomorrow/next 3 days. Saves `place` as home the first time it's given."""
     s = settings or Settings.load()
@@ -54,15 +60,22 @@ def weather(place=None, day="tomorrow", settings=None, fetch=None, today=None):
     if not place:
         return "NO_LOCATION: ask the user which city they want the weather for (it will be remembered)."
     imperial = s.units == "imperial"
+    # Resolve the place with Open-Meteo's geocoder (ranks by population: "Menifee" -> Menifee, CA, not
+    # Menifee County, KY as wttr.in guessed), then forecast by coordinates.
+    try:
+        geo = geocode(place, fetch)
+    except (OSError, ValueError, TimeoutError):
+        geo = None
+    if geo is None:
+        try:
+            return _wttr(place, day, imperial, fetch, today)  # geocoder down: let wttr.in resolve the name
+        except (OSError, KeyError, ValueError, IndexError, TimeoutError):
+            return f"Couldn't find a place called '{place}'. Ask the user for the city and state/country."
     # wttr.in first: api.open-meteo.com is unreachable on this PC's network (handshake times out).
     try:
-        return _wttr(place, day, imperial, fetch, today)
+        return _wttr(f"{geo['lat']:.4f},{geo['lon']:.4f}", day, imperial, fetch, today, label=geo["label"])
     except (OSError, KeyError, ValueError, IndexError, TimeoutError):
-        pass
-    geo = geocode(place, fetch)
-    if not geo:
-        return f"Couldn't find a place called '{place}'. Ask the user for the city and state/country."
-    return _open_meteo(geo, day, imperial, fetch, today)
+        return _open_meteo(geo, day, imperial, fetch, today)
 
 
 def _open_meteo(geo, day, imperial, fetch=None, today=None):
@@ -85,10 +98,11 @@ def _open_meteo(geo, day, imperial, fetch=None, today=None):
     return "\n".join(lines)
 
 
-def _wttr(place, day, imperial, fetch=None, today=None):
-    data = (fetch or _get)(f"https://wttr.in/{urllib.parse.quote(place)}?format=j1")
-    area = (data.get("nearest_area") or [{}])[0]
-    label = ", ".join(x[0]["value"] for x in (area.get("areaName"), area.get("region"), area.get("country")) if x)
+def _wttr(place, day, imperial, fetch=None, today=None, label=None):
+    data = (fetch or _get)(f"https://wttr.in/{urllib.parse.quote(place, safe=',.-')}?format=j1")
+    if not label:
+        area = (data.get("nearest_area") or [{}])[0]
+        label = ", ".join(x[0]["value"] for x in (area.get("areaName"), area.get("region"), area.get("country")) if x)
     days = data["weather"]
     today = today or dt.date.today()
     want = {"today": [0], "tomorrow": [1], "week": [0, 1, 2]}.get(day, [1])

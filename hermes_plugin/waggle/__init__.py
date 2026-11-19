@@ -74,6 +74,17 @@ def on_pre_llm_call(session_id=None, user_message="", platform="", **kwargs):
     if platform in SKIP_ROUTING_PLATFORMS or not user_message:
         return {"context": "\n\n".join([ctx] + extras)}
 
+    # The last turn asked "which city?" -> this short reply is the city.
+    asked = _awaiting_city.pop(session_id, None)
+    if asked and time.time() - asked[1] < 900 and _looks_like_place(user_message):
+        place = user_message.strip(" .!?")
+        try:
+            live.remember_city(place)
+            data = live.weather(place, asked[0])
+            ctx += f"\n\n<live_data source=\"weather\">The user just told you their city ({place}); it is now saved.\n{data}\nAnswer from this data.</live_data>"
+        except Exception as e:
+            log.warning("weather for %s failed: %s", place, e)
+        return {"context": "\n\n".join([ctx] + extras)}
     # Live data first, so whichever brain answers (local or Sonnet) has it.
     if live.needs_live_info(user_message) or live.weather_request(user_message):
         try:
@@ -81,6 +92,9 @@ def on_pre_llm_call(session_id=None, user_message="", platform="", **kwargs):
         except Exception as e:
             log.warning("live prefetch failed: %s", e)
             data = ""
+        if data and "no city is saved" in data:
+            w = live.weather_request(user_message)
+            _awaiting_city[session_id] = ((w[1] if w else "tomorrow"), time.time())
         if data:
             ctx += "\n\n" + data  # ctx goes to the router (Sonnet) and the local model alike
         else:
@@ -264,6 +278,13 @@ TOOLS = [
 
 
 _ctx = None
+_awaiting_city = {}  # session_id -> (day, asked_at)
+
+
+def _looks_like_place(text):
+    """A short reply like 'Menifee' or 'Menifee, CA' (not a new question)."""
+    t = (text or "").strip(" .!")
+    return 0 < len(t) <= 40 and "?" not in t and len(t.split()) <= 4 and not live.needs_live_info(t)
 
 
 def _web_search(query):
