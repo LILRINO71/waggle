@@ -12,6 +12,9 @@ acceptance), sized for one person's assistant:
                         let Sonnet propose a revision, keep it only if it beats the active prompt on the tuning
                         set without losing on the held-out set. Versioned in prompts.py, one-call rollback.
 4. run()                weekly cron: analyze + discover (+ optimize when there is evidence) -> vault report
+5. daily()              every evening (driven by the ingest scheduler): implicit signals (rephrasing, failed turns,
+                        local-fallback answers, denied approvals, slow turns, corrections), the knowledge quiz
+                        (quiz.py), growth per day, the "Today I learned" note; today_learned() for the evening note
 
 What learning can never touch: policy.py, security.py, the agent safety rules, SOUL.md (D-08).
 Untrusted content is never learned from: only the user's own requests, Waggle's own tool steps and the user's
@@ -352,8 +355,193 @@ def _save_drafted(item):
     data_path("skills_drafted.json").write_text(json.dumps(items[-200:], indent=1), encoding="utf-8")
 
 
+# ---- 5. the daily loop: implicit signals, the knowledge quiz, growth, "Today I learned" ------------
+
+SLOW_S = 20.0
+REPHRASE_S = 180
+LOCAL_ROUTE = re.compile(r"local|waggle-4b|ollama|qwen|gemma", re.I)
+TIL_NOTE = "Waggle/Today I learned"
+
+
+def _day_start(now=None):
+    import datetime as dt
+    d = dt.date.fromtimestamp(now or time.time())
+    return time.mktime(dt.datetime.combine(d, dt.time()).timetuple())
+
+
+def implicit_signals(rows):
+    """What went wrong without anyone saying so: rephrased requests, failed turns, turns the local fallback
+    answered, denied approvals, slow turns, explicit corrections. rows: traces (any order)."""
+    rows = sorted([r for r in rows if not (r.get("session") or "").startswith(("objective-", "routine-"))],
+                  key=lambda r: r["time"])
+    out = {"turns": len(rows), "rephrased": [], "failed": [], "local": [], "denied": [], "slow": [],
+           "corrected": []}
+    prev = {}
+    for r in rows:
+        req = r.get("request") or ""
+        p = prev.get(r.get("session"))
+        if p and r["time"] - p["time"] <= REPHRASE_S:
+            a, b = _words(p.get("request")), _words(req)
+            if a and b and (len(a & b) / len(a | b) >= 0.5 or re.match(r"\s*(i mean|i meant|no,? )", req, re.I)):
+                out["rephrased"].append({"id": r["id"], "first": (p.get("request") or "")[:120], "again": req[:120]})
+        prev[r.get("session")] = r
+        if not r.get("ok"):
+            out["failed"].append({"id": r["id"], "request": req[:120], "error": (r.get("error") or "")[:120]})
+        extra = {}
+        try:
+            extra = json.loads(r.get("extra") or "{}")
+        except (TypeError, ValueError):
+            pass
+        who = f"{r.get('route', '')} {r.get('model', '')} {extra.get('answered_by', '')}"
+        if r.get("route") == "local" or LOCAL_ROUTE.search(str(extra.get("answered_by", ""))) or \
+                (r.get("route") != "sonnet" and LOCAL_ROUTE.search(who)):
+            out["local"].append({"id": r["id"], "request": req[:120]})
+        if any(s.get("denied") for s in r.get("steps", [])):
+            out["denied"].append({"id": r["id"], "request": req[:120]})
+        if (r.get("latency_s") or 0) >= SLOW_S:
+            out["slow"].append({"id": r["id"], "request": req[:120], "seconds": round(r["latency_s"], 1)})
+        if r.get("feedback") == -1:
+            out["corrected"].append({"id": r["id"], "request": req[:120], "correction": (r.get("correction")
+                                                                                        or "")[:160]})
+    return out
+
+
+def _today_events(kind, since):
+    return [e for e in events.read(kind, since)]
+
+
+def growth_today(settings=None, now=None, quiz_result=None, signals=None):
+    """Today's growth numbers (also stored per day in knowledge.db for the HQ page)."""
+    import datetime as dt
+    from . import kstore, learn, memory
+    s = settings or Settings.load()
+    since = _day_start(now)
+    root = vault.root(s)
+    notes = [p for p in vault.notes(s) if memory.indexable(p.relative_to(root).as_posix())]
+    learned = _today_events("learn", since)
+    ingests = _today_events("ingest", since)
+    mirrored = sum(((e.get("jobs") or {}).get("memory") or {}).get("added", 0)
+                   + ((e.get("jobs") or {}).get("memory") or {}).get("updated", 0) for e in ingests)
+    proj = {e.get("project") for e in _today_events("project_update", since)}
+    rows = [r for r in traces.all_traces(since) if r["time"] >= since]
+    skills_used = sum(1 for r in rows if r.get("skills"))
+    inj = memory.retrieval_log(since, mode="inject")
+    data = {"notes": len(notes), "facts_active": len(learn.facts("active")),
+            "facts_filed": sum(1 for e in learned if e.get("action") == "filed"),
+            "facts_rejected": sum(1 for e in learned if e.get("action") == "rejected"),
+            "mirrored_changed": mirrored, "projects_updated": len(proj - {None}),
+            "skills_used": skills_used, "turns": len(rows),
+            "injections": len(inj), "injections_empty": sum(1 for r in inj if not r["paths"])}
+    if quiz_result:
+        data.update(quiz_score=quiz_result.get("score"), quiz_known=quiz_result.get("known"),
+                    quiz_items=quiz_result.get("items"))
+    if signals:
+        data.update({f"sig_{k}": len(v) for k, v in signals.items() if isinstance(v, list)})
+    day = dt.date.fromtimestamp(now or time.time()).isoformat()
+    return kstore.set_growth(day, data)
+
+
+def today_learned(settings=None, now=None, limit=6):
+    """A few plain lines on what Waggle learned today, for the evening note ('' when nothing)."""
+    since = _day_start(now)
+    lines = []
+    try:
+        filed = [e for e in events.read("learn", since) if e.get("action") == "filed"]
+    except Exception:
+        filed = []
+    for e in filed[:limit]:
+        what = e.get("text", "")
+        if e.get("fact_kind") == "outcome" and e.get("project"):
+            lines.append(f"- {e['project']}: {what}")
+        elif e.get("fact_kind") in ("event", "deadline"):
+            lines.append(f"- Coming up {e.get('date', '')}: {what}")
+        elif e.get("fact_kind") == "reply":
+            continue
+        else:
+            lines.append(f"- About you: {what}")
+    try:
+        ups = []
+        for e in events.read("project_update", since):
+            if e.get("action") == "log" and "new commit" in (e.get("entry") or ""):
+                ups.append(e["project"])
+        if ups:
+            lines.append(f"- New work in {', '.join(sorted(set(ups))[:4])} (from your commits)")
+    except Exception:
+        pass
+    try:
+        from . import kstore
+        g = kstore.growth(2)
+        if len(g) == 2 and g[-1].get("quiz_score") is not None and g[0].get("quiz_score") is not None:
+            a, b = g[0]["quiz_score"], g[-1]["quiz_score"]
+            if a != b:
+                lines.append(f"- Knowledge quiz: {b:.0%} (was {a:.0%})")
+    except Exception:
+        pass
+    return "\n".join(lines[:limit + 2])
+
+
+def render_til(day, signals_, quiz_result, growth_rows, learned_text):
+    lines = ["---", "waggle_index: false", "---", f"# Today I learned ({day})", ""]
+    lines += [learned_text or "- Nothing new about you today.", ""]
+    if quiz_result and quiz_result.get("items"):
+        lines += ["## Knowledge quiz", "", f"{quiz_result['answered']} of {quiz_result['items']} questions answered by "
+                  f"retrieval ({quiz_result['score']:.0%}); {quiz_result['known']:.0%} of the answers are somewhere "
+                  "in the vault.", ""]
+        if quiz_result.get("misses"):
+            lines += ["Missed (first few):"] + [f"- {m['question'][:110]} -> **{m['answer']}**"
+                                                + ("" if m["in_vault"] else " (not in the vault)")
+                                                for m in quiz_result["misses"][:5]] + [""]
+    if signals_:
+        bad = {k: v for k, v in signals_.items() if isinstance(v, list) and v}
+        lines += ["## What went wrong today", ""]
+        names = {"rephrased": "You asked again", "failed": "Failed turns", "local": "Answered by the local fallback",
+                 "denied": "Approvals needed or denied", "slow": "Slow turns (20 s+)", "corrected": "You corrected me"}
+        if not bad:
+            lines.append("- Nothing noticed.")
+        for k, v in bad.items():
+            ex = v[0].get("request") or v[0].get("again") or ""
+            lines.append(f"- {names.get(k, k)}: {len(v)}" + (f" (e.g. \"{ex[:80]}\")" if ex else ""))
+        lines.append("")
+    if growth_rows:
+        lines += ["## Growth", "", "| Day | Notes | Facts | Filed | Quiz | Skills used |", "|---|---|---|---|---|---|"]
+        for g in growth_rows[-14:]:
+            q = g.get("quiz_score")
+            lines.append(f"| {g['day']} | {g.get('notes', '')} | {g.get('facts_active', '')} | "
+                         f"{g.get('facts_filed', 0)} | {'' if q is None else f'{q:.0%}'} | {g.get('skills_used', 0)} |")
+    return "\n".join(lines) + "\n"
+
+
+def daily(settings=None, now=None, embedder=None):
+    """The daily learning run (called by the ingest scheduler): implicit signals from today's traces, the
+    knowledge quiz, growth numbers, the "Today I learned" note. No paid model calls."""
+    import datetime as dt
+    from . import kstore, quiz
+    s = settings or Settings.load()
+    now = now or time.time()
+    since = _day_start(now)
+    rows = [r for r in traces.all_traces(since) if r["time"] >= since]
+    sig = implicit_signals(rows)
+    try:
+        qr = quiz.run(s, embedder=embedder, now=now)
+    except Exception as e:
+        qr = {"error": f"{type(e).__name__}: {e}"[:200]}
+    growth_today(s, now, qr if "error" not in qr else None, sig)
+    day = dt.date.fromtimestamp(now).isoformat()
+    vault.write(TIL_NOTE, render_til(day, sig, qr if "error" not in qr else None, kstore.growth(14),
+                                     today_learned(s, now)), s)
+    events.log("learning", action="daily_run", quiz=qr.get("score"), items=qr.get("items"),
+               signals={k: len(v) for k, v in sig.items() if isinstance(v, list)})
+    return {"quiz": {k: qr.get(k) for k in ("items", "answered", "score", "known", "error") if k in qr},
+            "signals": {k: len(v) for k, v in sig.items() if isinstance(v, list)}}
+
+
 def main():
     import sys
+    if "daily" in sys.argv:
+        from . import budget
+        budget.set_background("learning")
+        daily()
+        return
     if "bench" in sys.argv:
         for name in ("routes.json", "routes_holdout.json"):
             r = evaluate_router(cases=load_cases(name))

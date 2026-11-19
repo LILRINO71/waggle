@@ -116,10 +116,18 @@ def status(settings=None):
     except Exception:
         skill_info = {}
     audit = projects.audit(s)
+    knowledge = {}
+    try:
+        from . import ingest, kstore, learn
+        g = kstore.growth(1)
+        knowledge = {"facts_active": len(learn.facts("active")), "ingest_last_run": ingest.status()["last_run"],
+                     "today": g[-1] if g else {}}
+    except Exception:
+        knowledge = {}
     return {"notes": len(notes), "indexed_chunks": chunks[0], "indexed_notes": chunks[1], "facts": facts,
             "conversation_turns": turns, "skills": skill_info,
             "projects_missing_state": [a for a in audit if a["missing"]],
-            "stale_projects": [a["name"] for a in audit if a["stale"]]}
+            "stale_projects": [a["name"] for a in audit if a["stale"]], "knowledge": knowledge}
 
 
 MCP_TOOLS = [
@@ -130,4 +138,21 @@ MCP_TOOLS = [
     ({"name": "memory_review", "description": "List near-duplicate facts in the user's profile files (to merge).",
       "parameters": {"type": "object", "properties": {}, "required": []}},
      lambda a: json.dumps(duplicates()[:30])),
+    ({"name": "note_read", "description": "Read one note from the user's vault by name or path (e.g. 'BIOBUZZ Robot', "
+      "'Me/Profile.md', 'Knowledge/Upcoming'). Use after vault_search to read a whole note.",
+      "parameters": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}},
+     lambda a: json.dumps(_memory().read_note(a.get("name", "")))),
+    ({"name": "related_to", "description": "Everything connected to a project, person, goal or note: its links, the "
+      "notes that link to it, and the knowledge graph's relations and dated decisions.",
+      "parameters": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}},
+     lambda a: json.dumps(_memory().related(a.get("name", "")), default=str)),
+    ({"name": "memory_core", "description": "The short always-relevant summary of the user: profile, current focus "
+      "of each active project, what is coming up, yesterday.",
+      "parameters": {"type": "object", "properties": {}, "required": []}},
+     lambda a: _memory().core_block()),
 ]
+
+
+def _memory():
+    from . import memory
+    return memory
