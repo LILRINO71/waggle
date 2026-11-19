@@ -72,6 +72,17 @@ class Settings:
     # Weather: saved the first time the user names a city; imperial = °F / mph.
     home_location: str = ""
     units: str = "imperial"
+    # Turn engine (waggle/chat_engine.py): one long-lived Claude process per chat, streamed replies.
+    engine_enabled: bool = True  # False = the old router/regex path (router.py) answers instead
+    chat_tools: list = field(default_factory=lambda: ["Read", "Glob", "Grep", "Bash", "PowerShell", "WebSearch",
+                                                      "WebFetch"])
+    chat_effort: str = "low"
+    chat_idle_s: int = 1800  # an idle chat process is stopped; the next message resumes the same session
+    chat_turn_timeout_s: int = 600
+    chat_session_max_turns: int = 40  # then a fresh session starts, seeded with the recent transcript
+    sync_wait_s: float = 25.0  # surfaces without message editing (desktop, voice notes) wait this long, then ack
+    stream_platforms: list = field(default_factory=lambda: ["telegram"])
+    edit_interval_s: float = 1.2  # Telegram allows about one edit per second per chat
 
     @classmethod
     def load(cls):

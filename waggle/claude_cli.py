@@ -206,6 +206,186 @@ def ask(prompt, model="sonnet", system=None, schema=None, effort="medium", purpo
         quota.record(wanted, usage, purpose, headless=True, ok=ok, error_kind=kind)
 
 
+STREAM_FLAGS = ["--output-format", "stream-json", "--verbose", "--include-partial-messages"]
+
+
+def error_kind(msg):
+    """auth | limit | error, from a CLI error text."""
+    low = (msg or "").lower()
+    if "authenticate" in low or "oauth" in low or "log in" in low or "login" in low or "not logged in" in low:
+        return "auth"
+    if "limit" in low:
+        return "limit"
+    return "error"
+
+
+class StreamParser:
+    """Reads Claude Code `stream-json` output (with --include-partial-messages) one line at a time.
+
+    - text: everything the model wrote this turn (text blocks of every assistant message, in order). This is
+      what the user sees while it streams, so it is also what is kept as the reply.
+    - steps: tool calls with their outcome ({"tool", "input", "ok", "denied", "result"}), for the trace.
+    - result: the final `result` event (None until the turn ends); session_id from any event.
+    on_text(full_text) fires on every new piece of text; on_tool(step) when a tool call starts.
+    Events from sub-agents (parent_tool_use_id set) are ignored: only the main conversation is shown."""
+
+    def __init__(self, on_text=None, on_tool=None, clock=time.time):
+        self.on_text, self.on_tool, self.clock = on_text, on_tool, clock
+        self.parts, self.steps, self._by_id, self._streamed = [], [], {}, set()
+        self.result, self.session_id, self.first_text_at, self.rate_limit, self.model = None, "", None, None, ""
+        self._open = False  # a text block is being streamed
+
+    @property
+    def text(self):
+        return "\n\n".join(p.strip() for p in self.parts if p.strip())
+
+    def _emit(self):
+        if self.first_text_at is None and self.text:
+            self.first_text_at = self.clock()
+        if self.on_text and self.text:
+            self.on_text(self.text)
+
+    def feed(self, line):
+        """One output line. Returns True when the turn's result has arrived."""
+        line = (line or "").strip()
+        if not line.startswith("{"):
+            return False
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            return False
+        if ev.get("session_id"):
+            self.session_id = ev["session_id"]
+        if ev.get("parent_tool_use_id"):
+            return False
+        t = ev.get("type")
+        if t == "system" and ev.get("subtype") == "init":
+            self.model = ev.get("model") or self.model
+        elif t == "stream_event":
+            e = ev.get("event") or {}
+            et = e.get("type")
+            if et == "content_block_start" and (e.get("content_block") or {}).get("type") == "text":
+                self.parts.append("")
+                self._open = True
+                if ev.get("api_message_id"):
+                    self._streamed.add(ev["api_message_id"])
+            elif et == "content_block_delta" and (e.get("delta") or {}).get("type") == "text_delta":
+                if not self._open:
+                    self.parts.append("")
+                    self._open = True
+                if ev.get("api_message_id"):
+                    self._streamed.add(ev["api_message_id"])
+                self.parts[-1] += e["delta"].get("text", "")
+                self._emit()
+            elif et == "content_block_stop":
+                self._open = False
+            elif et == "content_block_start" and (e.get("content_block") or {}).get("type") == "tool_use":
+                self._open = False
+        elif t == "assistant":
+            msg = ev.get("message") or {}
+            for block in msg.get("content") or []:
+                if block.get("type") == "text" and msg.get("id") not in self._streamed and block.get("text"):
+                    self.parts.append(block["text"])  # no partial events for this message: take it whole
+                    self._emit()
+                elif block.get("type") == "tool_use":
+                    from .policy import redact
+                    step = {"tool": block.get("name", ""), "input": redact(json.dumps(block.get("input"),
+                                                                                     default=str))[:400],
+                            "ok": None, "denied": False, "result": ""}
+                    self._by_id[block.get("id")] = step
+                    self.steps.append(step)
+                    if self.on_tool:
+                        self.on_tool(step)
+        elif t == "user":
+            content = (ev.get("message") or {}).get("content") or []
+            for block in content if isinstance(content, list) else []:
+                step = self._by_id.get(block.get("tool_use_id")) if isinstance(block, dict) else None
+                if not step or block.get("type") != "tool_result":
+                    continue
+                body = block.get("content")
+                if isinstance(body, list):
+                    body = " ".join(str(b.get("text", "")) for b in body if isinstance(b, dict))
+                body = str(body or "")
+                from .policy import redact
+                step["ok"] = not block.get("is_error")
+                step["denied"] = "NEEDS_APPROVAL" in body or "safety policy" in body
+                step["result"] = redact(body)[:300]
+        elif t == "rate_limit_event":
+            self.rate_limit = ev.get("rate_limit_info")
+        elif t == "result":
+            self.result = ev
+            if not self.text and ev.get("result") and not ev.get("is_error"):
+                self.parts.append(str(ev["result"]))
+                self._emit()
+            return True
+        return False
+
+    def error(self):
+        """(kind, message) when the turn failed, else None."""
+        r = self.result
+        if r is None:
+            return "error", "no result"
+        if r.get("is_error") or r.get("subtype") not in (None, "success"):
+            msg = str(r.get("result") or r.get("terminal_reason") or r.get("subtype") or "unknown error")
+            return error_kind(msg), msg[:300]
+        return None
+
+    def main_model(self):
+        per = (self.result or {}).get("modelUsage") or {}
+        return max(per, key=lambda k: per[k].get("outputTokens", 0)) if per else self.model
+
+
+def stream(prompt, model="sonnet", system=None, effort="low", purpose="stream", timeout=300, on_text=None,
+           popen=None):
+    """One lean headless call that streams: on_text(full_text_so_far) fires as words arrive. Plain text, no
+    JSON schema. Returns {'text', 'usage', 'model_id', 'first_text_s', 'total_s'}; raises ClaudeError."""
+    claude = find_claude() if popen is None else "claude"
+    if not claude:
+        raise ClaudeError("Claude Code CLI not found. Set CLAUDE_BIN.", "missing")
+    wanted = MODEL_IDS.get(model, model)
+    cmd = [claude, "-p", "--model", wanted, "--effort", effort, *STREAM_FLAGS, *LEAN_FLAGS]
+    if system:
+        cmd += ["--system-prompt", system]
+    t0 = time.time()
+    parser = StreamParser(on_text=on_text)
+    ok, kind = False, None
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = (popen or subprocess.Popen)(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                               stderr=subprocess.PIPE, text=True, env=clean_env(), cwd=tmp,
+                                               encoding="utf-8", errors="replace")
+            proc.stdin.write(prompt)
+            proc.stdin.close()
+            deadline = t0 + timeout
+            for line in proc.stdout:
+                if parser.feed(line):
+                    break
+                if time.time() > deadline:
+                    proc.kill()
+                    kind = "timeout"
+                    raise ClaudeError(f"Claude CLI timed out after {timeout}s", "timeout")
+            try:
+                proc.wait(timeout=10)
+            except Exception:
+                proc.kill()
+        err = parser.error()
+        if err:
+            kind = err[0]
+            raise ClaudeError(err[1], kind, parse_reset_hours(err[1]))
+        ok = True
+        return {"text": parser.text, "usage": (parser.result or {}).get("usage") or {},
+                "model_id": parser.main_model() or wanted,
+                "first_text_s": round(parser.first_text_at - t0, 2) if parser.first_text_at else None,
+                "total_s": round(time.time() - t0, 2)}
+    except ClaudeError as e:
+        if e.kind == "limit":
+            quota.note_limit_hit(reset_in_hours=e.reset_in_hours)
+        raise
+    finally:
+        quota.record(wanted, (parser.result or {}).get("usage") or {}, purpose, headless=True, ok=ok,
+                     error_kind=kind)
+
+
 def start_session(prompt, model, cwd, log_path, system_append=None, permission_mode="bypassPermissions"):
     """Launch a full Claude Code run (tools on, session saved) as a detached background process."""
     claude = find_claude()

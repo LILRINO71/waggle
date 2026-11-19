@@ -21,6 +21,18 @@ PRAISE = re.compile(r"^\s*(thanks?|thank you|perfect|great|awesome|nice|that wor
                     r"good job|love it|👍)\b", re.I)
 
 
+# The per-turn truth record (turn engine): who really answered and why, how fast, and whether it arrived.
+TRUTH_COLUMNS = [("answerer", "TEXT"),        # claude | local-fallback | local | none
+                 ("fallback_reason", "TEXT"), # why Claude did not answer (limit, missing CLI, crash, hook skipped)
+                 ("first_text_s", "REAL"),    # message received -> first words shown to the user
+                 ("total_s", "REAL"),         # message received -> final text delivered
+                 ("delivered", "INTEGER"),    # 1 delivered, 0 not (queued in the outbox), NULL unknown
+                 ("delivery", "TEXT"),        # stream | block | outbox | notify | failed
+                 ("outcome", "TEXT"),         # answered | partial | ack | failed
+                 ("chat", "TEXT")]
+TEXT_CAP = 20000  # the transcript keeps whole replies (the old 4000-char cut lost long answers)
+
+
 def _db():
     con = sqlite3.connect(data_path("traces.db"), timeout=10)
     con.execute("""CREATE TABLE IF NOT EXISTS traces (
@@ -29,6 +41,10 @@ def _db():
         tokens TEXT, feedback INTEGER DEFAULT 0, correction TEXT, outcome REAL, skills TEXT, extra TEXT)""")
     con.execute("""CREATE TABLE IF NOT EXISTS steps (
         trace_id INTEGER, idx INTEGER, tool TEXT, input TEXT, ok INTEGER, denied INTEGER, result TEXT)""")
+    have = {r[1] for r in con.execute("PRAGMA table_info(traces)")}
+    for col, typ in TRUTH_COLUMNS:
+        if col not in have:
+            con.execute(f"ALTER TABLE traces ADD COLUMN {col} {typ}")
     con.execute("CREATE INDEX IF NOT EXISTS traces_session ON traces(session, time)")
     con.execute("CREATE INDEX IF NOT EXISTS steps_trace ON steps(trace_id)")
     try:
@@ -44,16 +60,21 @@ def _has_fts(con):
 
 
 def record(request, *, session="", platform="", route="", model="", specialist="", agent="", latency_s=0.0,
-           ok=True, error="", reply="", tokens=None, steps=None, skills_used=None, extra=None):
-    """Store one finished turn; returns its id."""
+           ok=True, error="", reply="", tokens=None, steps=None, skills_used=None, extra=None, answerer=None,
+           fallback_reason=None, first_text_s=None, total_s=None, delivered=None, delivery=None, outcome=None,
+           chat=None):
+    """Store one finished turn; returns its id. The truth fields (answerer...chat) are set by the turn engine
+    and by the plugin for turns the local model answered; older callers leave them empty."""
     con = _db()
     cur = con.execute(
         """INSERT INTO traces (time, session, platform, request, route, model, specialist, agent, latency_s, ok,
-           error, reply, tokens, skills, extra) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (time.time(), session or "", platform or "", redact(request or "")[:4000], route or "", model or "",
+           error, reply, tokens, skills, extra, answerer, fallback_reason, first_text_s, total_s, delivered,
+           delivery, outcome, chat) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (time.time(), session or "", platform or "", redact(request or "")[:TEXT_CAP], route or "", model or "",
          specialist or "", agent or "", float(latency_s or 0), 1 if ok else 0, redact(error or "")[:500],
-         redact(reply or "")[:4000], json.dumps(tokens or {}), ",".join(skills_used or []),
-         json.dumps(extra or {}, default=str)))
+         redact(reply or "")[:TEXT_CAP], json.dumps(tokens or {}), ",".join(skills_used or []),
+         json.dumps(extra or {}, default=str), answerer, (fallback_reason or None) and redact(fallback_reason)[:500],
+         first_text_s, total_s, None if delivered is None else int(bool(delivered)), delivery, outcome, chat))
     tid = cur.lastrowid
     for i, s in enumerate(steps or []):
         con.execute("INSERT INTO steps VALUES (?,?,?,?,?,?,?)",
@@ -62,7 +83,7 @@ def record(request, *, session="", platform="", route="", model="", specialist="
                      redact(str(s.get("result", "")))[:300]))
     if _has_fts(con):
         con.execute("INSERT INTO traces_fts(rowid, request, reply) VALUES (?,?,?)",
-                    (tid, redact(request or "")[:4000], redact(reply or "")[:4000]))
+                    (tid, redact(request or "")[:TEXT_CAP], redact(reply or "")[:TEXT_CAP]))
     con.commit()
     con.close()
     return tid
@@ -202,6 +223,57 @@ def session_turns(session, n=8, within_s=12 * 3600):
     return [(r[0] or "", r[1] or "") for r in reversed(rows)]
 
 
+def chat_transcript(chat, n=8, within_s=3 * 86400, max_chars=12000):
+    """The last n exchanges of one chat as plain "User: ... / Waggle: ..." text, oldest first, whole replies.
+    Seeds a fresh Claude session so the conversation continues after its process or session is replaced."""
+    if not chat:
+        return ""
+    con = _db()
+    rows = con.execute("SELECT request, reply FROM traces WHERE chat=? AND time>? AND reply IS NOT NULL "
+                       "AND reply != '' ORDER BY id DESC LIMIT ?", (chat, time.time() - within_s, n)).fetchall()
+    con.close()
+    text = "\n\n".join(f"User: {r[0]}\nWaggle: {r[1]}" for r in reversed(rows))
+    return text[-max_chars:] if len(text) > max_chars else text
+
+
+def engine_stats(n=50, platform="telegram", since=0.0):
+    """The turn engine's scorecard over the last n user turns on `platform` (all platforms when empty):
+    share answered by Claude, median time to first words, lost answers (written but never delivered: must be 0),
+    fallbacks by reason."""
+    con = _db()
+    con.row_factory = sqlite3.Row
+    q = ("SELECT id, answerer, fallback_reason, first_text_s, total_s, delivered, delivery, outcome, extra FROM traces "
+         "WHERE answerer IS NOT NULL AND answerer != 'waggle' AND time>=?")
+    params = [since]
+    if platform:
+        q += " AND platform=?"
+        params.append(platform)
+    rows = [dict(r) for r in con.execute(q + " ORDER BY id DESC LIMIT ?", (*params, n))]
+    con.close()
+    if not rows:
+        return {"turns": 0, "claude_share": None, "median_first_text_s": None, "lost": 0, "fallbacks": {}}
+    from . import chat_store
+    lost = 0
+    for r in rows:
+        if r["delivered"] == 0:
+            try:
+                oid = json.loads(r["extra"] or "{}").get("outbox")
+            except ValueError:
+                oid = None
+            item = chat_store.get_item(oid) if oid else None
+            if not item or item.get("state") != "delivered":
+                lost += 1
+    firsts = sorted(r["first_text_s"] for r in rows if r["first_text_s"] is not None)
+    falls = {}
+    for r in rows:
+        if r["answerer"] != "claude":
+            key = (r["fallback_reason"] or "unknown").split(":")[0][:60]
+            falls[key] = falls.get(key, 0) + 1
+    return {"turns": len(rows), "claude_share": round(sum(r["answerer"] == "claude" for r in rows) / len(rows), 3),
+            "median_first_text_s": firsts[len(firsts) // 2] if firsts else None, "lost": lost,
+            "unanswered": sum(r["answerer"] == "none" for r in rows), "fallbacks": falls}
+
+
 def recent_elsewhere(session, within_s=7200, n=4):
     """The last few exchanges from OTHER sessions (voice, Telegram, terminal) in the last couple of hours, so a
     conversation started on one interface continues on another."""
@@ -216,8 +288,8 @@ def recent_elsewhere(session, within_s=7200, n=4):
     lines = ["<recent_elsewhere>", "What the user and Waggle said shortly before on another interface (context only):"]
     for r in reversed(rows):
         where = r.get("platform") or "chat"
-        lines.append(f"[{time.strftime('%H:%M', time.localtime(r['time']))} {where}] User: {r['request'][:240]}\n"
-                     f"Waggle: {(r['reply'] or '')[:360]}")
+        lines.append(f"[{time.strftime('%H:%M', time.localtime(r['time']))} {where}] User: {r['request'][:1500]}\n"
+                     f"Waggle: {(r['reply'] or '')[:2500]}")
     lines.append("</recent_elsewhere>")
     return "\n".join(lines)
 
