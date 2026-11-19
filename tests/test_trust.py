@@ -485,3 +485,28 @@ def test_ops_view_for_the_command_center(settings, quiet):
     assert op["active"] == [] and op["workers"] == []
     st, detail, _ = doctor.check_background(settings)
     assert "1 waiting approval" in detail
+
+
+def test_work_the_user_just_started_does_not_wait_for_them_to_stop_chatting(settings, quiet):
+    oid = objectives.create("goal goal goal", asker=_planner([STEP]), settings=settings)
+    budget.note_interactive()  # the message that created it
+    ran = []
+    assert objectives.work(oid, settings=settings, run_fn=_ok_runner(ran), verify_fn=lambda *a, **k: (True, ""),
+                           user=True) == "done"
+    assert len(ran) == 1
+
+
+def test_supervisor_work_sleeps_off_a_short_wait_in_the_worker(settings, quiet):
+    oid = objectives.create("goal goal goal", asker=_planner([STEP]), settings=settings)
+    budget.note_interactive()
+    slept = []
+
+    def fake_sleep(s):
+        slept.append(s)
+        budget.note_interactive(time.time() - 3600)  # the user went quiet
+        con = objectives._db()
+        objectives._set(con, oid, deferred_until=None)
+        con.commit()
+    out = objectives.work(oid, settings=settings, run_fn=_ok_runner([]), verify_fn=lambda *a, **k: (True, ""),
+                          user=False, sleep=fake_sleep)
+    assert out == "done" and slept and slept[0] <= objectives.SHORT_WAIT_S + 1

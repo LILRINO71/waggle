@@ -254,7 +254,7 @@ def run_step(oid, idx=None, settings=None, run_fn=None, verify_fn=None):
         ok, why = quota.can_escalate(model, s)
     if not ok:
         _, _, until = budget.check(model, "objective", s)
-        _defer(con, oid, why, max(until, now + 300))
+        _defer(con, oid, why, max(until, now + 60))
         con.commit()
         con.close()
         return "waiting_budget"
@@ -608,30 +608,39 @@ def supervise(kick_fn=None, now=None):
     for r in rows:
         if _held(r, now) or (r["deferred_until"] or 0) > now:
             continue
-        (kick_fn or kick)(r["id"])
+        (kick_fn or (lambda o: kick(o, user=False)))(r["id"])
         started.append(r["id"])
     return started
 
 
-def kick(oid):
-    """Start working on an objective now, in a detached process (the chat isn't blocked)."""
+def kick(oid, user=True):
+    """Start working on an objective now, in a detached process (the chat isn't blocked). user=True when the user
+    just started or approved it (it then doesn't wait for them to stop chatting); the supervisor passes False."""
     flags = 0
     if os.name == "nt":
         flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    env = dict(os.environ, PYTHONPATH=repo + os.pathsep + os.environ.get("PYTHONPATH", ""))
+    env = dict(os.environ, PYTHONPATH=repo + os.pathsep + os.environ.get("PYTHONPATH", ""),
+               WAGGLE_USER_KICK="1" if user else "")
     subprocess.Popen([sys.executable, "-m", "waggle.objectives", "work", oid], creationflags=flags, env=env,
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True)
 
 
-def work(oid, max_steps=MAX_STEPS * MAX_ATTEMPTS, settings=None, run_fn=None, verify_fn=None):
+SHORT_WAIT_S = 180  # a budget wait this short (chat, busy workers) is slept off in the worker
+MAX_WAIT_S = 600
+
+
+def work(oid, max_steps=MAX_STEPS * MAX_ATTEMPTS, settings=None, run_fn=None, verify_fn=None, user=None,
+         sleep=time.sleep):
     """Keep running steps of one objective until it finishes, blocks, waits, or runs out of budget."""
     if not claim(oid):
         return "busy"
-    last = None
+    if user is None:
+        user = os.environ.get("WAGGLE_USER_KICK") == "1"
+    last, waited = None, 0.0
     try:
-        with budget.background("objective", oid):
-            for _ in range(max_steps):
+        with budget.background("objective", oid, user_started=user):
+            for _ in range(max_steps + 4):
                 renew(oid)
                 con = _db()
                 row = con.execute("SELECT status FROM objectives WHERE id=?", (oid,)).fetchone()
@@ -646,7 +655,18 @@ def work(oid, max_steps=MAX_STEPS * MAX_ATTEMPTS, settings=None, run_fn=None, ve
                 if st is None:  # finished, cancelled or nothing runnable
                     break
                 last = st
-                if st in ("blocked", "waiting_approval", "waiting_budget"):
+                if st == "waiting_budget":
+                    con = _db()
+                    until = con.execute("SELECT deferred_until FROM objectives WHERE id=?", (oid,)).fetchone()[0]
+                    con.close()
+                    pause = (until or 0) - time.time()
+                    if 0 < pause <= SHORT_WAIT_S and waited + pause <= MAX_WAIT_S:
+                        renew(oid)
+                        sleep(pause + 1)
+                        waited += pause + 1
+                        continue
+                    break
+                if st in ("blocked", "waiting_approval"):
                     break
     finally:
         release(oid)

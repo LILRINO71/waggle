@@ -47,9 +47,13 @@ class Deferred(Exception):
 # ---- context: who is spending ---------------------------------------------------------------------
 
 @contextlib.contextmanager
-def background(purpose="background", objective=None, step=None):
-    """Mark everything inside as background work (cron jobs, objective workers)."""
-    tok = _ctx.set({"kind": "background", "purpose": purpose, "objective": objective, "step": step, "ticket": None})
+def background(purpose="background", objective=None, step=None, user_started=None):
+    """Mark everything inside as background work (cron jobs, objective workers). user_started: the user just asked
+    for this work (started or approved it), so it doesn't wait for the user to stop chatting."""
+    if user_started is None:
+        user_started = bool((_ctx.get() or {}).get("user_started"))
+    tok = _ctx.set({"kind": "background", "purpose": purpose, "objective": objective, "step": step, "ticket": None,
+                    "user_started": user_started})
     try:
         yield _ctx.get()
     finally:
@@ -204,7 +208,8 @@ def check(model, purpose="", settings=None, now=None, window_used=None, con=None
         running = len([r for r in live if r["pid"] != os.getpid()])
         if running >= s.background_max_workers:
             return False, f"{running} background Claude calls already running (max {s.background_max_workers})", now + 120
-        if s.interactive_yield_s and now - _last_interactive() < s.interactive_yield_s:
+        if (s.interactive_yield_s and not current().get("user_started")
+                and now - _last_interactive() < s.interactive_yield_s):
             return False, "the user is chatting right now; background work waits", now + s.interactive_yield_s
         from . import quota
         st = quota._state()
@@ -311,7 +316,7 @@ def spend(model, purpose="objective", objective=None, step=None, settings=None):
 def using(ticket, purpose="objective", objective=None, step=None):
     """Run inside an existing reservation (the caller releases it)."""
     tok = _ctx.set({"kind": "background", "purpose": purpose, "objective": objective, "step": step,
-                    "ticket": ticket})
+                    "ticket": ticket, "user_started": bool((_ctx.get() or {}).get("user_started"))})
     try:
         yield ticket
     finally:
