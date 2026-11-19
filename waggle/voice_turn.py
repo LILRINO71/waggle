@@ -22,7 +22,8 @@ DEFAULT_FIXES = {
 }
 
 VOICE_HINT = ("<voice_message>The user said this out loud; it reached you through speech recognition, so names and "
-              "terms can be misheard (a project or robot name can come out as similar-sounding words). Work out what "
+              "terms can be misheard (a project or robot name can come out as similar-sounding words, and "
+              "\"ethics\" next to robots or a team usually means \"FTC\"). Work out what "
               "they meant from the conversation and their notes; ask one short question only if it is genuinely "
               "unclear. Your reply may be read aloud, so write natural spoken sentences: lead with the answer, keep "
               "it short unless they asked for detail, and leave out tables, code blocks and file paths unless they "
