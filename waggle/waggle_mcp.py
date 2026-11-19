@@ -139,7 +139,7 @@ def t_send_to_me(args):
     import os
     import subprocess
     from pathlib import Path
-    from . import notify
+    from waggle import notify
     text = str(args.get("text") or "").strip()
     path = str(args.get("file") or "").strip()
     if path:
