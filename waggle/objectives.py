@@ -9,10 +9,14 @@ Lifecycle: planning -> active -> (waiting_approval | blocked | paused) -> done /
               the plan and the results of the steps it depends on. Every step result is checkpointed to SQLite.
 3. verify     a cheap Haiku check compares the result with the step's done-when; a miss is retried once with the
               gap spelled out, then the objective is marked blocked and the user is told why.
-4. approvals  a step that hits an approval pauses the objective (waiting_approval); "yes" grants it and resumes.
-5. finish     Haiku writes a completion report -> vault note Objectives/<title>.md, project log, phone message.
+4. approvals  a step that hits an approval pauses the objective (waiting_approval) and the user gets one code per
+              action; "approve <code>" grants exactly that call once and resumes. Expired or denied -> blocked.
+5. budget     every step reserves room in the background budget first (budget.py); when there is none the
+              objective is parked (deferred_until) and the supervisor picks it up again after the reset.
+6. finish     Haiku (or the local model when Claude can't) writes the report -> vault note Objectives/<title>.md,
+              project log, phone message. Exactly once.
 State lives in ~/.waggle/objectives.db; the 5-minute cron tick (and gateway start) resumes anything in flight,
-so a crash, closed window or reboot only costs the step that was running (it is re-run).
+so a crash, closed window or reboot only costs the step that was running (it is re-run, told it was interrupted).
 """
 import json
 import os
@@ -23,7 +27,7 @@ import sys
 import time
 import uuid
 
-from . import agents, claude_cli, events, notify, projects, quota, vault
+from . import agents, budget, claude_cli, events, notify, projects, quota, vault
 from .config import Settings, data_path
 
 ACTIVE = ("planning", "active")
@@ -31,6 +35,12 @@ OPEN = ("planning", "active", "waiting_approval", "blocked", "paused")
 MAX_STEPS = 8
 MAX_ATTEMPTS = 2
 STALE_STEP_S = 3600
+LEASE_S = 20 * 60  # worker lease, renewed before each step; an agent run is capped at 15 min
+MAX_INTERRUPTS = 3  # a step that dies mid-run this often blocks instead of looping
+VERIFY_RETRY_S = 15 * 60
+MIGRATIONS = {"objectives": (("lease_until", "REAL"), ("deferred_until", "REAL"), ("defer_reason", "TEXT"),
+                             ("approval_ids", "TEXT")),
+              "steps": (("interrupts", "INTEGER DEFAULT 0"), ("approved", "TEXT"))}
 
 
 def _db():
@@ -45,6 +55,14 @@ def _db():
         started REAL, finished REAL, PRIMARY KEY (objective_id, idx));
     CREATE TABLE IF NOT EXISTS log (objective_id TEXT, time REAL, kind TEXT, text TEXT);
     """)
+    for table, cols in MIGRATIONS.items():  # databases from before these columns existed
+        have = {r[1] for r in con.execute(f"PRAGMA table_info({table})")}
+        for name, typ in cols:
+            if name not in have:
+                try:
+                    con.execute(f"ALTER TABLE {table} ADD COLUMN {name} {typ}")
+                except sqlite3.OperationalError:
+                    pass  # another process added it first
     return con
 
 
@@ -102,7 +120,8 @@ def plan(oid, asker=None, settings=None, context=""):
     obj = con.execute("SELECT * FROM objectives WHERE id=?", (oid,)).fetchone()
     ok, why = quota.can_escalate(s.deep_model, s)
     if not ok:
-        _set(con, oid, status="planning", error=f"waiting for budget: {why}")
+        _set(con, oid, status="planning", error=f"waiting for budget: {why}",
+             deferred_until=time.time() + (600 if budget.is_background() else 0))
         con.commit()
         con.close()
         return False
@@ -115,6 +134,18 @@ def plan(oid, asker=None, settings=None, context=""):
         steps = (d.get("steps") or [])[:MAX_STEPS]
         if not steps:
             raise ValueError("planner returned no steps")
+    except claude_cli.ClaudeError as e:
+        if e.kind in ("budget", "limit", "timeout"):  # not the plan's fault: try again later
+            _set(con, oid, status="planning", error=f"waiting for budget: {e}", deferred_until=time.time() + 1800)
+            _log(con, oid, "waiting", f"planning: {e}")
+            con.commit()
+            con.close()
+            return False
+        _set(con, oid, status="failed", error=f"planning failed: {e}")
+        _log(con, oid, "error", f"planning failed: {e}")
+        con.commit()
+        con.close()
+        return False
     except Exception as e:
         _set(con, oid, status="failed", error=f"planning failed: {e}")
         _log(con, oid, "error", f"planning failed: {e}")
@@ -129,7 +160,7 @@ def plan(oid, asker=None, settings=None, context=""):
                     "VALUES (?,?,?,?,?,?,?,?)", (oid, i, st["title"][:120], st["detail"][:3000], agent,
                                                  json.dumps(deps), st.get("done_when", "")[:600], "pending"))
     title = (d.get("title") or obj["title"])[:80]
-    _set(con, oid, status="active", title=title, error=None)
+    _set(con, oid, status="active", title=title, error=None, deferred_until=None)
     _log(con, oid, "planned", f"{len(steps)} steps")
     con.commit()
     con.close()
@@ -138,11 +169,25 @@ def plan(oid, asker=None, settings=None, context=""):
 
 
 # ---- running -------------------------------------------------------------------------------------
+#
+# Step states: pending -> running -> verifying -> done | pending (retry) | failed
+#   running    claimed by exactly one worker (conditional UPDATE); a dead worker's step goes back to pending and
+#              its next run is told it was interrupted (so it checks what already exists instead of redoing it)
+#   verifying  the work is finished and its result saved; only the check is left. A crash here never re-runs the
+#              work, and a check that can't run (budget, Claude down) waits instead of passing the step unchecked.
+# Objective worker: one at a time, held by a lease (worker_pid + lease_until) renewed before every step, so a
+# duplicate cron run or a reused PID after a reboot can't start a second worker.
 
 def runnable(con, oid):
     rows = con.execute("SELECT * FROM steps WHERE objective_id=? ORDER BY idx", (oid,)).fetchall()
     done = {r["idx"] for r in rows if r["status"] in ("done", "skipped")}
     return [r for r in rows if r["status"] == "pending" and set(json.loads(r["depends"] or "[]")) <= done]
+
+
+INTERRUPTED_NOTE = ("\nAn earlier run of this step was interrupted before it finished. Some of its work may already "
+                    "exist (files, notes, drafts). Check the current state first and continue from there. Never repeat "
+                    "an action that can't be undone (sending, posting, deleting, buying) unless you have confirmed it "
+                    "did not already happen.\n")
 
 
 def _step_prompt(con, obj, step):
@@ -155,6 +200,11 @@ def _step_prompt(con, obj, step):
     retry = ""
     if step["attempts"] and step["verify"]:
         retry = f"\nA previous attempt was judged incomplete: {step['verify']}\nFix exactly that this time.\n"
+    if step["interrupts"]:
+        retry += INTERRUPTED_NOTE
+    if step["approved"]:
+        retry += (f"\nThe user approved exactly these actions for this step: {step['approved']}. Make those calls "
+                  "with the same arguments; anything else that needs approval will be asked again.\n")
     return (f"You are working on step {step['idx']} of a longer objective for the user.\n\nOBJECTIVE: {obj['goal']}\n"
             + (f"PROJECT: {obj['project']}\n" if obj["project"] else "")
             + "\nPLAN:\n" + "\n".join(plan_lines)
@@ -162,6 +212,12 @@ def _step_prompt(con, obj, step):
             + f"\n\nYOUR STEP: {step['title']}\n{step['detail']}\nDONE WHEN: {step['done_when']}\n{retry}"
             + "\nDo this step only (later steps are handled separately). End with a concise report of what you did "
               "and the concrete results (facts, file paths, links) the next steps need.")
+
+
+def _defer(con, oid, reason, until):
+    """Budget or verification has to wait: park the objective (no worker spawns) until `until`."""
+    _set(con, oid, deferred_until=until, defer_reason=str(reason)[:300])
+    _log(con, oid, "waiting", f"{reason} (retry after {time.strftime('%H:%M', time.localtime(until))})")
 
 
 def run_step(oid, idx=None, settings=None, run_fn=None, verify_fn=None):
@@ -172,8 +228,17 @@ def run_step(oid, idx=None, settings=None, run_fn=None, verify_fn=None):
     if not obj or obj["status"] != "active":
         con.close()
         return None
-    cands = runnable(con, oid)
-    step = next((r for r in cands if idx is None or r["idx"] == idx), None)
+    now = time.time()
+    if (obj["deferred_until"] or 0) > now:
+        con.close()
+        return "waiting_budget"
+    # Work already done and saved, only its check left: verify it, never redo the work.
+    ver = con.execute("SELECT idx FROM steps WHERE objective_id=? AND status='verifying' ORDER BY idx",
+                      (oid,)).fetchone()
+    if ver and (idx is None or ver["idx"] == idx):
+        con.close()
+        return _verify_and_record(oid, ver["idx"], s, verify_fn)
+    step = next((r for r in runnable(con, oid) if idx is None or r["idx"] == idx), None)
     if step is None:
         con.close()
         return None
@@ -184,46 +249,109 @@ def run_step(oid, idx=None, settings=None, run_fn=None, verify_fn=None):
         _tell(oid, f"Objective '{obj['title']}' stopped: it used all {obj['max_runs']} step runs. Say 'resume "
                    f"objective {oid}' to give it more.", urgent=False)
         return "blocked"
-    model = agents.model_for(step["agent"], s)
-    ok, why = quota.can_escalate(model, s)
+    with budget.background("objective", oid, step["idx"]):
+        model = budget.choose_model(agents.model_for(step["agent"], s), step["agent"], s, oid, step["idx"])
+        ok, why = quota.can_escalate(model, s)
     if not ok:
-        _log(con, oid, "waiting", f"budget: {why}")
+        _, _, until = budget.check(model, "objective", s)
+        _defer(con, oid, why, max(until, now + 300))
         con.commit()
         con.close()
         return "waiting_budget"
+    try:
+        ticket = budget.reserve(model, "objective", oid, step["idx"], s)
+    except budget.Deferred as e:
+        _defer(con, oid, e.reason, max(e.until, now + 60))
+        con.commit()
+        con.close()
+        return "waiting_budget"
+    claimed = con.execute("UPDATE steps SET status='running', started=?, attempts=attempts+1 WHERE objective_id=? "
+                          "AND idx=? AND status='pending'", (now, oid, step["idx"])).rowcount
+    if not claimed:  # another worker got there first
+        con.commit()
+        con.close()
+        budget.release(ticket)
+        return None
     prompt = _step_prompt(con, obj, step)
-    _set_step(con, oid, step["idx"], status="running", started=time.time(), attempts=step["attempts"] + 1)
-    _set(con, oid, runs=obj["runs"] + 1)
-    _log(con, oid, "step_start", f"{step['idx']}. {step['title']} ({step['agent']})")
+    _set(con, oid, runs=obj["runs"] + 1, deferred_until=None, defer_reason=None)
+    _log(con, oid, "step_start", f"{step['idx']}. {step['title']} ({step['agent']}, {model})")
     con.commit()
     con.close()
 
-    res = (run_fn or agents.run)(step["agent"], prompt, session=f"objective-{oid}", settings=s)
+    try:
+        with budget.using(ticket, "objective", oid, step["idx"]):
+            res = (run_fn or agents.run)(step["agent"], prompt, session=f"objective-{oid}", settings=s, model=model,
+                                         purpose="objective")
+    finally:
+        budget.release(ticket)
     con = _db()
     text = (res.text or "").strip()
-    if res.approvals:
-        _set_step(con, oid, step["idx"], status="pending", result=text[:6000])
-        _set(con, oid, status="waiting_approval")
-        _log(con, oid, "approval", "; ".join(a["reason"] for a in res.approvals))
+    if getattr(res, "deferred", 0):  # the budget guard stopped it before it started: not a real attempt
+        _set_step(con, oid, step["idx"], status="pending", attempts=step["attempts"])
+        _defer(con, oid, res.error, res.deferred)
         con.commit()
         con.close()
-        _tell(oid, f"Objective '{obj['title']}', step {step['idx']} ({step['title']}) needs your OK: "
-                   + "; ".join(a["reason"] for a in res.approvals[:3]) + ". Reply \"yes\" to allow it.", urgent=False)
+        return "waiting_budget"
+    if res.approvals:
+        _set_step(con, oid, step["idx"], status="pending", result=text[:6000])
+        _set(con, oid, status="waiting_approval",
+             approval_ids=json.dumps({"step": step["idx"], "ids": [a.get("id") for a in res.approvals]}))
+        _log(con, oid, "approval", "; ".join(f"[{a.get('code', '?')}] {a['reason']}" for a in res.approvals))
+        con.commit()
+        con.close()
+        _tell(oid, approval_message(obj, step, res.approvals), urgent=False)
         return "waiting_approval"
     if not res.ok or not text:
-        status = _fail_or_retry(con, oid, step, f"agent error: {res.error or 'no result'}")
+        status = _fail_or_retry(con, oid, step, f"agent error: {res.error or 'no result'}", step["attempts"] + 1)
         con.commit()
         con.close()
         return status
-    complete, missing = (verify_fn or agents.verify)(f"{step['title']}: {step['detail']}\nDone when: "
-                                                     f"{step['done_when']}", text, settings=s)
+    # Checkpoint: the work is saved before it is judged.
+    _set_step(con, oid, step["idx"], status="verifying", result=text[:8000], finished=time.time())
+    _log(con, oid, "step_result", f"{step['idx']}. {step['title']}: result saved, verifying")
+    con.commit()
+    con.close()
+    return _verify_and_record(oid, step["idx"], s, verify_fn)
+
+
+def approval_message(obj, step, approvals):
+    """Exactly which objective, which step and which action, with a code per action and its expiry."""
+    from . import policy
+    lines = []
+    for a in approvals[:5]:
+        if a.get("code") and a.get("created"):
+            lines.append("• " + policy.describe(a))
+        else:
+            lines.append(f"• {a.get('summary') or ''} ({a['reason']})".replace("•  (", "• ("))
+    codes = [a.get("code") for a in approvals if a.get("code")]
+    how = (f'Reply "approve {codes[0]}" to allow it once, or "deny {codes[0]}".' if len(codes) == 1 else
+           f'Reply "approve <code>" for each one you allow (e.g. "approve {codes[0]}"), or "deny <code>".'
+           if codes else 'Reply "approve" to allow it.')
+    return (f"Objective '{obj['title']}' (id {obj['id']}), step {step['idx']} ({step['title']}) needs your OK before "
+            f"it can:\n" + "\n".join(lines) + f"\n{how} Nothing else in this objective runs until you answer.")
+
+
+def _verify_and_record(oid, idx, s, verify_fn=None):
+    con = _db()
+    step = con.execute("SELECT * FROM steps WHERE objective_id=? AND idx=?", (oid, idx)).fetchone()
+    task = f"{step['title']}: {step['detail']}\nDone when: {step['done_when']}"
+    with budget.background("objective-verify", oid, idx):
+        if verify_fn:
+            complete, missing = verify_fn(task, step["result"] or "", settings=s)
+        else:
+            complete, missing = agents.verify(task, step["result"] or "", settings=s, strict=True)
+    if complete is None:  # the check couldn't run: keep the saved result and try the check again later
+        _defer(con, oid, f"verification of step {idx} waiting: {missing}", time.time() + VERIFY_RETRY_S)
+        con.commit()
+        con.close()
+        return "waiting_budget"
     if complete:
-        _set_step(con, oid, step["idx"], status="done", result=text[:8000], finished=time.time(), verify="")
-        _log(con, oid, "step_done", f"{step['idx']}. {step['title']}")
+        _set_step(con, oid, idx, status="done", verify="")
+        _log(con, oid, "step_done", f"{idx}. {step['title']}")
         status = "done"
     else:
-        _set_step(con, oid, step["idx"], result=text[:8000], verify=missing[:600])
-        status = _fail_or_retry(con, oid, step, f"incomplete: {missing}")
+        _set_step(con, oid, idx, verify=(missing or "")[:600])
+        status = _fail_or_retry(con, oid, step, f"incomplete: {missing}", step["attempts"])
     con.commit()
     remaining = con.execute("SELECT COUNT(*) FROM steps WHERE objective_id=? AND status NOT IN ('done','skipped')",
                             (oid,)).fetchone()[0]
@@ -234,8 +362,7 @@ def run_step(oid, idx=None, settings=None, run_fn=None, verify_fn=None):
     return status
 
 
-def _fail_or_retry(con, oid, step, why):
-    attempts = step["attempts"] + 1
+def _fail_or_retry(con, oid, step, why, attempts):
     if attempts < MAX_ATTEMPTS:
         _set_step(con, oid, step["idx"], status="pending", verify=why[:600])
         _log(con, oid, "retry", f"step {step['idx']}: {why}")
@@ -254,21 +381,46 @@ leading with the outcome, then the key results with any file paths or links, the
 Use only the step results given."""
 
 
+def _report(goal, body, s, asker=None):
+    """Haiku writes the report; if Claude can't (budget, limit) the local model does; last resort the final result."""
+    prompt = f"Goal: {goal}\n\n{body}"
+    try:
+        with budget.background("objective-report"):
+            return (asker or claude_cli.ask)(prompt, model=s.router_model, system=REPORT_SYSTEM, purpose="report",
+                                             effort="low")["text"].strip()
+    except Exception as e:
+        budget.log_decision("local", f"report written locally: {e}"[:200])
+    try:
+        from . import ollama
+        text = ollama.chat([{"role": "system", "content": REPORT_SYSTEM}, {"role": "user", "content": prompt[:12000]}],
+                           settings=s, timeout=180).strip()
+        budget.record(s.local_model, {}, "report", local=True)
+        return text
+    except Exception:
+        return ""
+
+
 def finish(oid, settings=None, asker=None):
+    """Write the report and mark done. Idempotent: a second call (or a second worker) never re-notifies."""
     s = settings or Settings.load()
     con = _db()
     obj = con.execute("SELECT * FROM objectives WHERE id=?", (oid,)).fetchone()
+    if not obj or obj["status"] == "done":
+        con.close()
+        return obj["report"] if obj else None
     rows = con.execute("SELECT idx, title, result FROM steps WHERE objective_id=? ORDER BY idx", (oid,)).fetchall()
+    con.close()
     body = "\n\n".join(f"Step {r['idx']} {r['title']}:\n{(r['result'] or '')[:2500]}" for r in rows)
-    try:
-        report = (asker or claude_cli.ask)(f"Goal: {obj['goal']}\n\n{body}", model=s.router_model,
-                                           system=REPORT_SYSTEM, purpose="report", effort="low")["text"].strip()
-    except Exception:
-        report = (rows[-1]["result"] or "Done.")[:1500] if rows else "Done."
-    _set(con, oid, status="done", report=report)
-    _log(con, oid, "done", report[:500])
+    report = _report(obj["goal"], body, s, asker) or ((rows[-1]["result"] or "Done.")[:1500] if rows else "Done.")
+    con = _db()
+    won = con.execute("UPDATE objectives SET status='done', report=?, updated=?, error=NULL, deferred_until=NULL "
+                      "WHERE id=? AND status!='done'", (report, time.time(), oid)).rowcount
+    if won:
+        _log(con, oid, "done", report[:500])
     con.commit()
     con.close()
+    if not won:
+        return report
     if obj["project"]:
         try:
             projects.add_log(obj["project"], f"Objective **{obj['title']}** done: {report[:200]}")
@@ -295,21 +447,78 @@ def _alive(pid):
     return alive(pid)
 
 
+def _held(row, now):
+    """Is this objective held by a live worker with an unexpired lease?"""
+    pid = row["worker_pid"]
+    return bool(pid) and (row["lease_until"] or 0) > now and (pid == os.getpid() or _alive(pid))
+
+
+def claim(oid, now=None):
+    """Become the one worker for this objective (compare-and-swap on worker_pid + lease)."""
+    now = now or time.time()
+    con = _db()
+    try:
+        row = con.execute("SELECT worker_pid, lease_until FROM objectives WHERE id=?", (oid,)).fetchone()
+        if not row:
+            return False
+        if _held(row, now) and row["worker_pid"] != os.getpid():
+            return False
+        won = con.execute("UPDATE objectives SET worker_pid=?, lease_until=? WHERE id=? AND worker_pid IS ? AND "
+                          "lease_until IS ?", (os.getpid(), now + LEASE_S, oid, row["worker_pid"],
+                                               row["lease_until"])).rowcount
+        con.commit()
+        return won == 1
+    finally:
+        con.close()
+
+
+def renew(oid):
+    con = _db()
+    con.execute("UPDATE objectives SET lease_until=? WHERE id=? AND worker_pid=?", (time.time() + LEASE_S, oid,
+                                                                                   os.getpid()))
+    con.commit()
+    con.close()
+
+
+def release(oid):
+    con = _db()
+    con.execute("UPDATE objectives SET worker_pid=NULL, lease_until=NULL WHERE id=? AND worker_pid=?",
+                (oid, os.getpid()))
+    con.commit()
+    con.close()
+
+
 def recover(con=None, now=None):
-    """Steps left 'running' by a dead worker go back to pending (they re-run; attempts already counted)."""
+    """Steps left 'running' by a dead worker go back to pending, marked as interrupted (their next run checks what
+    already exists). A step interrupted MAX_INTERRUPTS times blocks the objective instead of looping forever.
+    Steps in 'verifying' are left alone: their work is saved and only the check re-runs."""
     now = now or time.time()
     own = con is None
     con = con or _db()
     n = 0
-    for obj in con.execute("SELECT id, worker_pid FROM objectives WHERE status IN ('active','planning')").fetchall():
-        if obj["worker_pid"] and _alive(obj["worker_pid"]):
+    for obj in con.execute("SELECT id, title, worker_pid, lease_until FROM objectives "
+                           "WHERE status IN ('active','planning')").fetchall():
+        if _held(obj, now):
             continue
-        for st in con.execute("SELECT idx, started FROM steps WHERE objective_id=? AND status='running'",
-                              (obj["id"],)).fetchall():
-            if now - (st["started"] or 0) > 120:
-                _set_step(con, obj["id"], st["idx"], status="pending")
+        for st in con.execute("SELECT idx, title, started, attempts, interrupts FROM steps WHERE objective_id=? AND "
+                              "status='running'", (obj["id"],)).fetchall():
+            if now - (st["started"] or 0) <= 120:
+                continue
+            k = (st["interrupts"] or 0) + 1
+            if k >= MAX_INTERRUPTS:
+                why = f"step {st['idx']} was interrupted {k} times"
+                _set_step(con, obj["id"], st["idx"], status="failed", interrupts=k, verify=why)
+                _set(con, obj["id"], status="blocked", error=why)
+                _log(con, obj["id"], "blocked", why)
+                _tell(obj["id"], f"Objective '{obj['title']}' is stuck: {why} (crashes or restarts mid-step). "
+                                 f"Say 'retry objective {obj['id']}' to try again.")
+            else:  # an interruption is not a failed attempt
+                _set_step(con, obj["id"], st["idx"], status="pending", interrupts=k,
+                          attempts=max(0, (st["attempts"] or 1) - 1))
                 _log(con, obj["id"], "recovered", f"step {st['idx']} re-queued after an interruption")
-                n += 1
+            n += 1
+        if obj["worker_pid"]:
+            _set(con, obj["id"], worker_pid=None, lease_until=None)
     if own:
         con.commit()
         con.close()
@@ -317,7 +526,7 @@ def recover(con=None, now=None):
 
 
 def tick(max_steps=1, settings=None, run_fn=None, verify_fn=None, asker=None):
-    """Advance in-flight objectives (cron, every 5 minutes; also kicked right after creation)."""
+    """Advance in-flight objectives in this process (tests and manual runs; the cron uses supervise)."""
     con = _db()
     recover(con)
     con.commit()
@@ -327,38 +536,77 @@ def tick(max_steps=1, settings=None, run_fn=None, verify_fn=None, asker=None):
     for obj in objs:
         if len(done) >= max_steps:
             break
-        if obj["worker_pid"] and obj["worker_pid"] != os.getpid() and _alive(obj["worker_pid"]):
+        if not claim(obj["id"]):
             continue  # another worker has it
-        if obj["status"] == "planning":
-            plan(obj["id"], asker=asker, settings=settings)
-            continue
-        con = _db()
-        _set(con, obj["id"], worker_pid=os.getpid())
-        con.commit()
-        con.close()
         try:
-            st = run_step(obj["id"], settings=settings, run_fn=run_fn, verify_fn=verify_fn)
+            with budget.background("objective", obj["id"]):
+                if obj["status"] == "planning":
+                    plan(obj["id"], asker=asker, settings=settings)
+                    continue
+                st = run_step(obj["id"], settings=settings, run_fn=run_fn, verify_fn=verify_fn)
         finally:
-            con = _db()
-            _set(con, obj["id"], worker_pid=None)
-            con.commit()
-            con.close()
+            release(obj["id"])
         if st:
             done.append((obj["id"], st))
     return done
 
 
-def supervise(kick_fn=None):
-    """Cron (every 5 min) + gateway start: re-queue interrupted steps, then make sure every in-flight objective has
-    a live worker. Long steps never run inside the cron script itself."""
+def _check_approvals(con, now):
+    """Objectives waiting for a yes: a denial blocks them, a lost resume is healed, an expired request blocks them
+    (with a message) instead of leaving them waiting forever."""
+    from . import policy
+    for obj in con.execute("SELECT * FROM objectives WHERE status='waiting_approval'").fetchall():
+        try:
+            info = json.loads(obj["approval_ids"] or "{}")
+        except ValueError:
+            info = {}
+        items = [policy.get(i) for i in info.get("ids", []) if i]
+        items = [x for x in items if x]
+        if not items:
+            continue
+        live = [x for x in items if x["state"] == "pending" and x["expires"] > now]
+        denied = [x for x in items if x["state"] == "denied"]
+        if denied:
+            why = f"you said no to: {denied[0]['summary']}"
+            _set(con, obj["id"], status="blocked", error=why[:500])
+            _log(con, obj["id"], "denied", why)
+            _tell(obj["id"], f"Objective '{obj['title']}' stopped: {why}. Tell me another way to do it, or say "
+                             f"'cancel objective {obj['id']}'.")
+        elif live:
+            continue
+        elif all(x["state"] in ("granted", "used") for x in items):
+            _set(con, obj["id"], status="active")  # granted but the resume was lost (gateway restart)
+            _log(con, obj["id"], "approved", "resumed after restart")
+        else:
+            why = "the approval request expired without an answer"
+            _set(con, obj["id"], status="blocked", error=why)
+            _log(con, obj["id"], "expired", why)
+            _tell(obj["id"], f"Objective '{obj['title']}' is paused: {why}. Say 'retry objective {obj['id']}' to "
+                             "ask again.")
+
+
+def settle_approvals(now=None):
+    """Apply approval answers now (after a deny, instead of waiting for the next supervisor run)."""
     con = _db()
-    recover(con)
+    _check_approvals(con, now or time.time())
     con.commit()
-    rows = con.execute("SELECT id, worker_pid FROM objectives WHERE status IN ('planning','active')").fetchall()
+    con.close()
+
+
+def supervise(kick_fn=None, now=None):
+    """Cron (every 5 min) + gateway start: re-queue interrupted steps, settle approvals, then make sure every
+    in-flight objective that isn't parked on the budget has a live worker. Long steps never run in the cron script."""
+    now = now or time.time()
+    con = _db()
+    recover(con, now)
+    _check_approvals(con, now)
+    con.commit()
+    rows = con.execute("SELECT id, worker_pid, lease_until, deferred_until FROM objectives "
+                       "WHERE status IN ('planning','active')").fetchall()
     con.close()
     started = []
     for r in rows:
-        if r["worker_pid"] and _alive(r["worker_pid"]):
+        if _held(r, now) or (r["deferred_until"] or 0) > now:
             continue
         (kick_fn or kick)(r["id"])
         started.append(r["id"])
@@ -378,35 +626,30 @@ def kick(oid):
 
 def work(oid, max_steps=MAX_STEPS * MAX_ATTEMPTS, settings=None, run_fn=None, verify_fn=None):
     """Keep running steps of one objective until it finishes, blocks, waits, or runs out of budget."""
-    con = _db()
-    obj = con.execute("SELECT worker_pid FROM objectives WHERE id=?", (oid,)).fetchone()
-    if obj and obj["worker_pid"] and obj["worker_pid"] != os.getpid() and _alive(obj["worker_pid"]):
-        con.close()
+    if not claim(oid):
         return "busy"
-    _set(con, oid, worker_pid=os.getpid())
-    con.commit()
-    con.close()
     last = None
     try:
-        for _ in range(max_steps):
-            con = _db()
-            status = con.execute("SELECT status FROM objectives WHERE id=?", (oid,)).fetchone()["status"]
-            con.close()
-            if status == "planning":
-                if not plan(oid, settings=settings):
+        with budget.background("objective", oid):
+            for _ in range(max_steps):
+                renew(oid)
+                con = _db()
+                row = con.execute("SELECT status FROM objectives WHERE id=?", (oid,)).fetchone()
+                con.close()
+                if not row:
                     break
-                continue
-            st = run_step(oid, settings=settings, run_fn=run_fn, verify_fn=verify_fn)
-            if st is None:  # finished, cancelled or nothing runnable
-                break
-            last = st
-            if st in ("blocked", "waiting_approval", "waiting_budget"):
-                break
+                if row["status"] == "planning":
+                    if not plan(oid, settings=settings):
+                        break
+                    continue
+                st = run_step(oid, settings=settings, run_fn=run_fn, verify_fn=verify_fn)
+                if st is None:  # finished, cancelled or nothing runnable
+                    break
+                last = st
+                if st in ("blocked", "waiting_approval", "waiting_budget"):
+                    break
     finally:
-        con = _db()
-        _set(con, oid, worker_pid=None)
-        con.commit()
-        con.close()
+        release(oid)
     return last
 
 
@@ -422,38 +665,63 @@ def find(key):
     return row["id"] if row else None
 
 
+# Which status changes the user (or an agent) may make. A finished or cancelled objective never runs again.
+ALLOWED_FROM = {"active": ("paused", "blocked", "failed", "planning", "active"),
+                "paused": ("planning", "active", "blocked", "waiting_approval"),
+                "cancelled": ("planning", "active", "blocked", "waiting_approval", "paused", "failed")}
+
+
 def set_status(key, status, extra_runs=0):
     oid = find(key)
     if not oid:
         return None
     con = _db()
+    row = con.execute("SELECT status, (SELECT COUNT(*) FROM steps WHERE objective_id=id) AS n FROM objectives "
+                      "WHERE id=?", (oid,)).fetchone()
+    if row["status"] not in ALLOWED_FROM.get(status, ()):
+        con.close()
+        return None
     if status == "active":
-        con.execute("UPDATE steps SET status='pending', attempts=0 WHERE objective_id=? AND status='failed'", (oid,))
+        con.execute("UPDATE steps SET status='pending', attempts=0, interrupts=0 WHERE objective_id=? AND "
+                    "status='failed'", (oid,))
         if extra_runs:
             con.execute("UPDATE objectives SET max_runs=max_runs+? WHERE id=?", (extra_runs, oid))
-    _set(con, oid, status=status, error=None)
+        if not row["n"]:
+            status = "planning"  # planning had failed: plan again
+    _set(con, oid, status=status, error=None, deferred_until=None, defer_reason=None)
     _log(con, oid, status, "by user")
     con.commit()
     con.close()
     return oid
 
 
-def resume_after_approval(session):
-    """'yes' was granted for an objective's session: make it active again and keep going."""
+def resume_after_approval(session, granted=None):
+    """The user approved an objective's action: once nothing for it is still pending, make it active again (the
+    re-run is told exactly what was approved) and keep going."""
     if not session.startswith("objective-"):
         return None
+    from . import policy
     oid = session.split("-", 1)[1]
     con = _db()
-    row = con.execute("SELECT status FROM objectives WHERE id=?", (oid,)).fetchone()
-    if row and row["status"] == "waiting_approval":
-        _set(con, oid, status="active")
-        _log(con, oid, "approved", "user said yes")
-        con.commit()
+    row = con.execute("SELECT status, approval_ids FROM objectives WHERE id=?", (oid,)).fetchone()
+    if not row or row["status"] != "waiting_approval":
         con.close()
-        kick(oid)
-        return oid
+        return None
+    if policy.pending(session):
+        con.close()
+        return None  # more approvals for this objective are still open
+    try:
+        info = json.loads(row["approval_ids"] or "{}")
+    except ValueError:
+        info = {}
+    if granted and info.get("step"):
+        _set_step(con, oid, info["step"], approved="; ".join(g["summary"] for g in granted)[:1000])
+    _set(con, oid, status="active", deferred_until=None)
+    _log(con, oid, "approved", "user approved: " + "; ".join(g["summary"] for g in granted or [])[:300])
+    con.commit()
     con.close()
-    return None
+    kick(oid)
+    return oid
 
 
 def status(key=None):
@@ -464,7 +732,7 @@ def status(key=None):
             con.close()
             return None
         obj = dict(con.execute("SELECT * FROM objectives WHERE id=?", (oid,)).fetchone())
-        obj["steps"] = [dict(r) for r in con.execute("SELECT idx, title, agent, status, attempts, verify, "
+        obj["steps"] = [dict(r) for r in con.execute("SELECT idx, title, agent, status, attempts, interrupts, verify, "
                                                      "substr(result,1,600) AS result FROM steps WHERE objective_id=? "
                                                      "ORDER BY idx", (oid,))]
         obj["log"] = [dict(r) for r in con.execute("SELECT time, kind, text FROM log WHERE objective_id=? "
@@ -554,8 +822,13 @@ MCP_TOOLS = [
 
 def main():
     if len(sys.argv) >= 3 and sys.argv[1] == "work":
-        work(sys.argv[2])
+        try:
+            work(sys.argv[2])
+        except Exception as e:  # a detached worker has no console: leave a trace the supervisor and user can see
+            events.log("objective_worker_error", id=sys.argv[2], error=f"{type(e).__name__}: {e}"[:300])
+            raise
     else:
+        budget.set_background("objective")
         tick()
 
 

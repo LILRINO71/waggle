@@ -9,7 +9,8 @@ way past it. The user's choice (2026-11-18, "full auto in projects"):
 - never: disabling security, piping downloads straight into a shell, reading credential stores.
 
 "ask" cannot pop up a dialog in a headless run, so it becomes a one-time approval request: the call is
-denied with an id, Waggle tells the user, and "yes" grants exactly that call once (stored by hash).
+denied with an id and a 4-letter code, Waggle tells the user, and "approve <code>" grants exactly that call, in
+that session, once (approvals.db). A bare "yes" only answers an approval the same chat was just asked about.
 """
 import hashlib
 import json
@@ -313,6 +314,7 @@ def decide(tool_name, args=None, settings=None):
 
 APPROVAL_TTL = 30 * 60
 BACKGROUND_TTL = 24 * 3600  # objectives/routines may wait overnight for the user's yes
+CODE_CHARS = "ACDEFHJKMNPRTVWXY34679"  # no 0/O, 1/I/L, 2/Z, 5/S, 8/B look-alikes
 
 
 def _ttl(item):
@@ -322,6 +324,11 @@ def _ttl(item):
 def _fingerprint(tool, args):
     body = json.dumps(args or {}, sort_keys=True, default=str)
     return hashlib.sha256(f"{(tool or '').lower()}|{body}".encode()).hexdigest()[:16]
+
+
+def _approval_id(tool, args, session):
+    """One approval = one exact call in one session: a yes for objective A never unlocks the same call elsewhere."""
+    return hashlib.sha256(f"{_fingerprint(tool, args)}|{session or ''}".encode()).hexdigest()[:16]
 
 
 def _load(name):
@@ -336,48 +343,143 @@ def _save(name, data):
     data_path(name).write_text(json.dumps(data, indent=1), encoding="utf-8")
 
 
+def _adb():
+    """Approvals live in SQLite: the agent hook, the gateway and objective workers are separate processes, and a
+    JSON file rewritten by each of them could lose a request or a grant (last writer wins)."""
+    import sqlite3
+    con = sqlite3.connect(data_path("approvals.db"), timeout=20, isolation_level=None)
+    con.row_factory = sqlite3.Row
+    con.execute("CREATE TABLE IF NOT EXISTS approvals (id TEXT PRIMARY KEY, code TEXT, tool TEXT, summary TEXT, "
+                "reason TEXT, session TEXT, created REAL, ttl REAL, state TEXT, decided_at REAL, used_at REAL)")
+    old = data_path("approvals.json")
+    if old.exists():  # one-time import of the old store (pending, unexpired items only)
+        now = time.time()
+        for k, v in _load("approvals.json").items():
+            if not v.get("granted") and now - v.get("created", 0) < _ttl(v):
+                con.execute("INSERT OR IGNORE INTO approvals VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                            (k, _new_code(con), v.get("tool"), v.get("summary"), v.get("reason"), v.get("session", ""),
+                             v.get("created", now), _ttl(v), "pending", None, None))
+        try:
+            old.replace(old.with_suffix(".json.migrated"))
+        except OSError:
+            pass
+    return con
+
+
+def _new_code(con):
+    import secrets
+    taken = {r[0] for r in con.execute("SELECT code FROM approvals WHERE state IN ('pending','granted')")}
+    while True:
+        code = "".join(secrets.choice(CODE_CHARS) for _ in range(4))
+        if code not in taken:
+            return code
+
+
+def _row(r):
+    d = dict(r)
+    d["granted"] = d["state"] in ("granted", "used")
+    d["used"] = d["state"] == "used"
+    d["expires"] = d["created"] + d["ttl"]
+    return d
+
+
 def request_approval(tool, args, reason, session=""):
-    """Record a pending approval; returns its id."""
-    fp = _fingerprint(tool, args)
-    pend = _load("approvals.json")
+    """Record a pending approval; returns its id. The same call asked again while still pending keeps its code."""
+    aid = _approval_id(tool, args, session)
     now = time.time()
-    pend = {k: v for k, v in pend.items() if now - v.get("created", 0) < _ttl(v) or v.get("granted")}
-    pend[fp] = {"tool": tool, "summary": _short(tool, args), "reason": reason, "created": now,
-                "session": session, "granted": False, "used": False,
-                "ttl": BACKGROUND_TTL if str(session).startswith(("objective-", "routine-")) else APPROVAL_TTL}
-    _save("approvals.json", pend)
-    return fp
+    ttl = BACKGROUND_TTL if str(session).startswith(("objective-", "routine-")) else APPROVAL_TTL
+    con = _adb()
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        r = con.execute("SELECT * FROM approvals WHERE id=?", (aid,)).fetchone()
+        if not (r and r["state"] == "pending" and now - r["created"] < r["ttl"]):
+            con.execute("INSERT OR REPLACE INTO approvals VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        (aid, _new_code(con), tool, _short(tool, args), reason, session or "", now, ttl, "pending",
+                         None, None))
+        con.execute("COMMIT")
+    finally:
+        con.close()
+    return aid
 
 
 def pending(session=None, since=0.0):
+    """Unexpired approvals still waiting for the user (for one session, or all when session is None)."""
     now = time.time()
-    return [dict(v, id=k) for k, v in _load("approvals.json").items()
-            if not v.get("granted") and now - v.get("created", 0) < _ttl(v) and v.get("created", 0) >= since
-            and (session is None or v.get("session") in ("", session))]
+    con = _adb()
+    try:
+        rows = con.execute("SELECT * FROM approvals WHERE state='pending' AND created>=? ORDER BY created",
+                           (since,)).fetchall()
+    finally:
+        con.close()
+    return [dict(_row(r), id=r["id"]) for r in rows if now - r["created"] < r["ttl"]
+            and (session is None or r["session"] in ("", session))]
 
 
-def grant(approval_id=None, session=None):
-    """Grant one pending approval (or every pending one for this session when id is None)."""
-    pend = _load("approvals.json")
-    ids = [approval_id] if approval_id else [p["id"] for p in pending(session)]
+def get(key):
+    """One approval by id or its 4-letter code (any state)."""
+    con = _adb()
+    try:
+        r = con.execute("SELECT * FROM approvals WHERE id=? OR code=? ORDER BY created DESC",
+                        (key, str(key or "").upper())).fetchone()
+    finally:
+        con.close()
+    return _row(r) if r else None
+
+
+def _decide(ids, state):
+    now = time.time()
     done = []
-    for i in ids:
-        if i in pend:
-            pend[i]["granted"], pend[i]["granted_at"] = True, time.time()
-            done.append(pend[i])
-    _save("approvals.json", pend)
+    con = _adb()
+    try:
+        for i in ids:
+            r = con.execute("SELECT * FROM approvals WHERE id=?", (i,)).fetchone()
+            if not r or r["state"] != "pending" or now - r["created"] >= r["ttl"]:
+                continue  # expired, already decided or used: a yes can never revive it
+            if con.execute("UPDATE approvals SET state=?, decided_at=? WHERE id=? AND state='pending'",
+                           (state, now, i)).rowcount:
+                done.append(dict(_row(r), state=state, id=i))
+    finally:
+        con.close()
     return done
 
 
-def _consume(tool, args):
-    fp = _fingerprint(tool, args)
-    pend = _load("approvals.json")
-    item = pend.get(fp)
-    if item and item.get("granted") and not item.get("used") and time.time() - item.get("granted_at", 0) < APPROVAL_TTL:
-        item["used"] = True
-        _save("approvals.json", pend)
-        return True
+def grant(approval_id=None, session=None, code=None):
+    """Grant one pending approval (by id or code), or every pending one for this session when neither is given.
+    Session-wide grants are only for the chat that was just asked (the agent's own approval message listed them)."""
+    if approval_id or code:
+        item = get(approval_id or code)
+        return _decide([item["id"]] if item else [], "granted")
+    if not session:
+        return []  # never "grant everything everywhere"
+    return _decide([p["id"] for p in pending(session) if p["session"] == session], "granted")
+
+
+def deny(approval_id=None, code=None):
+    item = get(approval_id or code)
+    return _decide([item["id"]] if item else [], "denied")
+
+
+def _consume(tool, args, session=""):
+    """A granted approval allows exactly one matching call in the same session, then it is used up."""
+    now = time.time()
+    con = _adb()
+    try:
+        for aid in dict.fromkeys([_approval_id(tool, args, session), _approval_id(tool, args, "")]):
+            r = con.execute("SELECT * FROM approvals WHERE id=?", (aid,)).fetchone()
+            if r and r["state"] == "granted" and now - (r["decided_at"] or 0) < r["ttl"]:
+                if con.execute("UPDATE approvals SET state='used', used_at=? WHERE id=? AND state='granted'",
+                               (now, aid)).rowcount:
+                    return True
+    finally:
+        con.close()
     return False
+
+
+def describe(item):
+    """One line the user can act on: what, why, which code, how long it stays open."""
+    left = max(0, int((item["created"] + item["ttl"] - time.time()) / 60))
+    when = f"{left // 60} h" if left >= 120 else f"{left} min"
+    return f"[{item['code']}] {item['summary']} ({item['reason']}); expires in {when}"
 
 
 def audit(tool, args, decision, source="agent"):
@@ -391,7 +493,7 @@ def check(tool, args=None, session="", source="agent", settings=None):
     """Full check: policy, then one-time approvals; logs to the audit trail. Returns a Decision."""
     d = decide(tool, args, settings)
     if d.action == ASK:
-        if _consume(tool, args):
+        if _consume(tool, args, session):
             d = Decision(ALLOW, "approved by the user")
         else:
             d.approval_id = request_approval(tool, args, d.reason, session)

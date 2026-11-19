@@ -104,14 +104,16 @@ def note(name, text):
     return True
 
 
-def run(name, task, context="", session="", hard=False, settings=None, timeout=900, runner_fn=None):
-    """Run a named agent. Returns an AgentResult (traced with the agent's name)."""
+def run(name, task, context="", session="", hard=False, settings=None, timeout=900, runner_fn=None, model=None,
+        purpose="agent"):
+    """Run a named agent. Returns an AgentResult (traced with the agent's name). model= overrides the agent's own
+    (the background budget may pick a cheaper one)."""
     s = settings or Settings.load()
     name = name if name in AGENTS else "general"
-    model = s.agent_deep_model if hard else model_for(name, s)
+    model = model or (s.agent_deep_model if hard else model_for(name, s))
     t0 = time.time()
     res = runner.run(task, model=model, context=context, agent_rules=instructions(name, s), session=session,
-                     agent_name=name, settings=s, timeout=timeout, runner=runner_fn)
+                     agent_name=name, settings=s, timeout=timeout, runner=runner_fn, purpose=purpose)
     traces.record(task, session=session, route=f"agent:{name}", model=res.model, agent=name,
                   latency_s=round(time.time() - t0, 2), ok=res.ok, error=res.error, reply=res.text,
                   tokens=res.usage, steps=res.steps, extra={"turns": res.turns})
@@ -122,8 +124,9 @@ VERIFY_SYSTEM = """Check whether an AI agent actually completed a task. Reply JS
 "missing": "what is missing or wrong, empty if complete"}. Judge only from the task and the agent's report."""
 
 
-def verify(task, report, asker=None, settings=None):
-    """Cheap Haiku check that a background result really answers the task (used before notifying)."""
+def verify(task, report, asker=None, settings=None, strict=False):
+    """Cheap Haiku check that a background result really answers the task (used before notifying).
+    strict=True: when the check itself can't run, return (None, why) instead of passing the result unchecked."""
     from . import claude_cli
     s = settings or Settings.load()
     try:
@@ -133,8 +136,12 @@ def verify(task, report, asker=None, settings=None):
                                                                                  "missing": {"type": "string"}},
                                                 "required": ["complete", "missing"]})
         d = out.get("json") or {}
+        if strict and "complete" not in d:
+            return None, "the checker gave no verdict"
         return bool(d.get("complete")), d.get("missing", "")
     except Exception as e:
+        if strict:
+            return None, f"could not check: {e}"
         return True, f"(not verified: {e})"
 
 

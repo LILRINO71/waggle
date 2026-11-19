@@ -231,6 +231,7 @@ def test_parse_reset_hours():
 
 
 def test_quiet_hours(settings):
+    settings.quiet_hours = [23, 7]
     import datetime as dt
     assert notify.in_quiet_hours(settings, dt.datetime(2026, 1, 1, 2, 0))
     assert not notify.in_quiet_hours(settings, dt.datetime(2026, 1, 1, 15, 0))

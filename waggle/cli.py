@@ -32,6 +32,9 @@ def main(argv=None):
     sub.add_parser("learn", help="run the learning pass now (analysis, skill discovery)")
     sub.add_parser("bench", help="routing benchmark on the labelled cases (real Haiku calls)")
     sub.add_parser("routines", help="list scheduled routines")
+    b = sub.add_parser("budget", help="background Claude budget: status, or `budget set <units/day>`")
+    b.add_argument("action", nargs="?", default="status", choices=["status", "set"])
+    b.add_argument("units", nargs="?", type=float)
     c = sub.add_parser("connectors", help="re-read which claude.ai connectors are available")
     c.add_argument("--refresh", action="store_true")
     a = p.parse_args(argv)
@@ -51,6 +54,19 @@ def main(argv=None):
     elif a.cmd == "route":
         d = router.decide(a.message, memory.context_block(a.message, st), st)
         print(json.dumps(d, indent=2))
+    elif a.cmd == "budget":
+        from . import budget
+        if a.action == "set":
+            if a.units is None:
+                p.error("budget set needs a number of units per day, e.g. `budget set 6`")
+            print(f"background budget: {budget.set_limit(a.units)} units/day")
+        else:
+            b = budget.status(st)
+            print(f"background today: {b['background_units']:.3f} of {b['limit_units']:.2f} units "
+                  f"({b['remaining_units']:.3f} left, {b['running_calls']} running); interactive "
+                  f"{b['interactive_units']:.3f}; {'can start' if b['can_start'] else 'waiting: ' + b['why']}")
+            for d in b["decisions"][:5]:
+                print(f"  {d['action']:<9} {d.get('objective') or '':<9} {d['reason']}")
     elif a.cmd == "consolidate":
         print(learn.consolidate(st))
     elif a.cmd == "login":

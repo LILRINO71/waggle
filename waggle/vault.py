@@ -1,6 +1,8 @@
 """The Obsidian vault: Waggle's long-term memory, readable and editable by you."""
 import datetime as dt
+import os
 import re
+import time
 from pathlib import Path
 
 from .config import Settings
@@ -72,7 +74,18 @@ def append(rel, text, settings=None):
 def write(rel, text, settings=None):
     p = safe_path(rel, settings)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(text, encoding="utf-8")
+    # Write a temp file and swap it in: a crash mid-write leaves the old note, never a half-written one.
+    tmp = p.with_name(f".{p.name}.{os.getpid()}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    for i in range(5):
+        try:
+            os.replace(tmp, p)
+            break
+        except PermissionError:  # Obsidian or a sync client holding the file for a moment (Windows)
+            if i == 4:
+                tmp.unlink(missing_ok=True)
+                raise
+            time.sleep(0.2)
     return p
 
 

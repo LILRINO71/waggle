@@ -120,5 +120,5 @@ def test_listing_find_and_cancel(settings, quiet):
 
 def test_background_approvals_live_longer():
     d = policy.check("Bash", {"command": "rm x"}, session="objective-abc")
-    item = policy._load("approvals.json")[d.approval_id]
-    assert item["ttl"] == policy.BACKGROUND_TTL
+    item = policy.get(d.approval_id)
+    assert item["ttl"] == policy.BACKGROUND_TTL and len(item["code"]) == 4

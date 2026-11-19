@@ -35,6 +35,15 @@ class Settings:
     # Only a guess: it is recalibrated every time the real limit is hit.
     window_units_estimate: float = 6.0
     window_hours: float = 5.0
+    # Background budget (waggle/budget.py): objectives, routines, proactive checks, brief, learning.
+    # Units are weighted tokens (an estimate of plan-limit use; ~0.06 per Haiku agent step, ~0.2 per Sonnet step).
+    # Change with `python -m waggle.cli budget set 6` or by editing ~/.waggle/config.json.
+    background_daily_units: float = 4.0
+    background_stop_at: float = 0.6  # background stops at 60% of the 5-hour window; chat may go on to stop_at
+    background_max_workers: int = 2  # background Claude calls running at once
+    background_reset_hour: int = 4  # the background day starts at 04:00 local time
+    background_downgrade_at: float = 0.25  # under 25% left: non-coding Sonnet steps run on agent_model instead
+    interactive_yield_s: int = 60  # background waits this long after the user's last message
     search_top_k: int = 6
     quiet_hours: list = field(default_factory=lambda: [23, 7])
     # Proactive loop

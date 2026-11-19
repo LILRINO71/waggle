@@ -97,8 +97,16 @@ def ledger():
 
 
 def record(model, usage, purpose, headless=True, ok=True, error_kind=None):
+    from . import budget
+    c = budget.current()
     row = {"time": time.time(), "model": model, "purpose": purpose, "ok": ok, "headless": headless,
-           "units": weighted(usage or {}, model), "error_kind": error_kind}
+           "units": weighted(usage or {}, model), "error_kind": error_kind, "kind": c["kind"]}
+    if c.get("objective"):
+        row["objective"] = c["objective"]
+    try:  # per-kind / per-objective accounting for the background budget
+        budget.record(model, usage, purpose, ok=ok, error_kind=error_kind)
+    except Exception:
+        pass
     with open(data_path("ledger.jsonl"), "a", encoding="utf-8") as f:
         f.write(json.dumps(row) + "\n")
     return row
@@ -165,6 +173,12 @@ def can_escalate(model, settings=None, now=None, used=None):
         return False, f"Pro window at {total / cap:.0%} of estimated limit; keeping the rest for you"
     if mine + expected > s.waggle_share * cap:
         return False, f"Waggle already used its {s.waggle_share:.0%} share this window"
+    from . import budget
+    if budget.is_background() and not budget.current().get("ticket"):  # background work also has its own daily allowance and a lower window line
+        bok, bwhy, _ = budget.check(model, budget.current().get("purpose", ""), s, now, window_used=total)
+        if not bok:
+            budget.log_decision("defer", bwhy, budget.current().get("objective"), budget.current().get("step"), model)
+            return False, bwhy
     return True, f"ok ({total / cap:.0%} of window used)"
 
 

@@ -83,8 +83,14 @@ def _pre_llm(session_id=None, user_message="", platform="", **kwargs):
                                                                    else "I'll be pickier about those.")}
     _reindex_soon()
     _turn[session_id] = {"t0": time.time(), "platform": platform}
+    prev_msg_at = _last_msg_at.get(session_id, 0.0)
     if session_id and user_message:
         _last_msg[session_id] = user_message
+        _last_msg_at[session_id] = time.time()
+        try:  # the user is here: background Claude work gives way for a minute
+            __import__("waggle.budget", fromlist=["x"]).note_interactive()
+        except Exception as e:
+            log.warning("budget note failed: %s", e)
         try:  # "no, I meant..." / "perfect, thanks" -> feedback on Waggle's previous answer
             traces.judge_followup(session_id, user_message)
         except Exception as e:
@@ -133,22 +139,11 @@ def _pre_llm(session_id=None, user_message="", platform="", **kwargs):
     m = OBJECTIVE_CMD.match(user_message)
     if m:
         return _hand_over(session_id, user_message, _start_objective(m.group(1).strip()), {"route": "objective"})
-    # "yes" while a background objective waits for approval -> grant it and let it continue.
-    if YES.match(user_message) and not (session_id in _agent_last and policy.pending(session_id)):
-        waiting = [p for p in policy.pending() if str(p.get("session", "")).startswith("objective-")]
-        if waiting:
-            from waggle import objectives
-            policy.grant(session=waiting[0]["session"])
-            oid = objectives.resume_after_approval(waiting[0]["session"])
-            title = (objectives.status(oid) or {}).get("title", "the objective") if oid else "the objective"
-            return _hand_over(session_id, user_message, f"Approved. Continuing {title}.", {"route": "objective"})
-    # "yes" to an approval an agent asked for -> grant exactly those calls and finish the job.
-    if YES.match(user_message) and session_id in _agent_last and policy.pending(session_id):
-        granted = policy.grant(session=session_id)
-        req, actx, model = _agent_last[session_id]
-        note = "The user approved: " + "; ".join(g["summary"] for g in granted) + ". Do those now and finish."
-        return _hand_over(session_id, user_message, _run_agent(session_id, req, actx, model, platform, note),
-                          {"route": "act", "model": model, "approved": len(granted)})
+    approval = _approval_turn(session_id, user_message, platform, prev_msg_at)
+    if approval:
+        reply, meta = approval
+        return _hand_over(session_id, user_message, reply, meta)
+    _agent_last.pop(session_id, None)  # any other message: an old agent question no longer gets a bare "yes"
 
     # The last turn asked "which city?" -> this short reply is the city.
     asked = _awaiting_city.pop(session_id, None)
@@ -264,6 +259,85 @@ def _start_objective(goal):
 
 _turn = {}  # session_id -> {"t0", "platform", route...} for the turn in progress
 _agent_last = {}  # session_id -> (request, context, model) of the last agent job (for approvals)
+_last_msg_at = {}  # session_id -> time of the user's previous message (is an approval request newer than it?)
+APPROVAL_CMD = re.compile(r"^\s*(approve|allow|ok|yes|deny|reject|refuse|no)\s+#?([A-Za-z0-9]{4})\s*[.!]*\s*$", re.I)
+
+
+def _approval_turn(session_id, user_message, platform, prev_msg_at):
+    """Approval answers. Returns (reply, trace meta) when the message was one, else None.
+    - "approve K7QH" / "deny K7QH": exactly that one action, whichever chat or objective asked for it.
+    - a bare "yes" grants only what THIS chat was just asked (the agent's approval request in its previous reply).
+    - a bare "yes" while background work waits never approves it: if a request arrived since the user's last
+      message here, the reply lists the open requests with their codes instead."""
+    m = APPROVAL_CMD.match(user_message)
+    if m and (m.group(1).lower() not in ("yes", "ok", "no") or policy.get(m.group(2))):  # "ok then" isn't a code
+        return _answer_approval(m.group(1), m.group(2), session_id, platform), {"route": "approval"}
+    if not YES.match(user_message):
+        return None
+    if session_id in _agent_last and policy.pending(session_id):
+        granted = policy.grant(session=session_id)
+        req, actx, model = _agent_last[session_id]
+        note = "The user approved: " + "; ".join(g["summary"] for g in granted) + ". Do those now and finish."
+        return (_run_agent(session_id, req, actx, model, platform, note),
+                {"route": "act", "model": model, "approved": len(granted)})
+    bg = [p for p in policy.pending() if str(p.get("session", "")).startswith(("objective-", "routine-"))]
+    if any(p["created"] > prev_msg_at for p in bg):
+        return _approval_list(bg), {"route": "approval"}
+    return None
+
+
+def _approval_list(items):
+    from waggle import policy
+    lines = "\n".join("• " + policy.describe(p) + _whose(p) for p in items[:6])
+    one = items[0]["code"]
+    return (f"To be safe I don't approve on a plain yes while background work is waiting. Open requests:\n{lines}\n"
+            f'Reply "approve {one}" (or "deny {one}") for the one you mean. If your yes was about something else, '
+            "say it again in other words.")
+
+
+def _whose(p):
+    sess = str(p.get("session", ""))
+    if sess.startswith("objective-"):
+        try:
+            from waggle import objectives
+            st = objectives.status(sess.split("-", 1)[1]) or {}
+            return f" — objective '{st.get('title', sess)}'"
+        except Exception:
+            return " — an objective"
+    return " — routine" if sess.startswith("routine-") else ""
+
+
+def _answer_approval(verb, code, session_id, platform):
+    """Approve or deny exactly one approval by its code. Expired, used or decided codes do nothing."""
+    from waggle import objectives, policy
+    item = policy.get(code)
+    if not item:
+        return f"I don't have an approval with code {code.upper()}. Nothing was done."
+    if item["state"] != "pending" or item["expires"] <= time.time():
+        state = "expired" if item["state"] == "pending" else item["state"]
+        return f"Approval {item['code']} is no longer open ({state}). Nothing was done."
+    sess = item.get("session") or ""
+    if verb.lower() in ("deny", "reject", "refuse", "no"):
+        policy.deny(item["id"])
+        if sess.startswith("objective-"):
+            objectives.settle_approvals()
+        return f"Denied {item['code']}: {item['summary']}. It won't run."
+    granted = policy.grant(item["id"])
+    if not granted:
+        return f"Approval {item['code']} could not be granted (it changed meanwhile). Nothing was done."
+    if sess.startswith("objective-"):
+        oid = objectives.resume_after_approval(sess, granted)
+        if oid:
+            title = (objectives.status(oid) or {}).get("title", oid)
+            return f"Approved once: {item['summary']}. Continuing objective '{title}'."
+        left = policy.pending(sess)
+        return (f"Approved once: {item['summary']}. That objective still waits on: "
+                + "; ".join(policy.describe(p) for p in left[:3]))
+    if sess and sess == session_id and session_id in _agent_last:
+        req, actx, model = _agent_last[session_id]
+        note = f"The user approved: {item['summary']}. Do that now and finish."
+        return _run_agent(session_id, req, actx, model, platform, note) or f"Approved once: {item['summary']}."
+    return f"Approved once: {item['summary']}. It will be allowed the next time exactly that action runs."
 YES = re.compile(r"^\s*(y|yes|yeah|yep|yup|sure|ok(ay)?|go ahead|do it|approved?|confirm(ed)?|allow( it)?)"
                  r"([\s,!.]+(do it|go ahead|please|you can|approved?))*[\s!.]*$", re.I)
 

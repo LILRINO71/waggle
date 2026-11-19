@@ -11,6 +11,8 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "HOME", tmp_path / "home")
     monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "home" / "config.json")
     monkeypatch.setattr(router, "local_sort", lambda text, s=None, chat=None: ("unsure", 0.0))
+    import waggle.quota as quota
+    monkeypatch.setattr(quota, "TRANSCRIPTS", tmp_path / "transcripts")  # not the real Claude Code usage
     import waggle.claude_cli as claude_cli
     monkeypatch.setattr(claude_cli, "mcp_servers", lambda claude=None, refresh=False: [])  # no real `claude mcp list`
     import waggle.skills as skills
@@ -26,7 +28,8 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setattr(notify, "to_ntfy", lambda text, *a, post=None, **k: real_ntfy(
         text, *a, post=post or (lambda url, body: sent.append("ntfy:" + body["message"]) or True), **k))
     monkeypatch.setattr(notify, "PHONE_LOG", sent, raising=False)
-    s = Settings(vault=str(tmp_path / "vault"), jobs_dir=str(tmp_path / "jobs"))
+    # quiet_hours off: otherwise tests that expect a phone message fail when run between 23:00 and 07:00.
+    s = Settings(vault=str(tmp_path / "vault"), jobs_dir=str(tmp_path / "jobs"), quiet_hours=[0, 0])
     s.save()
     return s
 

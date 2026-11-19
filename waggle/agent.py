@@ -56,6 +56,7 @@ class AgentResult:
     error: str = ""
     steps: list = field(default_factory=list)  # [{"tool", "input", "ok", "denied", "result"}]
     approvals: list = field(default_factory=list)
+    deferred: float = 0.0  # set when the background budget said "wait until"
     usage: dict = field(default_factory=dict)
     model: str = ""
     turns: int = 0
@@ -159,6 +160,12 @@ def run(request, *, model="haiku", context="", agent_rules="", session="", cwd=N
     res = AgentResult(session=session or f"agent-{int(t0)}", model=claude_cli.MODEL_IDS.get(model, model))
     system = AGENT_RULES + ("\n\n" + agent_rules if agent_rules else "")
     prompt = (f"{context.strip()}\n\n" if context else "") + f"User request:\n{request}"
+    from . import budget
+    try:  # background agents (routines, objectives) must have budget room
+        budget.guard(res.model, purpose)
+    except budget.Deferred as e:
+        res.error, res.deferred = f"background budget: {e.reason}", e.until
+        return res
     try:
         cmd = build_cmd(model, system, effort=effort, tools=tools)
     except Exception as e:
@@ -210,5 +217,5 @@ def approval_message(res):
     """A short line asking the user to approve what the agent was blocked on."""
     if not res.approvals:
         return ""
-    items = "; ".join(a["reason"] for a in res.approvals[:3])
-    return f"\n\nI need your OK for: {items}. Reply \"yes\" and I'll do it."
+    items = "; ".join(f"{a['reason']} [{a['code']}]" if a.get("code") else a["reason"] for a in res.approvals[:3])
+    return f"\n\nI need your OK for: {items}. Reply \"yes\" and I'll do it (or \"deny <code>\")."

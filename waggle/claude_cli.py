@@ -146,6 +146,11 @@ def ask(prompt, model="sonnet", system=None, schema=None, effort="medium", purpo
     if not claude:
         raise ClaudeError("Claude Code CLI not found. Set CLAUDE_BIN.", "missing")
     wanted = MODEL_IDS.get(model, model)
+    from . import budget
+    try:  # background work that skipped its own budget check still can't overspend
+        budget.guard(wanted, purpose)
+    except budget.Deferred as e:
+        raise ClaudeError(f"background budget: {e.reason}", "budget")
     flags = connector_flags(connectors, mcp_servers(claude)) if connectors else LEAN_FLAGS
     cmd = [claude, "-p", "--model", wanted, "--effort", effort, "--output-format", "json", *flags]
     if system:
