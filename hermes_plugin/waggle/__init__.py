@@ -51,7 +51,30 @@ def _reindex_soon():
 FEEDBACK = re.compile(r"^\s*(not\s+useful|useful|👍|👎)\s+([0-9a-f]{12})\s*$", re.I)
 
 
+_fillers = {}  # session_id -> voice_ack.Filler for the turn in progress
+
+
+def _voice_active(platform):
+    """True when the desktop voice window is in voice mode (spoken replies)."""
+    if platform not in ("cli", "", None) or _ctx is None:
+        return False
+    cli = getattr(getattr(_ctx, "_manager", None), "_cli_ref", None)
+    return bool(getattr(cli, "_voice_mode", False))
+
+
 def on_pre_llm_call(session_id=None, user_message="", platform="", **kwargs):
+    """Voice turns that take a moment get a natural "One sec." (waggle/voice_ack.py) while Waggle works."""
+    from waggle import voice_ack
+    filler = voice_ack.Filler(delay=2.0, enabled=bool(user_message) and _voice_active(platform))
+    _fillers[session_id] = filler
+    try:
+        return _pre_llm(session_id, user_message, platform, **kwargs)
+    finally:
+        filler.cancel()
+        _fillers.pop(session_id, None)
+
+
+def _pre_llm(session_id=None, user_message="", platform="", **kwargs):
     m = FEEDBACK.match(user_message or "")
     if m:
         useful = m.group(1).lower() in ("useful", "👍")
@@ -249,6 +272,8 @@ def _run_agent(session_id, request, ctx, model, platform, approved_note="", hard
             _remember_turn(session_id, "Waggle", reply)
             notify.send(reply[:3500])
 
+    if session_id in _fillers:
+        _fillers[session_id].now("act")  # "On it." right away: tool jobs take a few seconds
     th = threading.Thread(target=work, daemon=True, name="waggle-agent")
     th.start()
     th.join(s.agent_wait_s)
@@ -415,6 +440,14 @@ def _bridge_pre(name, args):
     return _targeting(name, args, "bridge")
 
 
+def _prepare_fillers():
+    try:
+        from waggle import voice_ack
+        voice_ack.prepare()
+    except Exception as e:
+        log.warning("voice fillers not prepared: %s", e)
+
+
 def _startup_upkeep():
     """Once per gateway start: resume builds a crash or reboot interrupted, refresh skills, default routines."""
     time.sleep(20)
@@ -451,6 +484,7 @@ def register(ctx):
     toolkit.set_dispatch(_dispatch)
     _wake_starts_conversation()
     _start_bridge()
+    threading.Thread(target=_prepare_fillers, daemon=True, name="waggle-fillers").start()
     vault.init()
     for schema, handler in TOOLS:
         ctx.register_tool(name=schema["name"], toolset="waggle", schema=schema, handler=handler)
