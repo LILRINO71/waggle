@@ -572,3 +572,56 @@ def test_waiting_for_approval_is_not_a_failed_attempt(settings, quiet):
         con.close()
         policy.deny(code=policy.pending(f"objective-{oid}")[0]["code"])
     assert objectives.status(oid)["steps"][0]["attempts"] == 0
+
+
+# ---- 2026-11-19 Telegram feedback: self-delivery, approval text, chat models --------------------------------
+
+def test_mail_to_the_users_own_address_needs_no_approval(settings):
+    settings.self_emails = ["me@example.com"]
+    settings.save()
+    tool = "mcp__claude_ai_Gmail__send_message"
+    assert policy.decide(tool, {"to": ["Me@Example.com"], "subject": "pdf"}, settings).allowed
+    assert policy.decide(tool, {"to": "Me <me@example.com>"}, settings).allowed
+    assert policy.decide(tool, {"to": ["me@example.com"], "cc": ["coach@school.org"]}, settings).action == "ask"
+    assert policy.decide(tool, {"to": ["friend@example.com"]}, settings).action == "ask"
+    settings.self_emails = []
+    assert policy.decide(tool, {"to": ["me@example.com"]}, settings).action == "ask"  # unknown = not allowed
+
+
+def test_send_to_me_tool_is_allowed_and_checks_the_file(tmp_path, monkeypatch):
+    from waggle import waggle_mcp
+    assert policy.decide("mcp__waggle__send_to_me", {"text": "hi"}).allowed
+    assert "No such file" in waggle_mcp.t_send_to_me({"file": str(tmp_path / "nope.pdf")})
+    sent = []
+
+    class R:
+        returncode = 0
+    monkeypatch.setattr(waggle_mcp.__dict__.get("notify", __import__("waggle.notify", fromlist=["x"])),
+                        "hermes_exe", lambda: tmp_path / "bin" / "hermes.exe")
+    import subprocess
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **k: sent.append(cmd) or R())
+    f = tmp_path / "report.pdf"
+    f.write_bytes(b"%PDF")
+    assert waggle_mcp.t_send_to_me({"text": "Here it is", "file": str(f)}) == "Sent to the user's Telegram."
+    assert sent[0][-1].startswith("Here it is\nMEDIA:") and sent[0][-1].endswith("report.pdf")
+
+
+def test_hook_tells_the_agent_the_short_code_not_the_internal_id():
+    from waggle import agent_hook
+    out = agent_hook.handle({"tool_name": "Bash", "tool_input": {"command": "rm z.txt"}})["hookSpecificOutput"]
+    code = policy.pending()[0]["code"]
+    assert f"[{code}]" in out["permissionDecisionReason"] and policy.pending()[0]["id"] not in \
+        out["permissionDecisionReason"]
+
+
+def test_chat_uses_the_chat_models_and_background_keeps_its_own(settings):
+    from waggle import router
+    settings.chat_model, settings.chat_agent_model = "sonnet", "sonnet"
+    seen = []
+
+    def asker(prompt, model=None, **k):
+        seen.append(model)
+        return {"json": {"route": "act", "reason": "x", "reply": "", "build_prompt": "", "title": "", "hard": False}}
+    d = router.decide("look through my robot repos and make a pdf", settings=settings, asker=asker)
+    assert seen == ["sonnet"] and d.get("agent_model") == "sonnet"
+    assert settings.router_model == "haiku"  # verify/report/background still use the cheap model

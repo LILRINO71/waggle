@@ -26,9 +26,10 @@ def handle(event):
     if d.action == policy.DENY:
         why = f"Blocked by Waggle's safety policy: {d.reason}. Do not retry or work around this; tell the user."
     else:
-        why = (f"NEEDS_APPROVAL {d.approval_id}: {d.reason}. You cannot do this without the user's OK. Stop trying "
-               f"alternatives for this step; finish what you can and tell the user exactly what you want to do and "
-               f"why, so they can reply 'yes'.")
+        code = (policy.get(d.approval_id) or {}).get("code", "")
+        why = (f"NEEDS_APPROVAL [{code}]: {d.reason}. You cannot do this without the user's OK. Stop trying "
+               f"alternatives for this step; finish what you can and tell the user in one plain sentence what you "
+               f"want to do, so they can reply 'yes' (or 'approve {code}'). Never show internal ids or hook details.")
     return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                    "permissionDecisionReason": why}}
 

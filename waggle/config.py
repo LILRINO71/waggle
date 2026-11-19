@@ -26,6 +26,13 @@ class Settings:
     agent_model: str = "haiku"
     agent_wait_s: float = 45.0  # longer agent jobs keep going in the background and report on Telegram
     agent_deep_model: str = "sonnet"
+    # Chat with the user (Telegram, voice, CLI) may use stronger models than background work; empty = same as above.
+    chat_model: str = ""  # answers + routing (router_model when empty)
+    chat_agent_model: str = ""  # tool jobs from chat (agent_model when empty)
+    chat_deep_model: str = ""  # coder / researcher / robotics jobs from chat (agent_deep_model when empty)
+    local_first: bool = False  # let the local model answer "simple" chat itself (faster, much less smart)
+    # The user's own addresses: mail to these needs no approval (it reaches only the user). Set in config.json.
+    self_emails: list = field(default_factory=list)
     agent_workdir: str = ""  # default: ~/Claude
     extra_write_roots: list = field(default_factory=list)
     # Share of the Pro limit Waggle may use, and the point where it stops escalating at all.

@@ -134,6 +134,42 @@ add(schema("notify_me", "Send the user (only the user) a message on their phone.
            {"text": {"type": "string"}, "urgent": {"type": "boolean"}}, ["text"]), t_notify_me)
 
 
+def t_send_to_me(args):
+    """Text and/or a file to the user's own Telegram chat (Hermes home channel). Reaches only the user."""
+    import os
+    import subprocess
+    from pathlib import Path
+    from . import notify
+    text = str(args.get("text") or "").strip()
+    path = str(args.get("file") or "").strip()
+    if path:
+        p = Path(path).expanduser()
+        if not p.is_file():
+            return f"No such file: {p}"
+        if p.stat().st_size > 45 * 1024 * 1024:
+            return f"{p.name} is {p.stat().st_size // 1048576} MB; Telegram bots can send up to ~50 MB"
+        text = (text + "\n" if text else "") + f"MEDIA:{p.resolve()}"
+    if not text:
+        return "Nothing to send."
+    exe = notify.hermes_exe()
+    if not exe:
+        return "Send failed: hermes not found"
+    env = dict(os.environ, HERMES_HOME=str(exe.parent.parent))
+    try:
+        r = subprocess.run([str(exe), "send", "-q", "-t", "telegram", text], capture_output=True, text=True,
+                           timeout=180, env=env, encoding="utf-8", errors="replace",
+                           creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        return "Sent to the user's Telegram." if r.returncode == 0 else f"Send failed: {(r.stderr or r.stdout)[-300:]}"
+    except Exception as e:
+        return f"Send failed: {e}"
+
+
+add(schema("send_to_me", "Send the user (only the user) a message and/or a file (PDF, image, document up to ~50 MB) "
+           "on their Telegram. Use when they say 'send it here / to me / to my phone'. Needs no approval.",
+           {"text": {"type": "string"}, "file": {"type": "string", "description": "absolute path of a file to "
+                                                                                  "attach"}}, []), t_send_to_me)
+
+
 def _load_providers():
     """Optional modules add their own tools (agents, routines, recall, models)."""
     import importlib

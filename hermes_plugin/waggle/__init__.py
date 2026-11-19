@@ -362,8 +362,8 @@ def _run_agent(session_id, request, ctx, model, platform, approved_note="", hard
     s = Settings.load()
     _agent_last[session_id] = (request, ctx, model)
     name = wagents.choose(request, hard)
-    if wagents.AGENTS[name]["model"] == "deep" and model == s.agent_model:
-        model = s.agent_deep_model  # coder / researcher / robotics work gets the stronger model
+    if wagents.AGENTS[name]["model"] == "deep" and model in (s.agent_model, s.chat_agent_model):
+        model = s.chat_deep_model or s.agent_deep_model  # coder / researcher / robotics work gets the stronger model
     box, lock = {}, threading.Lock()
     prompt = request + (f"\n\n({approved_note})" if approved_note else "")
 

@@ -204,7 +204,7 @@ MONEY = re.compile(r"payment|purchase|checkout|transfer|trade|order|billing|invo
 WAGGLE_SAFE = {"vault_search", "remember", "project_status", "project_update", "build_status", "waggle_status",
                "weather", "look_at_screen", "skill_search", "skill_load", "skill_list", "recall", "routine_list",
                "routine_add", "routine_pause", "routine_resume", "delegate", "agent_list", "jobs_list",
-               "hermes_tools", "model_catalog", "start_build", "notify_me", "rate_finding", "skill_create",
+               "hermes_tools", "model_catalog", "start_build", "notify_me", "send_to_me", "rate_finding", "skill_create",
                "skill_update", "skill_hub_search", "agent_status", "learning_report", "memory_status",
                "objective_create", "objective_status", "objective_control", "graph_query", "graph_note",
                "agent_note", "routine_add", "routine_list", "routine_pause", "routine_resume", "memory_review"}
@@ -245,6 +245,25 @@ def _short(tool, args):
     return redact(f"{tool} {body}")[:300]
 
 
+def _recipients(args):
+    out = []
+    for k in ("to", "cc", "bcc", "recipients", "recipient"):
+        v = (args or {}).get(k)
+        if isinstance(v, str):
+            out += [x for x in re.split(r"[,;]+", v) if x.strip()]
+        elif isinstance(v, (list, tuple)):
+            for x in v:
+                out.append(x.get("email", "") if isinstance(x, dict) else str(x))
+    return [re.sub(r".*<([^>]+)>.*", r"\1", x).strip().lower() for x in out if x]
+
+
+def _only_to_self(args, settings=None):
+    """Every recipient is one of the user's own addresses (Settings.self_emails): it reaches nobody else."""
+    mine = {e.lower() for e in (settings or Settings.load()).self_emails}
+    who = _recipients(args)
+    return bool(mine and who) and all(w in mine for w in who)
+
+
 def decide(tool_name, args=None, settings=None):
     """Decision for one tool call (before approvals are consulted)."""
     args = args or {}
@@ -280,6 +299,8 @@ def decide(tool_name, args=None, settings=None):
     if name in {"send_message", "send_email", "telegram_send", "discord_send", "sms_send"} or OUTWARD.search(base):
         if base == "create_draft":
             return Decision(ALLOW)
+        if base in ("send_message", "send_email") and _only_to_self(args, settings):
+            return Decision(ALLOW, "to the user's own inbox")
         return Decision(ASK, f"{base.replace('_', ' ')}: this reaches other people or the outside world")
     if DESTROY.search(base):
         return Decision(ASK, f"{base.replace('_', ' ')}: deletes or removes your data")

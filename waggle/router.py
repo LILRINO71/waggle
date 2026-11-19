@@ -29,7 +29,9 @@ CONNECTED_HINT = re.compile(r"\b(e-?mails?|inbox|gmail|unread|mailbox|g-?drive|g
                             re.I)
 CONNECTED_SYSTEM = """You are Waggle, the user's personal assistant, with read access to their Gmail, Google Drive
 and Google Docs (and Google Calendar when it is connected). Use the tools to answer from their real data. Never invent emails or files. You may create a
-draft when asked, but you cannot send, delete or share: say the draft is waiting for them. Answer like a quick,
+draft when asked. You cannot send, delete or share from here: if they want something sent (to themselves
+or anyone), say "I'll send it" only if it is a quick re-ask away and tell them to say "send it to me" / "email it to
+X"; never claim Waggle can't send email. Answer like a quick,
 natural spoken reply: lead with what matters (who, what, any deadline), skip promos and newsletters unless asked,
 2-4 sentences unless they want the full list."""
 CONNECTORS = ["Gmail", "Google_Drive", "Google_Docs"]
@@ -203,6 +205,11 @@ def decide(text, memory_ctx="", settings=None, asker=None, sorter=None, review_a
 
 def _decide(text, memory_ctx="", settings=None, asker=None, sorter=None, review_allowed=None):
     s = settings or Settings.load()
+    if s.chat_model or s.chat_agent_model or s.chat_deep_model:  # chat gets the stronger models
+        import dataclasses
+        s = dataclasses.replace(s, router_model=s.chat_model or s.router_model,
+                                agent_model=s.chat_agent_model or s.agent_model,
+                                agent_deep_model=s.chat_deep_model or s.agent_deep_model)
     h = heuristic(text)
     if h == "trivial":
         return {"route": "local", "reason": "trivial request", "reply": "", "build_prompt": "", "title": "",
@@ -212,8 +219,8 @@ def _decide(text, memory_ctx="", settings=None, asker=None, sorter=None, review_
         if reply:
             return {"route": "sonnet", "reason": "Gmail / Drive request", "reply": reply, "build_prompt": "",
                     "title": "", "by": "connected", "answered_by": s.router_model, "specialist": "general"}
-    if sorter is None and s.router_model == "haiku":
-        cat = "unsure"  # Haiku is as fast as the local sort and far better at judging: let it decide
+    if sorter is None and (s.router_model == "haiku" or not s.local_first):
+        cat = "unsure"  # Claude decides (and answers): far better than the local sort at judging
     else:
         cat, conf = (sorter or local_sort)(text, s)
         cat = adjust(text, cat)
@@ -230,7 +237,7 @@ def _decide(text, memory_ctx="", settings=None, asker=None, sorter=None, review_
     spec = specialists.pick(text)
     try:
         res = asker(prompt, model=s.router_model, system=router_prompt() + specialists.guide(spec, s),
-                    schema=ROUTE_SCHEMA, purpose="route", effort="low" if s.router_model == "haiku" else "medium")
+                    schema=ROUTE_SCHEMA, purpose="route", effort="low")
     except claude_cli.ClaudeError as e:
         out = local_route(text, memory_ctx, s)
         out["reason"] = f"Claude unavailable ({e.kind}): {e}"
