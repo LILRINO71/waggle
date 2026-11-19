@@ -76,8 +76,8 @@ def _merge_json(path, update):
         except ValueError:
             data = {}
     for k, v in update.items():
-        if isinstance(v, list) and isinstance(data.get(k), list):
-            data[k] = list(dict.fromkeys(data[k] + v))
+        if isinstance(v, list) and isinstance(data.get(k), list) and all(isinstance(x, str) for x in v + data[k]):
+            data[k] = list(dict.fromkeys(data[k] + v))  # e.g. enabled snippets: add ours, keep the user's
         else:
             data[k] = v
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
