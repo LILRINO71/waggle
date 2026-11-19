@@ -91,6 +91,22 @@ def test_conversation_survives_a_gateway_restart(monkeypatch):
     assert plug._recent("tg9").endswith("User: how long would that take?\nWaggle: About 2 hours.")
 
 
+def test_an_expired_approval_code_in_the_history_is_flagged_as_closed(monkeypatch):
+    from waggle import policy
+    traces.record("send it to my email", session="tg8", route="act",
+                  reply="I need your OK for: send message [VWV4]. Reply approve VWV4.")
+    plug = _plugin(monkeypatch)
+    seen = {}
+    monkeypatch.setattr(plug.router, "decide", lambda text, ctx: seen.update(ctx=ctx) or
+                        {"route": "sonnet", "reply": "ok", "answered_by": "sonnet"})
+    plug._pre_llm("tg8", "thanks", "telegram")
+    assert "No approval is open for this chat right now" in seen["ctx"]
+    policy.request_approval("Bash", {"command": "rm C:/tmp/x.txt"}, "deleting files", "tg8")
+    plug._pre_llm("tg8", "and now?", "telegram")
+    code = policy.pending("tg8")[0]["code"]
+    assert f"Open approvals: {code} (deleting files)" in seen["ctx"]
+
+
 def test_long_replies_are_kept_whole_enough_for_follow_ups(monkeypatch):
     plug = _plugin(monkeypatch)
     long_reply = "step " * 450  # 2250 chars: the old 1200-char cap cut the parts list off

@@ -142,6 +142,8 @@ def _pre_llm(session_id=None, user_message="", platform="", **kwargs):
             log.warning("cross-interface context failed: %s", e)
     if recent:
         ctx += "\n\n<recent_conversation>\n" + recent + "\n</recent_conversation>"
+        if re.search(r"approv", recent, re.I):  # codes quoted earlier may have expired or been used since
+            ctx += "\n\n" + _approvals_now(session_id)
     _remember_turn(session_id, "User", user_message)
 
     # "objective: <goal>" -> a persistent background objective, planned now and worked on until done.
@@ -293,6 +295,22 @@ def _approval_turn(session_id, user_message, platform, prev_msg_at):
     if any(p["created"] > prev_msg_at for p in bg):
         return _approval_list(bg), {"route": "approval"}
     return None
+
+
+def _approvals_now(session_id):
+    """What is really open right now, so a reply never points the user at an expired or used code."""
+    from waggle import policy
+    try:
+        live = policy.pending(session_id)
+    except Exception as e:
+        log.warning("approval check failed: %s", e)
+        return ""
+    if not live:
+        return ("<approvals_now>No approval is open for this chat right now: any code mentioned earlier has expired "
+                "or been used, so don't ask the user to approve it. If they still want that action, it has to be "
+                "requested again (sending to their own email or here needs no approval).</approvals_now>")
+    return "<approvals_now>Open approvals: " + "; ".join(f"{a['code']} ({a['reason']})" for a in live) + \
+        "</approvals_now>"
 
 
 def _approval_list(items):
