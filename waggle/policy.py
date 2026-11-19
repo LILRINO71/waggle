@@ -205,6 +205,7 @@ WAGGLE_SAFE = {"vault_search", "remember", "project_status", "project_update", "
                "routine_add", "routine_pause", "routine_resume", "delegate", "agent_list", "jobs_list",
                "hermes_tools", "model_catalog", "start_build", "notify_me", "rate_finding", "skill_create",
                "skill_update", "skill_hub_search", "agent_status", "learning_report", "memory_status",
+               "objective_create", "objective_status", "objective_control", "graph_query", "graph_note",
                "agent_note", "routine_add", "routine_list", "routine_pause", "routine_resume", "memory_review"}
 
 
@@ -311,6 +312,11 @@ def decide(tool_name, args=None, settings=None):
 # ---- approvals + audit -------------------------------------------------------------------------
 
 APPROVAL_TTL = 30 * 60
+BACKGROUND_TTL = 24 * 3600  # objectives/routines may wait overnight for the user's yes
+
+
+def _ttl(item):
+    return item.get("ttl") or APPROVAL_TTL
 
 
 def _fingerprint(tool, args):
@@ -335,9 +341,10 @@ def request_approval(tool, args, reason, session=""):
     fp = _fingerprint(tool, args)
     pend = _load("approvals.json")
     now = time.time()
-    pend = {k: v for k, v in pend.items() if now - v.get("created", 0) < APPROVAL_TTL or v.get("granted")}
+    pend = {k: v for k, v in pend.items() if now - v.get("created", 0) < _ttl(v) or v.get("granted")}
     pend[fp] = {"tool": tool, "summary": _short(tool, args), "reason": reason, "created": now,
-                "session": session, "granted": False, "used": False}
+                "session": session, "granted": False, "used": False,
+                "ttl": BACKGROUND_TTL if str(session).startswith(("objective-", "routine-")) else APPROVAL_TTL}
     _save("approvals.json", pend)
     return fp
 
@@ -345,7 +352,7 @@ def request_approval(tool, args, reason, session=""):
 def pending(session=None, since=0.0):
     now = time.time()
     return [dict(v, id=k) for k, v in _load("approvals.json").items()
-            if not v.get("granted") and now - v.get("created", 0) < APPROVAL_TTL and v.get("created", 0) >= since
+            if not v.get("granted") and now - v.get("created", 0) < _ttl(v) and v.get("created", 0) >= since
             and (session is None or v.get("session") in ("", session))]
 
 

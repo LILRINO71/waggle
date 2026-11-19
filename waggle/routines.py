@@ -238,6 +238,11 @@ def main():
         jobs.recover()
     except Exception:
         pass
+    try:
+        from . import objectives
+        objectives.supervise()
+    except Exception:
+        pass
     tick()
 
 

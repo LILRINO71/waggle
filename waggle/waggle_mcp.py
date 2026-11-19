@@ -138,7 +138,8 @@ def _load_providers():
     """Optional modules add their own tools (agents, routines, recall, models)."""
     import importlib
     for mod in ("waggle.traces", "waggle.learning", "waggle.agents", "waggle.routines", "waggle.models",
-                "waggle.engines", "waggle.memory_care", "waggle.doctor"):
+                "waggle.engines", "waggle.memory_care", "waggle.doctor",
+                "waggle.objectives", "waggle.graph"):
         try:
             m = importlib.import_module(mod)
         except ImportError:

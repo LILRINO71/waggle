@@ -43,8 +43,9 @@ CRON_JOBS = [  # (name, schedule, script, extra argv, module)
     ("waggle-calls", "every 1m", "waggle_calls.py", ', "due"', "call"),  # places "call me in N min" calls
     ("waggle-hq", "every 1m", "waggle_hq.py", "", "hq"),  # keeps the Obsidian HQ dashboard live
     ("waggle-brief", "30 7 * * *", "waggle_brief.py", "", "brief"),  # proactive morning brief -> Telegram
-    ("waggle-learn", "0 19 * * 0", "waggle_learn.py", "", "learning"),
-    ("waggle-routines", "every 5m", "waggle_routines.py", "", "routines"),  # user-defined agent routines  # weekly: traces -> skills, prompt tuning
+    ("waggle-learn", "0 19 * * 0", "waggle_learn.py", "", "learning"),  # weekly: traces -> skills, prompt tuning
+    ("waggle-routines", "every 5m", "waggle_routines.py", "", "routines"),  # routines + objectives supervisor
+    ("waggle-graph", "0 */6 * * *", "waggle_graph.py", "", "graph"),  # knowledge graph from vault + chats (local)
 ]
 
 

@@ -41,3 +41,11 @@ def test_recall_context_only_when_referring_to_the_past(monkeypatch):
     assert traces.context_for("what gear ratio should the intake use?") == ""
     block = traces.context_for("what did you say last time about the shooter gear ratio?")
     assert "<past_conversations>" in block and "1:1" in block
+
+
+def test_recent_elsewhere_carries_context_across_interfaces():
+    traces.record("open my FTC notes", session="voice-1", platform="cli", reply="Opened them.")
+    traces.record("background step", session="objective-x", reply="internal")
+    block = traces.recent_elsewhere("telegram-9")
+    assert "open my FTC notes" in block and "cli" in block and "internal" not in block
+    assert traces.recent_elsewhere("voice-1") == ""  # nothing from *other* sessions

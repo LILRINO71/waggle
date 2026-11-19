@@ -191,6 +191,26 @@ def stats(since=0.0):
             "denied": sum(1 for s in steps if s["denied"])}
 
 
+def recent_elsewhere(session, within_s=7200, n=4):
+    """The last few exchanges from OTHER sessions (voice, Telegram, terminal) in the last couple of hours, so a
+    conversation started on one interface continues on another."""
+    con = _db()
+    con.row_factory = sqlite3.Row
+    rows = [dict(r) for r in con.execute(
+        "SELECT time, platform, request, reply FROM traces WHERE session!=? AND session NOT LIKE 'objective-%' AND "
+        "session NOT LIKE 'routine-%' AND time>? ORDER BY id DESC LIMIT ?", (session or "", time.time() - within_s, n))]
+    con.close()
+    if not rows:
+        return ""
+    lines = ["<recent_elsewhere>", "What the user and Waggle said shortly before on another interface (context only):"]
+    for r in reversed(rows):
+        where = r.get("platform") or "chat"
+        lines.append(f"[{time.strftime('%H:%M', time.localtime(r['time']))} {where}] User: {r['request'][:240]}\n"
+                     f"Waggle: {(r['reply'] or '')[:360]}")
+    lines.append("</recent_elsewhere>")
+    return "\n".join(lines)
+
+
 PAST_REF = re.compile(r"\b(last time|earlier|yesterday|last week|we (talked|spoke|discussed)|you (said|told|"
                       r"suggested|did)|i (told|asked) you|remember when|that thing|like before)\b", re.I)
 

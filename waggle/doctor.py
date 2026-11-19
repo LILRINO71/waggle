@@ -15,7 +15,7 @@ from .config import Settings, data_path
 HERMES = Path.home() / ".hermes"
 MOJIBAKE = ("Ã¢", "Ã©", "â€™", "â€œ", "Ã°Å¸", "ðŸ")
 NEEDED_CRON = ["waggle-proactive", "waggle-digest", "waggle-calls", "waggle-hq", "waggle-brief", "waggle-learn",
-               "waggle-routines"]
+               "waggle-routines", "waggle-graph"]
 
 
 def _http_ok(url, timeout=1.5):

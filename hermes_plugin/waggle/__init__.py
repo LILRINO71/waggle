@@ -105,6 +105,12 @@ def _pre_llm(session_id=None, user_message="", platform="", **kwargs):
     if platform in SKIP_ROUTING_PLATFORMS or not user_message:
         return {"context": "\n\n".join([ctx] + extras)}
     # Whoever answers (Haiku, Sonnet or the local model) sees the last few exchanges, so it's a conversation.
+    try:  # people/projects/decisions the message mentions -> their connections (knowledge graph)
+        g = __import__("waggle.graph", fromlist=["x"]).context_for(user_message)
+        if g:
+            ctx += "\n\n" + g
+    except Exception as e:
+        log.warning("graph context failed: %s", e)
     try:  # "like last time" / "what did you say about..." -> the earlier exchange it refers to
         past = traces.context_for(user_message)
         if past:
@@ -112,10 +118,30 @@ def _pre_llm(session_id=None, user_message="", platform="", **kwargs):
     except Exception as e:
         log.warning("recall failed: %s", e)
     recent = _recent(session_id)
+    if len(_convo.get(session_id, [])) < 2:  # new conversation here: carry over what was just said elsewhere
+        try:
+            other = traces.recent_elsewhere(session_id)
+            if other:
+                ctx += "\n\n" + other
+        except Exception as e:
+            log.warning("cross-interface context failed: %s", e)
     if recent:
         ctx += "\n\n<recent_conversation>\n" + recent + "\n</recent_conversation>"
     _remember_turn(session_id, "User", user_message)
 
+    # "objective: <goal>" -> a persistent background objective, planned now and worked on until done.
+    m = OBJECTIVE_CMD.match(user_message)
+    if m:
+        return _hand_over(session_id, user_message, _start_objective(m.group(1).strip()), {"route": "objective"})
+    # "yes" while a background objective waits for approval -> grant it and let it continue.
+    if YES.match(user_message) and not (session_id in _agent_last and policy.pending(session_id)):
+        waiting = [p for p in policy.pending() if str(p.get("session", "")).startswith("objective-")]
+        if waiting:
+            from waggle import objectives
+            policy.grant(session=waiting[0]["session"])
+            oid = objectives.resume_after_approval(waiting[0]["session"])
+            title = (objectives.status(oid) or {}).get("title", "the objective") if oid else "the objective"
+            return _hand_over(session_id, user_message, f"Approved. Continuing {title}.", {"route": "objective"})
     # "yes" to an approval an agent asked for -> grant exactly those calls and finish the job.
     if YES.match(user_message) and session_id in _agent_last and policy.pending(session_id):
         granted = policy.grant(session=session_id)
@@ -216,6 +242,24 @@ def _hand_over(session_id, user_message, reply, meta=None):
         _trace(session_id, user_message, reply, **meta)
     threading.Thread(target=_refresh_hq, daemon=True).start()
     return {"action": "block", "message": reply}
+
+
+OBJECTIVE_CMD = re.compile(r"^\s*(?:objective|goal|mission)\s*:\s*(.{8,})$", re.I | re.S)
+
+
+def _start_objective(goal):
+    from waggle import objectives
+    try:
+        oid = objectives.create(goal, project=(projects.find(goal) or [None])[0], origin="user")
+    except Exception as e:
+        return f"I couldn't start that objective: {e}"
+    st = objectives.status(oid) or {}
+    if st.get("status") != "active":
+        return f"Objective saved but not planned yet ({st.get('error') or st.get('status')}). I'll retry shortly."
+    objectives.kick(oid)
+    plan = "\n".join(f"{x['idx']}. {x['title']} ({x['agent']})" for x in st.get("steps", []))
+    return (f"On it: **{st.get('title')}** (objective `{oid}`). The plan:\n{plan}\n\nI'm working through it in the "
+            f"background and will message you when it's done or if I need you.")
 
 
 _turn = {}  # session_id -> {"t0", "platform", route...} for the turn in progress
@@ -452,6 +496,7 @@ def _startup_upkeep():
     """Once per gateway start: resume builds a crash or reboot interrupted, refresh skills, default routines."""
     time.sleep(20)
     for name, fn in (("recover jobs", lambda: jobs.recover()), ("routines", _ensure_routines),
+                     ("objectives", lambda: __import__("waggle.objectives", fromlist=["x"]).supervise()),
                      ("skills", lambda: __import__("waggle.skills", fromlist=["x"]).ensure_index())):
         try:
             fn()
