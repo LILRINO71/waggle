@@ -32,6 +32,7 @@ class Settings:
     watch_roots: list = field(default_factory=lambda: [str(Path.home() / "Claude")])
     extra_repos: list = field(default_factory=list)
     max_verifications_per_day: int = 4
+    max_calls_per_day: int = 2
     stale_days: int = 7
     phone_target: str = "telegram"
     # Saved by install.py: cron scripts run with a trimmed environment and may not see LOCALAPPDATA.

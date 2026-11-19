@@ -21,7 +21,7 @@ _repo = Path(__file__).with_name("repo_path.txt")
 if _repo.exists() and _repo.read_text(encoding="utf-8").strip() not in sys.path:
     sys.path.insert(0, _repo.read_text(encoding="utf-8").strip())
 
-from waggle import events, jobs, learn, live, memory, notify, ollama, projects, quota, router, security, vault
+from waggle import call, events, jobs, learn, live, memory, notify, ollama, projects, quota, router, security, vault
 from waggle.config import Settings
 
 log = logging.getLogger("waggle")
@@ -85,6 +85,10 @@ def on_pre_llm_call(session_id=None, user_message="", platform="", **kwargs):
         except Exception as e:
             log.warning("weather for %s failed: %s", place, e)
         return {"context": "\n\n".join([ctx] + extras)}
+    # "Call me in 10 minutes about X": handled here so it never depends on the small model picking a tool.
+    want = call.parse_request(user_message)
+    if want:
+        return {"context": "\n\n".join([ctx, _call_me(*want)] + extras)}
     # Live data first, so whichever brain answers (local or Sonnet) has it.
     if live.needs_live_info(user_message) or live.weather_request(user_message):
         try:
@@ -233,6 +237,25 @@ def t_weather(args, **kw):
         return f"Weather service unavailable right now ({type(e).__name__}). Tell the user and try web_search."
 
 
+def _call_me(minutes, about):
+    """Place or schedule a call to the user; returns context telling the model what happened."""
+    if not call.configured():
+        return ("<waggle_action>Phone calls aren't set up yet. Tell the user in one sentence to run "
+                "'Setup Calls.bat' in the waggle folder (free Twilio trial).</waggle_action>")
+    msg = about or "You asked me to call you."
+    if minutes <= 0.05:
+        res = call.call(msg, reason="asked", force=True)
+        what = "Calling the user now." if res["ok"] else f"The call failed: {res['why']}."
+    else:
+        due = call.schedule(msg, minutes)
+        what = f"Call scheduled for {time.strftime('%I:%M %p', time.localtime(due)).lstrip('0')}."
+    return f"<waggle_action>{what} Confirm it to the user in one short sentence.</waggle_action>"
+
+
+def t_call_me(args, **kw):
+    return _call_me(float(args.get("minutes") or 0), args.get("message", ""))
+
+
 def t_rate_finding(args, **kw):
     events.log("feedback", finding=args.get("finding_id"), useful=bool(args.get("useful")),
                note=args.get("note", "")[:300])
@@ -271,6 +294,9 @@ TOOLS = [
              "user's saved home city; if the result says NO_LOCATION, ask the user for their city.",
              {"location": {"type": "string", "description": "City, e.g. 'Fargo, ND'. Empty = saved home city."},
               "day": {"type": "string", "enum": ["today", "tomorrow", "week"]}}, []), t_weather),
+    (_schema("call_me", "Phone the user (a real call) now or after some minutes, reading out a short message.",
+             {"message": {"type": "string"}, "minutes": {"type": "number", "description": "0 = now"}},
+             ["message"]), t_call_me),
     (_schema("rate_finding", "Record whether a proactive suggestion from Waggle was useful (the user's reaction).",
              {"finding_id": {"type": "string"}, "useful": {"type": "boolean"}, "note": {"type": "string"}},
              ["finding_id", "useful"]), t_rate_finding),

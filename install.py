@@ -13,6 +13,7 @@ HERMES_HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
 HERMES = HERMES_HOME / "bin" / ("hermes.exe" if os.name == "nt" else "hermes")
 
 sys.path.insert(0, str(REPO))
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # Hermes prints emoji; cp1252 consoles choke
 from waggle import vault  # noqa: E402
 from waggle.config import Settings  # noqa: E402
 
@@ -30,14 +31,15 @@ def hermes(*args):
 SCRIPT = '''import sys
 sys.path.insert(0, r"{repo}")
 sys.argv = [sys.argv[0]{extra}]
-from waggle.proactive import main
+from waggle.{module} import main
 main()
 '''
 
-CRON_JOBS = [  # (name, schedule, script, extra argv)
-    ("waggle-proactive", "every 1h", "waggle_proactive.py", ""),
-    ("waggle-digest", "0 8,17 * * *", "waggle_digest.py", ', "digest"'),
-    ("waggle-consolidate", "0 18 * * 0", "waggle_consolidate.py", ', "consolidate"'),
+CRON_JOBS = [  # (name, schedule, script, extra argv, module)
+    ("waggle-proactive", "every 1h", "waggle_proactive.py", "", "proactive"),
+    ("waggle-digest", "0 8,17 * * *", "waggle_digest.py", ', "digest"', "proactive"),
+    ("waggle-consolidate", "0 18 * * 0", "waggle_consolidate.py", ', "consolidate"', "proactive"),
+    ("waggle-calls", "every 1m", "waggle_calls.py", ', "due"', "call"),  # places "call me in N min" calls
 ]
 
 
@@ -45,10 +47,10 @@ def install_cron(s):
     """Script-only Hermes cron jobs: stdout goes to the phone, empty stdout = silent."""
     scripts = HERMES_HOME / "scripts"
     scripts.mkdir(parents=True, exist_ok=True)
-    for name, schedule, script, extra in CRON_JOBS:
-        (scripts / script).write_text(SCRIPT.format(repo=REPO, extra=extra), encoding="utf-8")
+    for name, schedule, script, extra, module in CRON_JOBS:
+        (scripts / script).write_text(SCRIPT.format(repo=REPO, extra=extra, module=module), encoding="utf-8")
     existing = hermes("cron", "list").stdout
-    for name, schedule, script, extra in CRON_JOBS:
+    for name, schedule, script, extra, module in CRON_JOBS:
         if name in existing:
             print(f"cron {name}: already there")
             continue

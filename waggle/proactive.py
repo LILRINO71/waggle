@@ -236,6 +236,9 @@ def _deliver(f, s, phone_now):
     if tier == "critical":
         phone_now.append("🚨 " + text)
         notify.send(text, urgent=True, settings=s, phone=False)  # the cron run itself delivers to the phone
+        from . import call
+        if f.get("verified") and call.configured() and not notify.in_quiet_hours(s):
+            call.call(f"{f['title']}. {f['detail']}", reason="critical", settings=s)
     elif tier == "important":
         notify.send(text, urgent=False, settings=s, phone=False)  # mentioned on your next message
     elif tier == "interesting":

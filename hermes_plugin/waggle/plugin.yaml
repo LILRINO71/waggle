@@ -12,6 +12,7 @@ provides_tools:
   - project_update
   - rate_finding
   - weather
+  - call_me
 provides_hooks:
   - pre_llm_call
   - post_llm_call
