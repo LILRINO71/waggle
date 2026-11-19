@@ -26,6 +26,7 @@ import subprocess
 import sys
 import time
 import uuid
+from pathlib import Path
 
 from . import agents, budget, claude_cli, events, notify, projects, quota, vault
 from .config import Settings, data_path
@@ -205,8 +206,11 @@ def _step_prompt(con, obj, step):
     if step["approved"]:
         retry += (f"\nThe user approved exactly these actions for this step: {step['approved']}. Make those calls "
                   "with the same arguments; anything else that needs approval will be asked again.\n")
+    root = vault.root()
     return (f"You are working on step {step['idx']} of a longer objective for the user.\n\nOBJECTIVE: {obj['goal']}\n"
             + (f"PROJECT: {obj['project']}\n" if obj["project"] else "")
+            + f"THE USER'S NOTES: the Obsidian vault at {root}. A path like Inbox/x.md, Projects/y.md or Research/z.md "
+              f"means that file inside the vault ({root}\\Inbox\\x.md), never your working folder.\n"
             + "\nPLAN:\n" + "\n".join(plan_lines)
             + ("\n\nRESULTS YOU BUILD ON:\n" + "\n".join(dep_results) if dep_results else "")
             + f"\n\nYOUR STEP: {step['title']}\n{step['detail']}\nDONE WHEN: {step['done_when']}\n{retry}"
@@ -331,15 +335,51 @@ def approval_message(obj, step, approvals):
             f"it can:\n" + "\n".join(lines) + f"\n{how} Nothing else in this objective runs until you answer.")
 
 
+VAULT_PATH = re.compile(r"\b((?:Inbox|Projects|Research|Objectives|Ideas|People|Journal|Me|Routines|Jobs|Agents)"
+                        r"/[^\n\"'`*|\[\]]+?\.md)\b")
+ABS_PATH = re.compile(r"\b([A-Za-z]:[\\/][^\n\"'`*|<>?]+?\.(?:md|txt|py|json|csv|html))\b")
+CREATES = re.compile(r"\b(write|writes|written|create|created|save|saved|exists?|note at|file at|contains?|produce|"
+                     r"produced)\b", re.I)
+REMOVES = re.compile(r"\b(delete|deleted|remove|removed|no longer|gone|move|moved|rename|renamed)\b", re.I)
+
+
+def artifact_facts(step, settings=None):
+    """Ground truth for the check: do the files this step names actually exist? Vault-relative paths (Inbox/x.md)
+    are looked up in the vault. Returns (facts text, files a creating step promised but are missing)."""
+    s = settings or Settings.load()
+    text = f"{step['detail']}\n{step['done_when']}"
+    root = vault.root(s)
+    facts, absent = [], []
+    seen = set()
+    for rel in VAULT_PATH.findall(text) + ABS_PATH.findall(text):
+        if rel in seen:
+            continue
+        seen.add(rel)
+        p = Path(rel) if ABS_PATH.fullmatch(rel) else root / rel
+        if p.exists():
+            facts.append(f"{p} exists ({p.stat().st_size} bytes)")
+        else:
+            facts.append(f"{p} does NOT exist")
+            if CREATES.search(step["done_when"] or "") and not REMOVES.search(text):
+                absent.append(str(p))
+    return "; ".join(facts[:6]), absent
+
+
 def _verify_and_record(oid, idx, s, verify_fn=None):
     con = _db()
     step = con.execute("SELECT * FROM steps WHERE objective_id=? AND idx=?", (oid, idx)).fetchone()
     task = f"{step['title']}: {step['detail']}\nDone when: {step['done_when']}"
-    with budget.background("objective-verify", oid, idx):
-        if verify_fn:
-            complete, missing = verify_fn(task, step["result"] or "", settings=s)
-        else:
-            complete, missing = agents.verify(task, step["result"] or "", settings=s, strict=True)
+    facts, absent = artifact_facts(step, s)
+    report = (step["result"] or "") + (f"\n\n[Checked by Waggle on disk: {facts}]" if facts else "")
+    if absent:  # the step promised a file that isn't there: no need to ask a model
+        complete, missing = False, (f"{absent[0]} does not exist. Write it there (inside the vault "
+                                    f"{vault.root(s)}), not anywhere else.")
+    else:
+        with budget.background("objective-verify", oid, idx):
+            if verify_fn:
+                complete, missing = verify_fn(task, report, settings=s)
+            else:
+                complete, missing = agents.verify(task, report, settings=s, strict=True)
     if complete is None:  # the check couldn't run: keep the saved result and try the check again later
         _defer(con, oid, f"verification of step {idx} waiting: {missing}", time.time() + VERIFY_RETRY_S)
         con.commit()

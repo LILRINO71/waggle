@@ -534,3 +534,27 @@ def test_rerun_after_approval_matches_the_same_command_with_a_new_description():
     assert policy.check("Bash", b, session="objective-live").allowed
     assert policy.check("Bash", b, session="objective-live").action == "ask"  # still one use only
     assert policy.check("Bash", {"command": 'rm -- "/v/Inbox/y.md"'}, session="objective-live").action == "ask"
+
+
+def test_a_promised_file_must_really_exist_in_the_vault(settings, quiet):
+    """Found live: the agent wrote Inbox/x.md into its working folder and the report-only check passed it."""
+    from waggle import vault
+    step = dict(STEP, detail="Write the note Inbox/M3 check.md", done_when="Inbox/M3 check.md exists with the line ok")
+    oid = objectives.create("goal goal goal", asker=_planner([step]), settings=settings)
+    ran = []
+    out = objectives.run_step(oid, settings=settings, run_fn=_ok_runner(ran, text="Created Inbox/M3 check.md"),
+                              verify_fn=lambda *a, **k: (True, ""))
+    assert out == "retry" and "does not exist" in objectives.status(oid)["steps"][0]["verify"]
+    assert str(vault.root(settings)) in ran[0][1]  # the step was told where the vault is
+    seen = []
+    vault.write("Inbox/M3 check", "ok")
+    out = objectives.run_step(oid, settings=settings, run_fn=_ok_runner(ran),
+                              verify_fn=lambda task, report, **k: seen.append(report) or (True, ""))
+    assert out == "done" and "M3 check.md exists" in seen[0]
+
+
+def test_a_delete_step_is_not_failed_for_the_file_being_gone(settings, quiet):
+    step = dict(STEP, detail="Delete Inbox/old.md", done_when="Inbox/old.md no longer exists")
+    oid = objectives.create("goal goal goal", asker=_planner([step]), settings=settings)
+    assert objectives.run_step(oid, settings=settings, run_fn=_ok_runner([]),
+                               verify_fn=lambda *a, **k: (True, "")) == "done"
