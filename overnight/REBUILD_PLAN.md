@@ -134,3 +134,8 @@ and quiz scoring run locally for free.
 Done 2026-11-19: four live audits; two architecture reviews; step 0 deployed (gateway restarted 12:08 with the
 stopgap config). In progress on separate branches: the portable chat engine, knowledge intake, and the delivery
 logic for outreach (paused at a checkpoint until step 1 exists). Nothing beyond step 0 is deployed.
+
+2026-11-19 14:20: the open decisions were accepted as recommended. Step 1 is being built on two branches:
+`rebuild/core` (runtime store first, then the always-on process) and `rebuild/guard` (the safety core). Step 0
+is still unproven: no real Telegram message has arrived since the restart. The checks only the user can do are
+in `overnight/USER_TESTS.md`.
