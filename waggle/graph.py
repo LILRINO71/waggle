@@ -164,13 +164,15 @@ def build_from_vault(settings=None):
                 if len(line) < 6:
                     continue
                 struck = line.startswith("~~")
-                line = re.sub(r"_?\((?:from chat|changed [^)]*)\)_?", "", line.replace("~~", "")).strip()
+                not_decision = "not a decision" in line
+                line = re.sub(r"_?\((?:from chat|changed [^)]*|not a decision[^)]*)\)_?", "",
+                              line.replace("~~", "")).strip()
                 m = DATED.match(line)
                 date, txt = (m.group(1), m.group(2).strip()) if m else (None, line)
                 d = upsert_node(con, f"decision: {txt[:90]}", "decision", txt, "vault", date,
                                 source_ref=f"vault Projects/{p.stem}.md")
                 if struck:
-                    set_status(con, d, "superseded")
+                    set_status(con, d, "retracted" if not_decision else "superseded")
                 elif con.execute("SELECT status FROM nodes WHERE key=?", (d,)).fetchone()["status"] == "retracted":
                     set_status(con, d, "current")  # the user put it back in the note
                 seen_dec.add(d)
@@ -243,9 +245,28 @@ def _ref(batch, text):
     return f"chat {row.get('session', '')} {dt.datetime.fromtimestamp(row['time']):%Y-%m-%d %H:%M}"
 
 
+def _strike_filed(project, text, settings=None):
+    """Strike a line Waggle filed from chat ("_(from chat)_") in a project's Decisions; leaves the user's own lines."""
+    try:
+        cur = projects.sections(project, settings).get("Decisions", "")
+    except Exception:
+        return False
+    want = _words(text)
+    lines = cur.splitlines()
+    for i, line in enumerate(lines):
+        if "(from chat)" in line and "~~" not in line and want and len(want & _words(line)) / len(want) >= 0.8:
+            body = line.strip().lstrip("-* ").strip()
+            lines[i] = f"- ~~{body}~~ _(not a decision: removed {dt.date.today().isoformat()})_"
+            projects._set_section(project, "Decisions", "\n".join(lines), settings)
+            return True
+    return False
+
+
 def cleanup(con=None):
     """Apply today's quality rules to what older extraction runs left (once): drop noise entities and free-floating
-    chat topics, retract chat 'decisions' that were really requests to the assistant. Vault data is untouched."""
+    chat topics, retract chat 'decisions' that were really requests to the assistant. Such a line that Waggle itself
+    filed into a project note (marked "(from chat)") is struck through there, not deleted, so the rebuild doesn't
+    bring it back and the user can still see and undo it. Nothing the user wrote is touched."""
     own = con is None
     con = con or _db()
     removed = retracted = 0
@@ -255,6 +276,9 @@ def cleanup(con=None):
             if ASSISTANT_REQUEST.match(text) or re.search(r"\w\.(md|txt|py|json)\b|[/\\]", text):
                 set_status(con, r["key"], "retracted")
                 retracted += 1
+                for p in con.execute("SELECT n.name FROM edges e JOIN nodes n ON n.key=e.src WHERE e.dst=? AND "
+                                     "e.rel='decided'", (r["key"],)).fetchall():
+                    _strike_filed(p["name"], text)
             continue
         if r["type"] in ("idea", "project"):
             continue
@@ -264,7 +288,7 @@ def cleanup(con=None):
             removed += 1
     con.execute("DELETE FROM edges WHERE source='chat' AND (src NOT IN (SELECT key FROM nodes) OR dst NOT IN "
                 "(SELECT key FROM nodes))")
-    con.execute("INSERT OR REPLACE INTO meta VALUES ('cleanup_v2', ?)", (str(time.time()),))
+    con.execute("INSERT OR REPLACE INTO meta VALUES ('cleanup_v3', ?)", (str(time.time()),))
     if own:
         con.commit()
         con.close()
@@ -574,7 +598,7 @@ def stats():
 def main():
     """Cron entry. Prints nothing: Hermes sends a script job's stdout to the phone."""
     con = _db()
-    if not con.execute("SELECT 1 FROM meta WHERE k='cleanup_v2'").fetchone():
+    if not con.execute("SELECT 1 FROM meta WHERE k='cleanup_v3'").fetchone():
         cleanup(con)
         con.commit()
     con.close()

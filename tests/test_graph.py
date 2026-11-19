@@ -190,8 +190,14 @@ def test_cleanup_of_old_noise_keeps_real_things(settings):
     graph.add_edge(con, "telegram", "uses", "calendar tomorrow", "chat")
     graph.upsert_node(con, "decision: I'll write a short note in Inbox/x.md", "decision",
                       "I'll write a short note in Inbox/x.md", "chat")
+    graph.add_edge(con, "robot build", "decided", "decision: i'll write a short note in inbox/x.md", "chat")
+    graph.record_decision("Robot Build", "I'll write a short note in Inbox/x.md", settings)  # old run filed it
     out = graph.cleanup(con)
     con.commit()
     assert out == {"removed": 3, "retracted": 1}
+    dec = projects.sections("Robot Build", settings)["Decisions"]
+    assert "~~" in dec and "not a decision" in dec and "Use a roller shooter" in dec  # struck, user's lines kept
+    graph.build_from_vault(settings)  # the rebuild must not bring it back
+    assert all("short note" not in d["summary"] for d in graph.neighbors("Robot Build")["decisions"])
     assert graph.neighbors("Telegram")["related"] == [] and graph.neighbors("today") is None
     assert graph.neighbors("Arjun") is not None  # vault data untouched
