@@ -187,3 +187,15 @@ def test_engine_specs(settings):
     assert set(engines.configured(settings)) >= {"claude", "ollama"}
     with pytest.raises(ValueError):
         engines.make({"kind": "quantum"})
+
+
+def test_learned_cap_never_locks_waggle_out(settings, monkeypatch):
+    from waggle import quota
+    settings.window_units_estimate = 10.0
+    settings.save()
+    quota._save_state({"samples": [10.0]})  # calibrated
+    s = Settings.load()
+    cap = quota.learned_cap(s, 20.0)
+    assert 20.0 / cap < s.stop_at  # after raising the cap, usage sits below the stop line
+    ok, why = quota.can_escalate("haiku", s, used=20.0)
+    assert ok, why

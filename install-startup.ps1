@@ -24,3 +24,8 @@ foreach ($dir in @([Environment]::GetFolderPath("Desktop"), $programs)) {
     $s.Save()
     Write-Host "Installed: $(Join-Path $dir 'Waggle.lnk')"
 }
+# Desktop "Waggle Command Center": the local dashboard (started hidden by Waggle Gateway.vbs).
+$url = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path ([Environment]::GetFolderPath("Desktop")) "Waggle Command Center.url"))
+$url.TargetPath = "http://127.0.0.1:8897"
+$url.Save()
+Write-Host "Installed: Waggle Command Center.url"

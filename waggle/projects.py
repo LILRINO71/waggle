@@ -149,3 +149,26 @@ def context_for(text, settings=None, limit=2):
         lines += ["", vault.read(_rel(name), s)[:4000]]
     lines.append("</waggle_projects>")
     return "\n".join(lines)
+
+
+REQUIRED = ("Goal", "Current focus", "Next actions")
+
+
+def audit(settings=None, stale_days=7):
+    """Which projects are missing the state every project should have, or have gone quiet.
+    [{'name', 'status', 'missing': [...], 'open_tasks', 'days_since_update'}]"""
+    out = []
+    today = dt.date.today()
+    for p in all_projects(settings):
+        if p["status"] not in ("active", "planned"):
+            continue
+        sec = sections(p["name"], settings)
+        missing = [k for k in REQUIRED if not sec.get(k, "").strip()]
+        open_tasks = [t for t in tasks(p["name"], settings) if not t["done"]]
+        try:
+            age = (today - dt.date.fromisoformat(str(p["updated"])[:10])).days
+        except ValueError:
+            age = None
+        out.append({"name": p["name"], "status": p["status"], "missing": missing, "open_tasks": len(open_tasks),
+                    "days_since_update": age, "stale": age is not None and age >= stale_days})
+    return out

@@ -240,8 +240,9 @@ def test_cap_rises_when_usage_passes_it_without_a_limit(settings, monkeypatch):
     monkeypatch.setattr(quota, "window_usage", lambda *a, **k: 10.0)
     ok, _ = quota.can_escalate("sonnet", settings)
     from waggle.config import Settings
-    assert Settings.load().window_units_estimate == pytest.approx(11.5)
-    assert ok  # uncalibrated: the 11.5 is only a lower bound
+    # raised so usage lands at 70% (stop_at 0.85 - 0.15), safely under the stop line
+    assert Settings.load().window_units_estimate == pytest.approx(10.0 / 0.7, rel=1e-3)
+    assert ok  # uncalibrated: the estimate is only a lower bound
 
 
 def test_build_usage_counts_toward_share_but_not_twice(settings, monkeypatch):

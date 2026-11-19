@@ -33,6 +33,12 @@ draft when asked, but you cannot send, delete or share: say the draft is waiting
 natural spoken reply: lead with what matters (who, what, any deadline), skip promos and newsletters unless asked,
 2-4 sentences unless they want the full list."""
 CONNECTORS = ["Gmail", "Google_Drive", "Google_Docs"]
+PC_CONTROL = re.compile(r"^\s*(please\s+)?(close|minimi[sz]e|maximi[sz]e|switch to|focus|move|resize|arrange)\b", re.I)
+
+
+def wants_connectors(text):
+    """Mail/Drive/Docs request (not 'close the window with my email', which is screen control)."""
+    return bool(CONNECTED_HINT.search(text or "")) and not PC_CONTROL.search(text or "")
 
 ROUTE_SCHEMA = {
     "type": "object",
@@ -89,7 +95,7 @@ def classify(text, memory_ctx="", settings=None, asker=None, system=None):
     s = settings or Settings.load()
     if heuristic(text) == "trivial":
         return "local"
-    if CONNECTED_HINT.search(text or ""):
+    if wants_connectors(text):
         return "connected"
     asker = asker or claude_cli.ask
     spec = specialists.pick(text)
@@ -185,7 +191,7 @@ def _decide(text, memory_ctx="", settings=None, asker=None, sorter=None, review_
     if h == "trivial":
         return {"route": "local", "reason": "trivial request", "reply": "", "build_prompt": "", "title": "",
                 "by": "heuristic"}
-    if CONNECTED_HINT.search(text or ""):
+    if wants_connectors(text):
         reply = connected_answer(text, memory_ctx, s, asker)
         if reply:
             return {"route": "sonnet", "reason": "Gmail / Drive request", "reply": reply, "build_prompt": "",

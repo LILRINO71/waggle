@@ -134,7 +134,9 @@ def learned_cap(s, total, now=None):
     """Usage above the estimate without a limit hit proves the real cap is higher: raise it."""
     now = now or time.time()
     if total > s.window_units_estimate and _state().get("blocked_until", 0) <= now:
-        s.window_units_estimate = round(total * 1.15, 3)
+        # Land well under stop_at: a 1.15x bump left usage at 87%, above the 85% stop line, so Waggle locked
+        # itself out right after learning the cap was higher (found 2026-11-18 after the Max upgrade).
+        s.window_units_estimate = round(total / max(0.5, s.stop_at - 0.15), 3)
         s.save()
     return s.window_units_estimate
 

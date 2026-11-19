@@ -82,6 +82,12 @@ def on_pre_llm_call(session_id=None, user_message="", platform="", **kwargs):
     if platform in SKIP_ROUTING_PLATFORMS or not user_message:
         return {"context": "\n\n".join([ctx] + extras)}
     # Whoever answers (Haiku, Sonnet or the local model) sees the last few exchanges, so it's a conversation.
+    try:  # "like last time" / "what did you say about..." -> the earlier exchange it refers to
+        past = traces.context_for(user_message)
+        if past:
+            ctx += "\n\n" + past
+    except Exception as e:
+        log.warning("recall failed: %s", e)
     recent = _recent(session_id)
     if recent:
         ctx += "\n\n<recent_conversation>\n" + recent + "\n</recent_conversation>"
@@ -126,7 +132,7 @@ def on_pre_llm_call(session_id=None, user_message="", platform="", **kwargs):
                 if _ctx is not None else screen.context(user_message))
         return {"context": "\n\n".join([ctx, look] + extras)}
     # Live data first, so whichever brain answers (local or Sonnet) has it.
-    if not router.CONNECTED_HINT.search(user_message) and (live.needs_live_info(user_message)
+    if not router.wants_connectors(user_message) and (live.needs_live_info(user_message)
                                                           or live.weather_request(user_message)):
         try:
             data = live.prefetch(user_message, search=_web_search)

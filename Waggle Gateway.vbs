@@ -37,6 +37,18 @@ ksay = CreateObject("Scripting.FileSystemObject").GetParentFolderName(WScript.Sc
 If Not CreateObject("Scripting.FileSystemObject").FileExists(ksay) Then ksay = profile & "\Claude\waggle\voice\kokoro_say.py"
 If Not KokoroUp() Then sh.Run """" & kpy & """ """ & ksay & """ --serve", 0, False
 
+' Waggle Command Center (local dashboard on 127.0.0.1:8897), hidden.
+Function DashUp()
+  On Error Resume Next
+  Set http = CreateObject("MSXML2.XMLHTTP")
+  http.Open "GET", "http://127.0.0.1:8897/api/state", False
+  http.Send
+  DashUp = (Err.Number = 0 And http.Status = 200)
+End Function
+dashpy = CreateObject("Scripting.FileSystemObject").GetParentFolderName(WScript.ScriptFullName) & "\waggle\dashboard.py"
+If Not CreateObject("Scripting.FileSystemObject").FileExists(dashpy) Then dashpy = profile & "\Claude\waggle\waggle\dashboard.py"
+If Not DashUp() Then sh.Run "pythonw.exe """ & dashpy & """", 0, False
+
 home = profile & "\.hermes"
 sh.Environment("Process")("HERMES_HOME") = home
 ' Hermes's own ffmpeg: Telegram voice notes (speech in and out) need it.
