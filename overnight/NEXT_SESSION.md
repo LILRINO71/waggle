@@ -3,10 +3,22 @@
 Read in order: MASTER_PLAN.md -> DECISIONS.md -> FEATURE_MATRIX.md (bottom section = phase 2) -> PROGRESS.md (last
 section) -> BLOCKERS.md.
 
+## North star (keep this in view)
+Waggle should be the assistant the user *chooses* over opening ChatGPT or Claude: Claude-level conversation plus
+persistent knowledge of their projects, voice, Telegram, and tasks done independently while they're at school,
+asleep or busy. Make the assistant better, not just the infrastructure bigger.
+- Quality first: a cheaper answer that is noticeably worse is not an optimisation.
+- Reliability, safety and finished work beat feature count; never weaken approvals or verification for a test.
+- Small, tested, reversible changes; claim "works" only after the real behaviour is tested.
+- Reuse existing tools from GitHub and combine their strengths instead of rebuilding them.
+- 2026-11-19: Waggle work moved from the mission 3 session to the user's main orchestrator chat, which may
+  delegate per task (the earlier "one session, no subagents" rule no longer applies). The full mission briefs and
+  that session's transcript are archived locally, outside the repo.
+
 ## Layout
 - Dev worktree: `C:\Users\hiheo\Claude\waggle-dev` (branch `overnight`). Live: `C:\Users\hiheo\Claude\waggle` (main).
-  Both are at the same commit after the 2026-11-18 deploy.
-- Tests: `cd C:\Users\hiheo\Claude\waggle-dev; python -m pytest -q` (289 pass, ~13 s, fully offline).
+  Both are at the same commit after each deploy.
+- Tests: `cd C:\Users\hiheo\Claude\waggle-dev; python -m pytest -q` (290 pass, ~13 s, fully offline).
 - Deploy a tested milestone: in the live checkout `git merge --ff-only overnight`, then `.\reload-waggle.ps1`
   (exit code 255 from that script is PowerShell piping noise; read its lines).
 - Health: `python -m waggle.cli doctor`. Dashboard: http://127.0.0.1:8897.
