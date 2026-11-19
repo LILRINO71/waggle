@@ -601,13 +601,24 @@ def supervise(kick_fn=None, now=None):
     recover(con, now)
     _check_approvals(con, now)
     con.commit()
-    rows = con.execute("SELECT id, worker_pid, lease_until, deferred_until FROM objectives "
+    rows = con.execute("SELECT id, worker_pid, lease_until, deferred_until, defer_reason FROM objectives "
                        "WHERE status IN ('planning','active')").fetchall()
     con.close()
-    started = []
+    started, room = [], None
     for r in rows:
-        if _held(r, now) or (r["deferred_until"] or 0) > now:
+        if _held(r, now):
             continue
+        if (r["deferred_until"] or 0) > now:
+            # Parked on the budget: if there is room again (the user raised the limit), go now, not at the reset.
+            if room is None:
+                room = budget.check(Settings.load().agent_model, "objective", now=now)[0]
+            if not (room and "budget" in (r["defer_reason"] or "")):
+                continue
+            con = _db()
+            _set(con, r["id"], deferred_until=None, defer_reason=None)
+            _log(con, r["id"], "resumed", "background budget has room again")
+            con.commit()
+            con.close()
         (kick_fn or (lambda o: kick(o, user=False)))(r["id"])
         started.append(r["id"])
     return started

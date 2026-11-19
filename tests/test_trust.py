@@ -510,3 +510,14 @@ def test_supervisor_work_sleeps_off_a_short_wait_in_the_worker(settings, quiet):
     out = objectives.work(oid, settings=settings, run_fn=_ok_runner([]), verify_fn=lambda *a, **k: (True, ""),
                           user=False, sleep=fake_sleep)
     assert out == "done" and slept and slept[0] <= objectives.SHORT_WAIT_S + 1
+
+
+def test_raising_the_limit_unparks_budget_waits_at_the_next_tick(settings, quiet):
+    settings.background_daily_units = 0.01
+    settings.save()
+    oid = objectives.create("goal goal goal", asker=_planner([STEP]), settings=settings)
+    assert objectives.run_step(oid, settings=settings, run_fn=_ok_runner([])) == "waiting_budget"
+    assert objectives.supervise(kick_fn=lambda o: None) == []  # still no room
+    budget.set_limit(4)
+    assert objectives.supervise(kick_fn=lambda o: None) == [oid]
+    assert objectives.status(oid)["deferred_until"] is None
