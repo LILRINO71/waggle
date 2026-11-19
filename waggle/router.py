@@ -24,10 +24,20 @@ BIG_TASK_HINTS = [r"\b(build|make|create|write|code|develop|design)\b.{0,40}\b(a
                   r"tool|script|api|dashboard|extension|plugin|mod|backend|frontend)\b",
                   r"\brefactor\b", r"\b(fix|debug)\b.{0,30}\b(repo|project|codebase)\b"]
 
+# The user's own Gmail / Drive / Docs, read through their claude.ai connectors (no local model involved).
+CONNECTED_HINT = re.compile(r"\b(e-?mails?|inbox|gmail|unread|mailbox|g-?drive|google (?:drive|docs?)|my (?:docs|drive))\b",
+                            re.I)
+CONNECTED_SYSTEM = """You are Waggle, the user's personal assistant, with read access to their Gmail, Google Drive
+and Google Docs. Use the tools to answer from their real data. Never invent emails or files. You may create a
+draft when asked, but you cannot send, delete or share: say the draft is waiting for them. Answer like a quick,
+natural spoken reply: lead with what matters (who, what, any deadline), skip promos and newsletters unless asked,
+2-4 sentences unless they want the full list."""
+CONNECTORS = ["Gmail", "Google_Drive", "Google_Docs"]
+
 ROUTE_SCHEMA = {
     "type": "object",
     "properties": {
-        "route": {"type": "string", "enum": ["local", "answer", "deep", "opus"]},
+        "route": {"type": "string", "enum": ["local", "answer", "connected", "deep", "opus"]},
         "reason": {"type": "string"},
         "reply": {"type": "string", "description": "Your full answer to the user when route=answer, else empty"},
         "build_prompt": {"type": "string",
@@ -40,6 +50,8 @@ ROUTE_SCHEMA = {
 ROUTER_SYSTEM = """You are the brain of Waggle, a personal AI agent. Pick who handles the user's message:
 - "answer": you answer it yourself, right now, in "reply". This is the default for conversation, questions,
   advice, explanations, plans, writing and study help. Speak like a quick, natural human conversation partner.
+- "connected": the job needs the user's Gmail, Google Drive or Google Docs (reading mail, finding a file or doc,
+  drafting a reply). Another call with those connectors answers; leave "reply" empty.
 - "local": the job needs the PC's tools (control an app or the desktop, read/write files, run a command, set a
   timer or reminder); a small local model with those tools does it.
 - "deep": only when a stronger model clearly matters: hard math or proofs, tricky debugging, detailed engineering
@@ -111,6 +123,21 @@ def adjust(text, cat):
     return cat
 
 
+def connected_answer(text, memory_ctx="", settings=None, asker=None):
+    """Answer from the user's Gmail/Drive/Docs. Returns the reply text, or '' if Claude is unavailable."""
+    s = settings or Settings.load()
+    asker = asker or claude_cli.ask
+    ok, _ = quota.can_escalate(s.router_model, s)
+    if not ok:
+        return ""
+    try:
+        res = asker(f"{memory_ctx}\n\nUser message:\n{text}", model=s.router_model, system=CONNECTED_SYSTEM,
+                    purpose="connected", effort="low", connectors=CONNECTORS, timeout=120)
+    except claude_cli.ClaudeError:
+        return ""
+    return (res.get("text") or "").strip()
+
+
 def decide(text, memory_ctx="", settings=None, asker=None, sorter=None, review_allowed=None):
     t0 = time.time()
     d = _decide(text, memory_ctx, settings, asker, sorter, review_allowed)
@@ -127,6 +154,11 @@ def _decide(text, memory_ctx="", settings=None, asker=None, sorter=None, review_
     if h == "trivial":
         return {"route": "local", "reason": "trivial request", "reply": "", "build_prompt": "", "title": "",
                 "by": "heuristic"}
+    if CONNECTED_HINT.search(text or ""):
+        reply = connected_answer(text, memory_ctx, s, asker)
+        if reply:
+            return {"route": "sonnet", "reason": "Gmail / Drive request", "reply": reply, "build_prompt": "",
+                    "title": "", "by": "connected", "answered_by": s.router_model, "specialist": "general"}
     if sorter is None and s.router_model == "haiku":
         cat = "unsure"  # Haiku is as fast as the local sort and far better at judging: let it decide
     else:
@@ -153,6 +185,8 @@ def _decide(text, memory_ctx="", settings=None, asker=None, sorter=None, review_
     d = res.get("json") or {}
     if d.get("route") == "sonnet":  # older schema name
         d["route"] = "answer"
+    if d.get("route") == "connected":
+        d["reply"], d["route"] = connected_answer(text, memory_ctx, s, asker), "answer"
     if d.get("route") not in ("local", "answer", "deep", "opus"):
         return local_route(text, memory_ctx, s)
     if d["route"] == "deep" and s.deep_model != s.router_model:

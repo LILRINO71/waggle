@@ -113,7 +113,8 @@ def on_pre_llm_call(session_id=None, user_message="", platform="", **kwargs):
                 if _ctx is not None else screen.context(user_message))
         return {"context": "\n\n".join([ctx, look] + extras)}
     # Live data first, so whichever brain answers (local or Sonnet) has it.
-    if live.needs_live_info(user_message) or live.weather_request(user_message):
+    if not router.CONNECTED_HINT.search(user_message) and (live.needs_live_info(user_message)
+                                                          or live.weather_request(user_message)):
         try:
             data = live.prefetch(user_message, search=_web_search)
         except Exception as e:

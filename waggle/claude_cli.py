@@ -77,13 +77,63 @@ def parse_reset_hours(msg):
     return None
 
 
-def ask(prompt, model="sonnet", system=None, schema=None, effort="medium", purpose="ask", timeout=300):
-    """One lean headless call. Returns {'text', 'json', 'usage', 'model_id'}; raises ClaudeError."""
+# claude.ai connectors (the user's own Gmail/Drive/Docs, signed in on claude.ai). Read-only tools plus drafts:
+# Waggle never sends, deletes or shares on its own.
+CONNECTOR_TOOLS = {
+    "Gmail": ["search_threads", "get_thread", "get_message", "list_labels", "list_drafts", "get_draft",
+              "create_draft"],
+    "Google_Drive": ["search_files", "list_recent_files", "read_file_content", "get_file_metadata"],
+    "Google_Docs": ["read_doc"],
+}
+_SERVERS_FILE = "mcp_servers.json"
+
+
+def mcp_servers(claude=None, refresh=False):
+    """Tool-name prefixes of every MCP server the CLI loads (cached a day: `claude mcp list` takes ~5 s)."""
+    from .config import data_path
+    path = data_path(_SERVERS_FILE)
+    if path.exists() and not refresh and time.time() - path.stat().st_mtime < 86400:
+        return json.loads(path.read_text(encoding="utf-8"))
+    claude = claude or find_claude()
+    try:
+        out = subprocess.run([claude, "mcp", "list"], capture_output=True, text=True, timeout=90, env=clean_env(),
+                             encoding="utf-8", errors="replace").stdout
+    except Exception:
+        return []
+    names = []
+    for line in out.splitlines():
+        m = re.match(r"^(.+?):\s+\S", line)
+        if not m or line.startswith("Checking"):
+            continue
+        name = m.group(1).strip()
+        if name.startswith("claude.ai "):
+            name = "claude_ai " + name[len("claude.ai "):]
+        names.append("mcp__" + re.sub(r"[^A-Za-z0-9_-]", "_", name))
+    path.write_text(json.dumps(names), encoding="utf-8")
+    return names
+
+
+def connector_flags(connectors, servers):
+    """Allow only the read tools of `connectors`; hide every other MCP server (the user's set adds ~150k tokens)."""
+    wanted = {f"mcp__claude_ai_{c}" for c in connectors}
+    allowed = [f"mcp__claude_ai_{c}__{t}" for c in connectors for t in CONNECTOR_TOOLS.get(c, [])]
+    hidden = [s for s in servers if s not in wanted]
+    flags = ["--tools", "", "--no-session-persistence", "--disable-slash-commands", "--allowedTools", *allowed]
+    if hidden:
+        flags += ["--disallowedTools", *hidden]
+    return flags
+
+
+def ask(prompt, model="sonnet", system=None, schema=None, effort="medium", purpose="ask", timeout=300,
+        connectors=None):
+    """One lean headless call. Returns {'text', 'json', 'usage', 'model_id'}; raises ClaudeError.
+    connectors=["Gmail", ...] lets it read the user's claude.ai connectors (slower: ~6 s instead of ~2 s)."""
     claude = find_claude()
     if not claude:
         raise ClaudeError("Claude Code CLI not found. Set CLAUDE_BIN.", "missing")
     wanted = MODEL_IDS.get(model, model)
-    cmd = [claude, "-p", "--model", wanted, "--effort", effort, "--output-format", "json", *LEAN_FLAGS]
+    flags = connector_flags(connectors, mcp_servers(claude)) if connectors else LEAN_FLAGS
+    cmd = [claude, "-p", "--model", wanted, "--effort", effort, "--output-format", "json", *flags]
     if system:
         cmd += ["--system-prompt", system]
     if schema:
