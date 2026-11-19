@@ -139,11 +139,33 @@ def main():
     print("persona:", soul)
     if "--cron" in sys.argv:
         install_cron(s)
+    install_skills()
     try:
         from waggle import skills
         print("skills:", skills.reindex())
     except Exception as e:
         print("skills index skipped:", e)
+
+
+def install_skills(dest=None):
+    """Copy the repo's reviewed Waggle skills into Hermes (an existing different copy is kept in .versions)."""
+    dest = Path(dest or HERMES_HOME / "skills" / "waggle")
+    done = []
+    for src in sorted((REPO / "skills").glob("*/SKILL.md")):
+        target = dest / src.parent.name / "SKILL.md"
+        new = src.read_bytes()
+        if target.exists():
+            old = target.read_bytes()
+            if old == new:
+                continue
+            vers = target.parent / ".versions"
+            vers.mkdir(exist_ok=True)
+            (vers / f"{time.strftime('%Y%m%d-%H%M%S')}-SKILL.md").write_bytes(old)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(new)
+        done.append(src.parent.name)
+    print("waggle skills installed:", ", ".join(done) or "up to date")
+    return done
 
 
 MOJIBAKE = ("Ã¢", "Ã©", "â€™", "â€œ", "Ã°Å¸", "ðŸ")
