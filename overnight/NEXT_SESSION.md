@@ -27,9 +27,9 @@ section) -> BLOCKERS.md.
   `python bench/chat_bench.py waggle` (results in ~/.waggle/bench). Voice: turbo STT + voice_turn fixes.
 
 ## Next tasks, in order
-0. **User checks on the phone**: one Telegram text, one voice note (say "BIOBUZZ" and "FTC"), and pick a reply
-   voice (samples A/B/C were sent). Then turn on `voice.auto_tts` with `auto_tts_mode: voice_only` in Hermes
-   config so voice notes get spoken replies. Latency: chat turns ~8-12 s vs ~5 s for bare Sonnet; most of it
+0. **User checks on the phone**: the voice note worked (10:23); the text never reached the gateway, so get one
+   typed message through, and one voice note to hear the first spoken reply (af_heart 1.05x, voice_only
+   auto_tts is on). Look in traces.db (platform telegram) and gateway.log for "Auto voice reply". Latency: chat turns ~8-12 s vs ~5 s for bare Sonnet; most of it
    is longer, personalised replies, not overhead.
 1. **Telegram leg**: when the user is back, have them send `objective: ...` and an `approve <code>` from Telegram
    (the plugin path is the same as the terminal one tested live, but Telegram itself wasn't driven in mission 3).

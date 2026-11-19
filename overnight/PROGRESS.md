@@ -172,3 +172,20 @@ Live checks (through the gateway with `hermes chat -q`; the Telegram app itself 
   transfer it had recommended.
 - Hard proof: routed deep (not hard) -> Sonnet medium, correct, 12.7 s. Opus path covered by tests only.
 - Budget after the session: background 0.343 / 4 units, interactive 1.54; doctor 13/13.
+
+## Phone check + spoken replies, 2026-11-19 10:23-10:45
+
+- The user's real Telegram voice note (10:23) arrived, was transcribed ("Thanks for happening [helping] with all the
+  repos") and answered by Sonnet in 4.4 s; 11.3 s end to end because it was the first note since the 09:19 reload
+  (Whisper turbo loads on first use, then stays loaded: stt.local.unload_after_idle_seconds defaults to 0 = never).
+  The user's text message never reached the gateway (Telegram API connection dropped twice around 10:05).
+- That reply told the user to "approve VWV4", an email approval that had expired at 09:02. Fix (14f630f): when the
+  recent conversation mentions approvals, the context now says which codes are really open (or that none are).
+  Self-email itself is allowed by policy now (policy.decide on Gmail send_message to the user's own address -> allow).
+- Reply voice: Kokoro af_heart at 1.05x (sample B; user said "choose any"). Hermes config: voice.auto_tts true,
+  auto_tts_mode voice_only, so voice notes get a voice reply before the text and typed messages stay text.
+  Checked with Hermes's own auto-TTS path after `pm.install.activate()` (what the gateway does at startup): the
+  bundled ffmpeg (.hermes/tools/ffmpeg-9.0.1) turns Kokoro's WAV into Ogg/Opus, voice_compatible true, 2.1 s.
+  kokoro_say.py also writes Ogg/Opus itself for .ogg outputs (0ff5ef8), a fallback if ffmpeg is ever missing.
+  Desktop playback stays WAV (Hermes plays WAV through sounddevice on Windows; other formats need ffplay).
+- Not yet heard on the phone: the first spoken reply needs the user to send a voice note.
