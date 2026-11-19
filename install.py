@@ -85,6 +85,9 @@ def main():
     # Small local models fumble Hermes's tool-search meta-tool; show every tool directly.
     hermes("config", "set", "tools.tool_search.enabled", "off")
     hermes("plugins", "enable", "waggle")
+    soul = HERMES_HOME / "SOUL.md"
+    shutil.copyfile(REPO / "persona" / "SOUL.md", soul)
+    print("persona:", soul)
     if "--cron" in sys.argv:
         install_cron(s)
 

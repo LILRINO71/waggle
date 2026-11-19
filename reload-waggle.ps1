@@ -2,7 +2,7 @@
 $env:HERMES_HOME = "$env:USERPROFILE\.hermes"
 $h = "$env:HERMES_HOME\bin\hermes.exe"
 Set-Location $PSScriptRoot
-python install.py | Select-String "plugin:|enable"
+python install.py | Select-String "plugin:|enable|persona:"
 & "$PSScriptRoot\install-startup.ps1" | Select-String "Installed"
 & $h gateway stop
 Start-Sleep -Seconds 3

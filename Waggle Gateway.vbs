@@ -19,7 +19,22 @@ If Not OllamaUp() Then
   Next
 End If
 
-home = sh.ExpandEnvironmentStrings("%USERPROFILE%") & "\.hermes"
+Function KokoroUp()
+  On Error Resume Next
+  Set http = CreateObject("MSXML2.XMLHTTP")
+  http.Open "GET", "http://127.0.0.1:8899/", False
+  http.Send
+  KokoroUp = (Err.Number = 0)
+End Function
+
+' Keep the Kokoro voice model loaded so spoken replies skip the 1.3 s model load.
+profile = sh.ExpandEnvironmentStrings("%USERPROFILE%")
+kpy = profile & "\.waggle\kokoro\venv\Scripts\pythonw.exe"
+ksay = CreateObject("Scripting.FileSystemObject").GetParentFolderName(WScript.ScriptFullName) & "\voice\kokoro_say.py"
+If Not CreateObject("Scripting.FileSystemObject").FileExists(ksay) Then ksay = profile & "\Claude\waggle\voice\kokoro_say.py"
+If Not KokoroUp() Then sh.Run """" & kpy & """ """ & ksay & """ --serve", 0, False
+
+home = profile & "\.hermes"
 sh.Environment("Process")("HERMES_HOME") = home
 ' Hermes's own ffmpeg: Telegram voice notes (speech in and out) need it.
 sh.Environment("Process")("PATH") = home & "\tools\ffmpeg-9.0.1-win32-x64\bin;" & sh.ExpandEnvironmentStrings("%PATH%")
