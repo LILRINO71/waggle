@@ -40,6 +40,7 @@ CRON_JOBS = [  # (name, schedule, script, extra argv, module)
     ("waggle-digest", "0 8,17 * * *", "waggle_digest.py", ', "digest"', "proactive"),
     ("waggle-consolidate", "0 18 * * 0", "waggle_consolidate.py", ', "consolidate"', "proactive"),
     ("waggle-calls", "every 1m", "waggle_calls.py", ', "due"', "call"),  # places "call me in N min" calls
+    ("waggle-hq", "every 1m", "waggle_hq.py", "", "hq"),  # keeps the Obsidian HQ dashboard live
 ]
 
 
@@ -59,6 +60,43 @@ def install_cron(s):
                "--catch-up", "off")
 
 
+GRAPH_GROUPS = [  # Obsidian graph colours by folder (rgb ints)
+    ("path:Projects", 0xF5B301), ("path:Me", 0x3ED2F0), ("path:Jobs", 0xA78BFA),
+    ("path:Ideas", 0x3DDC84), ("path:Journal", 0x5F6676), ("file:\"Waggle HQ\"", 0xFF5D5D),
+]
+
+
+def _merge_json(path, update):
+    import json
+    data = {}
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8") or "{}")
+        except ValueError:
+            data = {}
+    for k, v in update.items():
+        if isinstance(v, list) and isinstance(data.get(k), list):
+            data[k] = list(dict.fromkeys(data[k] + v))
+        else:
+            data[k] = v
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def setup_obsidian(s):
+    """Waggle HQ look: dark theme, the waggle.css snippet, coloured graph groups, HQ as the open note."""
+    obs = Path(s.vault) / ".obsidian"
+    (obs / "snippets").mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(REPO / "obsidian" / "snippets" / "waggle.css", obs / "snippets" / "waggle.css")
+    _merge_json(obs / "appearance.json", {"enabledCssSnippets": ["waggle"], "theme": "obsidian",
+                                          "accentColor": "#f5b301"})
+    _merge_json(obs / "graph.json", {"colorGroups": [{"query": q, "color": {"a": 1, "rgb": c}}
+                                                     for q, c in GRAPH_GROUPS],
+                                     "showArrow": True, "lineSizeMultiplier": 1.4, "nodeSizeMultiplier": 1.3})
+    from waggle import hq
+    hq.write(s)
+    print("obsidian: theme + HQ ready")
+
+
 def main():
     s = Settings.load()
     from waggle.claude_cli import find_claude
@@ -74,6 +112,7 @@ def main():
                     ignore=shutil.ignore_patterns("__pycache__"))
     (dest / "repo_path.txt").write_text(str(REPO), encoding="utf-8")
     print("plugin:", dest)
+    setup_obsidian(s)
 
     if not HERMES.exists():
         print("Hermes not found at", HERMES, "- install Hermes first.")

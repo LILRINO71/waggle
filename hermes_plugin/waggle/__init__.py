@@ -21,8 +21,8 @@ _repo = Path(__file__).with_name("repo_path.txt")
 if _repo.exists() and _repo.read_text(encoding="utf-8").strip() not in sys.path:
     sys.path.insert(0, _repo.read_text(encoding="utf-8").strip())
 
-from waggle import (call, events, jobs, learn, live, memory, notify, ollama, projects, quota, router, screen,
-                    security, vault)
+from waggle import (call, desktop, events, hq, jobs, learn, live, memory, notify, ollama, projects, quota, router, screen,
+                    security, selfbuild, vault)
 from waggle.config import Settings
 
 log = logging.getLogger("waggle")
@@ -59,6 +59,8 @@ def on_pre_llm_call(session_id=None, user_message="", platform="", **kwargs):
         return {"action": "block", "message": "Noted, thanks. " + ("I'll look for more like that." if useful
                                                                    else "I'll be pickier about those.")}
     _reindex_soon()
+    if session_id and user_message:
+        _last_msg[session_id] = user_message
     extras = []
     news = notify.unseen()
     if news:
@@ -90,9 +92,21 @@ def on_pre_llm_call(session_id=None, user_message="", platform="", **kwargs):
     want = call.parse_request(user_message)
     if want:
         return {"context": "\n\n".join([ctx, _call_me(*want)] + extras)}
-    # "What's this error on my screen?": local vision model looks first, any brain answers from it.
+    # "Open notepad and type hello": done here, deterministically, then the model just confirms.
+    opener = desktop.parse_open(user_message)
+    if opener and _ctx is not None:
+        ok, _, _ = desktop.launch(opener[0], runner=lambda c: None)  # dry check: is it a real app?
+        if ok:
+            res = desktop.open_and_type(opener[0], opener[1], _dispatch)
+            _last_app[session_id] = opener[0]
+            return {"context": "\n\n".join([ctx, f"<waggle_action>{res} Confirm to the user in one short "
+                                                 "sentence.</waggle_action>"] + extras)}
+    # "What's on my screen?": window list + on-screen text in ~2 s; vision model only for how things look.
+    # Answered locally from what was read, so no Sonnet round trip and no second look.
     if screen.wants_look(user_message):
-        ctx += "\n\n" + screen.context(user_message)
+        look = (desktop.screen_context(user_message, _dispatch, vision=lambda q: screen.look(q))
+                if _ctx is not None else screen.context(user_message))
+        return {"context": "\n\n".join([ctx, look] + extras)}
     # Live data first, so whichever brain answers (local or Sonnet) has it.
     if live.needs_live_info(user_message) or live.weather_request(user_message):
         try:
@@ -151,16 +165,55 @@ def _hand_over(session_id, user_message, reply):
 def on_transform_llm_output(response_text="", session_id="", **kwargs):
     with _pending_lock:
         reply = _pending.pop(session_id, None)
-    return reply  # None leaves the local model's own reply unchanged
+    final = reply if reply is not None else response_text
+    # Never "I can't": a capability refusal becomes a background build of that capability.
+    try:
+        swap = selfbuild.handle(_last_msg.get(session_id, ""), final or "")
+    except Exception as e:
+        log.warning("selfbuild failed: %s", e)
+        swap = None
+    return swap if swap else reply  # None leaves the model's own reply unchanged
 
 
 def on_post_llm_call(user_message="", assistant_response="", **kwargs):
     if user_message and assistant_response:
         learn.learn_async(user_message, assistant_response)
+    threading.Thread(target=_refresh_hq, daemon=True).start()  # Obsidian HQ shows this turn right away
 
 
-def on_pre_tool_call(tool_name="", args=None, **kwargs):
-    return security.check_tool_call(tool_name, args or {})
+def _refresh_hq():
+    try:
+        hq.write()
+    except Exception as e:
+        log.warning("HQ refresh failed: %s", e)
+
+
+def _dispatch(name, args):
+    return _ctx.dispatch_tool(name, args)
+
+
+_last_app = {}  # session_id -> app the user's desktop work is about
+_last_msg = {}  # session_id -> the user's latest message (for the never-"I can't" check)
+UNTARGETED_OK = {"list_apps", "list_windows", "wait"}
+
+
+def on_pre_tool_call(tool_name="", args=None, session_id="", **kwargs):
+    args = args or {}
+    directive = security.check_tool_call(tool_name, args)
+    if directive or tool_name != "computer_use":
+        return directive
+    # cua-driver refuses the Claude window, so "whatever is in front" fails whenever Claude is in front:
+    # aim every action at a named app (the one this conversation is working in).
+    if args.get("app"):
+        _last_app[session_id] = args["app"]
+        return None
+    if args.get("action") in UNTARGETED_OK or args.get("pid") or args.get("window_id"):
+        return None
+    if _last_app.get(session_id):
+        return {"action": "modify", "args": {"app": _last_app[session_id]}}
+    return {"action": "block", "message": "Name the app: call computer_use with action=list_windows to see what's "
+            "open, then repeat this with app=<its name> (e.g. app='Notepad'). To start an app, ask Waggle to "
+            "'open <app>'."}
 
 
 # ---- tools ---------------------------------------------------------------------------------------
@@ -262,7 +315,10 @@ def t_call_me(args, **kw):
 
 def t_look_at_screen(args, **kw):
     try:
-        return screen.look(args.get("question", "What is on my screen?"))
+        q = args.get("question", "What is on my screen?")
+        if _ctx is not None:
+            return desktop.screen_context(q, _dispatch, vision=lambda x: screen.look(x))
+        return screen.look(q)
     except Exception as e:
         return f"Could not look at the screen ({type(e).__name__}: {e})."
 

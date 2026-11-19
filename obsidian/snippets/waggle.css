@@ -1,0 +1,125 @@
+/* Waggle HQ: dark glass dashboard for the WaggleVault. Enabled by install.py (appearance.json). */
+.theme-dark {
+  --wg-bg: #0b0d12;
+  --wg-panel: rgba(255, 255, 255, 0.045);
+  --wg-line: rgba(255, 255, 255, 0.09);
+  --wg-amber: #f5b301;
+  --wg-amber-soft: rgba(245, 179, 1, 0.14);
+  --wg-cyan: #3ed2f0;
+  --wg-green: #3ddc84;
+  --wg-red: #ff5d5d;
+  --wg-violet: #a78bfa;
+  --wg-muted: #8b93a7;
+}
+.theme-light {
+  --wg-bg: #f6f5f1;
+  --wg-panel: rgba(0, 0, 0, 0.035);
+  --wg-line: rgba(0, 0, 0, 0.08);
+  --wg-amber: #b97f00;
+  --wg-amber-soft: rgba(185, 127, 0, 0.12);
+  --wg-cyan: #0b8fb0;
+  --wg-green: #138a4a;
+  --wg-red: #c83434;
+  --wg-violet: #6d4fd6;
+  --wg-muted: #5f6676;
+}
+
+/* ---------- page ---------- */
+.waggle-hq.markdown-preview-view,
+.waggle-hq .markdown-preview-view,
+.waggle-hq.markdown-source-view {
+  background:
+    radial-gradient(1200px 500px at 15% -10%, var(--wg-amber-soft), transparent 60%),
+    radial-gradient(900px 500px at 110% 10%, rgba(62, 210, 240, 0.10), transparent 60%),
+    var(--background-primary);
+}
+.waggle-hq h1 {
+  font-size: 2.4em;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  margin-bottom: 0.1em;
+  background: linear-gradient(90deg, var(--wg-amber), #ffd96a 40%, var(--wg-cyan));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.waggle-hq .hq-sub { color: var(--wg-muted); font-size: 0.85em; letter-spacing: 0.04em; text-transform: uppercase; }
+.waggle-hq .hq-time { color: var(--wg-muted); font-size: 0.8em; margin-left: 0.4em; }
+.waggle-hq h2 {
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--wg-muted);
+  border-bottom: 1px solid var(--wg-line);
+  padding-bottom: 6px;
+  margin-top: 1.8em;
+}
+
+/* status pills = inline code on the HQ page */
+.waggle-hq p > code {
+  display: inline-block;
+  background: var(--wg-panel);
+  border: 1px solid var(--wg-line);
+  border-radius: 999px;
+  padding: 3px 12px;
+  margin: 2px 4px 2px 0;
+  font-family: var(--font-interface);
+  font-size: 0.82em;
+  color: var(--text-normal);
+}
+
+/* activity feed */
+.waggle-hq ul > li { padding: 4px 0; border-bottom: 1px dashed var(--wg-line); list-style: none; }
+.waggle-hq ul { padding-left: 0.2em; }
+
+/* ---------- callouts ---------- */
+.waggle-hq .callout {
+  background: var(--wg-panel);
+  border: 1px solid var(--wg-line);
+  border-radius: 16px;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.18);
+  mix-blend-mode: normal;
+}
+.callout[data-callout="hq-live"] { --callout-color: 61, 220, 132; border-left: 4px solid var(--wg-green); }
+.callout[data-callout="hq-live"] .callout-title::after {
+  content: "LIVE";
+  margin-left: auto;
+  font-size: 0.7em;
+  font-weight: 800;
+  letter-spacing: 0.15em;
+  color: var(--wg-green);
+  animation: hq-pulse 1.6s ease-in-out infinite;
+}
+@keyframes hq-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+.callout[data-callout="hq-idle"] { --callout-color: 139, 147, 167; }
+.callout[data-callout="hq-stats"] { --callout-color: 245, 179, 1; border-left: 4px solid var(--wg-amber); }
+.callout[data-callout="hq-stats"] .callout-title { font-size: 1.6em; font-weight: 800; }
+.callout[data-callout^="hq-"] .callout-icon { display: none; }
+
+/* project grid: one outer callout whose content is a grid of nested cards */
+.callout[data-callout="hq-grid"] { background: transparent; border: 0; box-shadow: none; padding: 0; }
+.callout[data-callout="hq-grid"] > .callout-title { display: none; }
+.callout[data-callout="hq-grid"] > .callout-content {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  padding: 0;
+}
+.callout[data-callout="hq-grid"] > .callout-content > p { display: none; }
+.callout[data-callout="hq-card"] {
+  margin: 0;
+  min-height: 92px;
+  transition: transform 0.15s ease, border-color 0.15s ease;
+  border-top: 3px solid var(--wg-cyan);
+}
+.callout[data-callout="hq-card"]:hover { transform: translateY(-3px); border-color: var(--wg-amber); }
+.callout[data-callout="hq-card"][data-callout-metadata="active"] { border-top-color: var(--wg-green); }
+.callout[data-callout="hq-card"][data-callout-metadata="planned"] { border-top-color: var(--wg-violet); }
+.callout[data-callout="hq-card"][data-callout-metadata="paused"] { border-top-color: var(--wg-amber); }
+.callout[data-callout="hq-card"][data-callout-metadata="done"] { border-top-color: var(--wg-muted); opacity: 0.75; }
+.callout[data-callout="hq-card"] .callout-title { font-weight: 700; font-size: 1.02em; }
+.callout[data-callout="hq-card"] .callout-content { font-size: 0.85em; color: var(--wg-muted); }
+
+/* project and profile notes get a softer header */
+.markdown-preview-view h1 { letter-spacing: -0.02em; }

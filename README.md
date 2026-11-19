@@ -59,7 +59,7 @@ Findings are deduplicated for a week. Replying `useful <id>` / `not useful <id>`
 
 | Piece | Engine | Notes |
 |---|---|---|
-| Wake word "hey jarvis" | sherpa-onnx open-vocabulary keyword spotting | No training; any phrase works |
+| Wake word "waggle" | sherpa-onnx open-vocabulary keyword spotting | No training; any phrase works |
 | Push-to-talk | Hermes voice mode, `Ctrl+B` | Silence detection ends the recording |
 | Speech-to-text | faster-whisper `small` | Also transcribes Telegram voice notes |
 | Spoken replies | Piper `en_GB-alan-medium` | Sentence-by-sentence streaming |
@@ -121,7 +121,7 @@ python -m pytest -q      # 56 tests: routing, local sort, quota, memory, project
 
 ## Roadmap
 
-- **Phase 3 (done):** voice: "hey jarvis" wake word (sherpa), Ctrl+B push-to-talk, faster-whisper, Kokoro replies
+- **Phase 3 (done):** voice: "waggle" wake word (sherpa), Ctrl+B push-to-talk, faster-whisper, Kokoro replies
   (British voice, kept warm so a reply is ~0.8 s); phone calls via Twilio: verified critical alerts (max 2/day,
   never in quiet hours) and "call me in 10 minutes about X". One-time setup: `Setup Calls.bat`.
 - **Phase 4 (screen):** "what's this error on my screen?" -> screenshot -> local vision model (gemma4 in Ollama,

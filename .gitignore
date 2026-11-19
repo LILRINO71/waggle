@@ -7,3 +7,4 @@ dist/
 .venv/
 voice-sample.mp3
 voice-samples/
+tools/probe-out.txt
