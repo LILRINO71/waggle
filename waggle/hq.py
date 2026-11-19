@@ -36,6 +36,8 @@ def ago(t, now=None):
 def describe(e):
     k = e.get("kind")
     if k == "route":
+        if e.get("route") == "act":
+            return f"Did it with tools ({e.get('specialist') or 'agent'}) · routed in {e.get('latency_s', 0):.0f} s"
         who = {"local": "the local model", "sonnet": "Claude", "opus": "an Opus build"}.get(e.get("route"),
                                                                                           e.get("route"))
         if e.get("route") == "sonnet" and e.get("answered_by"):
@@ -104,6 +106,16 @@ def snapshot(settings=None, now=None):
         projs.append({**p, "next": tasks[0]["text"] if tasks else ""})
     learned = [l[2:] for l in vault.read("Me/Learned", s).splitlines() if l.startswith("- ")][-6:][::-1]
     from . import call
+    try:
+        from . import prompts, routines
+        rts = routines.listing()
+        meta = prompts.versions("router")
+        active = meta.get("active", 0)
+        scores = (meta.get("versions", {}).get(str(active)) or {}).get("scores", {}) if active else {}
+        learning = {"router_version": active, "scores": scores,
+                    "learned_events": [e for e in ev if e.get("kind") == "learning"][-3:][::-1]}
+    except Exception:  # noqa: BLE001
+        rts, learning = [], {}
     return {
         "now": now, "feed": feed,
         "active_jobs": [j for j in js if j.get("status") in ("running", "queued", "paused")],
@@ -114,7 +126,7 @@ def snapshot(settings=None, now=None):
                   "screen": sum(e.get("kind") == "screen_look" for e in todays),
                   "calls": sum(e.get("kind") == "call" and e.get("ok") for e in todays)},
         "quota_pct": q.get("window_pct"), "projects": projs, "learned": learned,
-        "calls_ready": call.configured(),
+        "calls_ready": call.configured(), "routines": rts, "learning": learning,
     }
 
 
@@ -155,6 +167,20 @@ def render_md(snap, settings=None):
             lines.append(">")
         lines += [f"> > [!hq-card|{p.get('status', 'active')}] [[{p['name']}]]",
                   f"> > `{p.get('status', 'active')}` · {nxt}"]
+    if snap.get("routines"):
+        lines += ["", "## 🔁 Routines"]
+        lines += [f"- {'⏸️ ' if not r['enabled'] else ''}**{r['name']}** · {r['schedule']} · next {r['next'] or '–'}"
+                  + (f" · last: {r['last_status']}" if r.get("last_status") else "") for r in snap["routines"]]
+    lr = snap.get("learning") or {}
+    if lr:
+        sc = lr.get("scores") or {}
+        lines += ["", "## 🧭 Getting better",
+                  f"- Router prompt **v{lr.get('router_version', 0)}**" +
+                  (f" · benchmark {sc.get('tuning', 0):.0%} tuning / {sc.get('holdout', 0):.0%} held-out" if sc else
+                   " (built-in)")]
+        lines += [f"- {e.get('action', '').replace('_', ' ')} {ago(e.get('time', now), now)}"
+                  for e in lr.get("learned_events", [])]
+        lines += ["- Full report: [[Learning]] · live view: [Command Center](http://127.0.0.1:8897)"]
     lines += ["", "## 🧠 Recently learned about you"]
     lines += [f"- {l}" for l in snap["learned"]] or ["- Nothing new yet."]
     lines += ["", "## ✅ Finished builds"]

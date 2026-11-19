@@ -7,26 +7,26 @@ Upstream: H = Hermes Agent, OJ = OpenJarvis, W = Waggle original.
 
 ## Tools
 
-| Capability | Up | Waggle before | Gap | Approach | Tests | Status |
-|---|---|---|---|---|---|---|
-| Terminal / process | H | local model only | Claude had none | Claude Code Bash + PreToolUse policy hook | test_policy | **live** |
-| File read / edit / search | H | local model only | Claude had none | Claude Code Read/Edit/Write/Glob/Grep, path policy | test_policy | **live** |
-| Web search / extract | H | prefetch for "live" words | Claude couldn't search on demand | Claude Code WebSearch/WebFetch in agent runs | test_agent | **live** |
-| Browser automation / CDP / sessions | H | local model only | Claude had none | bridge → Hermes browser tools | test_bridge | done |
-| Computer use (mouse/keyboard) | H | local + pre_tool_call guard | Claude had none | bridge → computer_use, same guard | test_bridge | **live** |
-| Screen reading | W/H | desktop.py fast path | — | keep; expose `look_at_screen` to Claude | existing | existing |
-| Vision | H | gemma4 aux | — | bridge → vision tool | test_bridge | done |
-| Image / video generation | H | disabled (no paid provider) | needs paid key | leave off ($0 rule) | — | n/a |
-| TTS / speech | H | Kokoro + Hermes voice | — | keep | existing | existing |
-| Code execution | H/OJ | via terminal | — | Claude Code Bash (python) under policy | test_policy | done |
-| Memory ops | H/W | vault_search, remember | Claude couldn't call them | MCP tools | test_mcp | **live** |
-| Session / conversation search | H | Hermes session_search disabled | no recall of old chats | `recall` MCP tool over traces + Hermes state.db FTS | test_traces | done |
-| Task management | H | jobs.py | — | MCP `jobs` tools | test_mcp | done |
-| Scheduled task management | H | cron jobs installed by install.py | user can't add routines | routines.py + MCP tools + `/routine` | test_routines | **live** |
-| Delegation / subagents | H/OJ | none for Claude | — | `delegate` MCP tool → named agent run | test_agents | done |
-| MCP integrations | H/OJ | claude.ai connectors (email) | only email path | agent runs get connectors + waggle MCP | test_agent | done |
-| Gmail / Drive / Docs | claude.ai | read + drafts (connected route) | — | keep; agent also gets them | test_connected | existing |
-| Google Calendar / Tasks | claude.ai | — | not connected | auto-detected when connected | test_connected | blocked (B-01) |
+| Capability                          | Up        | Waggle before                     | Gap                              | Approach                                            | Tests          | Status         |
+| ----------------------------------- | --------- | --------------------------------- | -------------------------------- | --------------------------------------------------- | -------------- | -------------- |
+| Terminal / process                  | H         | local model only                  | Claude had none                  | Claude Code Bash + PreToolUse policy hook           | test_policy    | **live**       |
+| File read / edit / search           | H         | local model only                  | Claude had none                  | Claude Code Read/Edit/Write/Glob/Grep, path policy  | test_policy    | **live**       |
+| Web search / extract                | H         | prefetch for "live" words         | Claude couldn't search on demand | Claude Code WebSearch/WebFetch in agent runs        | test_agent     | **live**       |
+| Browser automation / CDP / sessions | H         | local model only                  | Claude had none                  | bridge → Hermes browser tools                       | test_bridge    | done           |
+| Computer use (mouse/keyboard)       | H         | local + pre_tool_call guard       | Claude had none                  | bridge → computer_use, same guard                   | test_bridge    | **live**       |
+| Screen reading                      | W/H       | desktop.py fast path              | —                                | keep; expose `look_at_screen` to Claude             | existing       | existing       |
+| Vision                              | H         | gemma4 aux                        | —                                | bridge → vision tool                                | test_bridge    | done           |
+| Image / video generation            | H         | disabled (no paid provider)       | needs paid key                   | leave off ($0 rule)                                 | —              | n/a            |
+| TTS / speech                        | H         | Kokoro + Hermes voice             | —                                | keep                                                | existing       | existing       |
+| Code execution                      | H/OJ      | via terminal                      | —                                | Claude Code Bash (python) under policy              | test_policy    | done           |
+| Memory ops                          | H/W       | vault_search, remember            | Claude couldn't call them        | MCP tools                                           | test_mcp       | **live**       |
+| Session / conversation search       | H         | Hermes session_search disabled    | no recall of old chats           | `recall` MCP tool over traces + Hermes state.db FTS | test_traces    | done           |
+| Task management                     | H         | jobs.py                           | —                                | MCP `jobs` tools                                    | test_mcp       | done           |
+| Scheduled task management           | H         | cron jobs installed by install.py | user can't add routines          | routines.py + MCP tools + `/routine`                | test_routines  | **live**       |
+| Delegation / subagents              | H/OJ      | none for Claude                   | —                                | `delegate` MCP tool → named agent run               | test_agents    | done           |
+| MCP integrations                    | H/OJ      | claude.ai connectors (email)      | only email path                  | agent runs get connectors + waggle MCP              | test_agent     | done           |
+| Gmail / Drive / Docs                | claude.ai | read + drafts (connected route)   | —                                | keep; agent also gets them                          | test_connected | existing       |
+| Google Calendar / Tasks             | claude.ai | —                                 | not connected                    | auto-detected when connected                        | test_connected | blocked (B-01) |
 
 ## Skills
 

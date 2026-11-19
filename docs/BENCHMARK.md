@@ -44,3 +44,17 @@ _2026-11-18 17:06 · 20 labelled requests · local model `waggle-4b` · run with
 | Share handled locally for free | 40% |
 | Specialist pick accuracy | 70% |
 | Routing latency p50 / p95 | 2.56 s / 2.65 s |
+
+## Full router benchmark (Haiku, real calls) — 2026-11-18
+
+`python -m waggle.cli bench` classifies 40 tuning + 20 held-out hand-labelled requests into
+answer / act / connected / deep / opus (the five routes after the local heuristics).
+
+| Router prompt | Tuning (40) | Held-out (20) | Notes |
+|---|---|---|---|
+| v0 (hand-written) | 85.0% | 80.0% | Haiku answered proofs, derivations and debugging itself instead of "deep"; one regex false positive ("close the Chrome window with my email" -> Gmail) |
+| v0 + regex fix | 85.0% | 85.0% | `router.wants_connectors` ignores screen-control phrasing |
+| **v1 (learned)** | **97.5%** | **100%** | One GEPA-style reflective round (Sonnet rewrote the prompt from its tuning-set misroutes); deployed because it improved both sets |
+
+The held-out set was never shown to the optimiser. With 20 cases, one miss is 5 points, so treat it as a
+regression guard rather than a precise score.
