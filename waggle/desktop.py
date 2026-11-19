@@ -90,8 +90,11 @@ def screen_context(question, dispatch, vision=None):
         err = None
     parts = []
     if wins:
-        parts.append("Open windows, front to back:\n" + "\n".join(
-            f"{i + 1}. {w['title']} ({w['app']})" for i, w in enumerate(wins[:10])))
+        parts.append("Open windows, front to back (only titles are known unless text is given below; "
+                     "never guess what a window shows):\n" + "\n".join(
+                         f"{i + 1}. {w['title']} ({w['app']})"
+                         + (" [contents not readable]" if w["app"].lower() in PROTECTED_APPS else "")
+                         for i, w in enumerate(wins[:10])))
         top = next((w for w in wins if w["app"].lower() not in PROTECTED_APPS), None)
         text = window_text(dispatch, top) if top else ""
         if text:
