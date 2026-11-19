@@ -66,6 +66,25 @@ class Settings:
     ntfy_topic: str = ""  # generated on first use; private channel for urgent push alerts
     brief_time: str = "30 7 * * *"  # morning brief (cron)
     stale_days: int = 7
+    # Initiative (waggle/tick.py, initiative.py, watchers.py, followups.py): what Waggle tells the user unprompted.
+    daily_text_cap: int = 8  # unprompted texts/voice notes/calls a day; urgent items and things asked for bypass it
+    initiative_every_min: int = 120  # how often the reasoning step looks at new signals (urgent ones: right away)
+    initiative_model: str = "sonnet"
+    topic_repeat_hours: int = 48  # the same topic is not raised again within this window
+    evening_time: str = "21:00"  # the daily evening note (always sent)
+    brief_catchup_hours: float = 3.0  # a missed morning brief is still sent this long after its time, never later
+    evening_catchup_hours: float = 1.5
+    followup_hour: int = 19  # check-in time for "I'll do X today/tomorrow" with no clock time
+    followup_platforms: list = field(default_factory=lambda: ["telegram"])
+    github_watch: bool = True
+    github_repos: list = field(default_factory=list)  # "owner/name"; empty = the user's recently pushed repos
+    github_every_min: int = 15
+    upcoming_note: str = ""  # vault note with dated items and mail to answer; empty = Upcoming / Me/Upcoming
+    outbox_max_age_h: float = 24.0  # undelivered messages give up (recorded as expired) after this long
+    dev_sources: list = field(default_factory=lambda: ["oneshot", "cli", "tool", "test", "api", "batch"])
+    voice_note_voice: str = "af_heart"
+    voice_note_speed: float = 1.1
+    scout_enabled: bool = True
     phone_target: str = "telegram"
     # Saved by install.py: cron scripts run with a trimmed environment and may not see LOCALAPPDATA.
     claude_bin: str = ""

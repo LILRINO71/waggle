@@ -28,6 +28,10 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setattr(notify, "to_ntfy", lambda text, *a, post=None, **k: real_ntfy(
         text, *a, post=post or (lambda url, body: sent.append("ntfy:" + body["message"]) or True), **k))
     monkeypatch.setattr(notify, "PHONE_LOG", sent, raising=False)
+    monkeypatch.setattr(notify, "_synth", lambda text, out, settings=None: False)  # no real Kokoro in tests
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))  # never the real Hermes state, cron or `hermes send`
+    import waggle.watchers as watchers
+    monkeypatch.setattr(watchers, "run_gh", lambda args, timeout=40: None)  # no real `gh` calls
     # quiet_hours off: otherwise tests that expect a phone message fail when run between 23:00 and 07:00.
     s = Settings(vault=str(tmp_path / "vault"), jobs_dir=str(tmp_path / "jobs"), quiet_hours=[0, 0])
     s.save()
