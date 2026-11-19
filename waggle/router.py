@@ -52,10 +52,16 @@ def _calendar_connected():
 def wants_connectors(text):
     """Mail/Drive/Docs (and Calendar, once connected) request - not 'close the window with my email', which is
     screen control."""
-    t = text or ""
-    if PC_CONTROL.search(t):
-        return False
+    t = PATHLIKE.sub(" ", text or "")  # "...\WaggleVault\Inbox\x.md" is a file, not their mail inbox
+    if PC_CONTROL.search(t) or SEND_TO_ME.search(t):
+        return False  # sending them a file/message is a tool job (send_to_me / Gmail send), not a read-only answer
     return bool(CONNECTED_HINT.search(t)) or (bool(CALENDAR_HINT.search(t)) and _calendar_connected())
+
+
+PATHLIKE = re.compile(r"(?:[A-Za-z]:)?[\w.~ -]*[\\/][^\s\"']*(?:\s[^\s\\/\"']*[\\/][^\s\"']*)*")
+SEND_TO_ME = re.compile(r"\b(send|text|forward|share|attach|e-?mail)\b.{0,80}\b(here|to me|me (it|the|this|that)|on telegram|"
+                        r"to my (phone|telegram|e-?mail|inbox|gmail))\b|\b(send|email|mail) (it|this|that|the \w+) "
+                        r"to (me|my)\b", re.I)
 
 ROUTE_SCHEMA = {
     "type": "object",

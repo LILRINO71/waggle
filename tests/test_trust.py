@@ -625,3 +625,14 @@ def test_chat_uses_the_chat_models_and_background_keeps_its_own(settings):
     d = router.decide("look through my robot repos and make a pdf", settings=settings, asker=asker)
     assert seen == ["sonnet"] and d.get("agent_model") == "sonnet"
     assert settings.router_model == "haiku"  # verify/report/background still use the cheap model
+
+
+def test_a_path_with_inbox_or_a_send_to_me_request_is_not_a_mail_question():
+    from waggle import router
+    assert not router.wants_connectors(
+        r"Send me the note C:\Users\hiheo\WaggleVault\Inbox\M3 test - BIOBUZZ open problems.md here on Telegram")
+    assert not router.wants_connectors("summarise Inbox/Waggle TODOs.md")
+    assert not router.wants_connectors("send it to my email")
+    assert not router.wants_connectors("email the portfolio pdf to me")
+    assert router.wants_connectors("any unread emails today?")
+    assert router.wants_connectors("what's in my inbox from my coach?")
