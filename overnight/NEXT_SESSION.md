@@ -6,7 +6,7 @@ section) -> BLOCKERS.md.
 ## Layout
 - Dev worktree: `C:\Users\hiheo\Claude\waggle-dev` (branch `overnight`). Live: `C:\Users\hiheo\Claude\waggle` (main).
   Both are at the same commit after the 2026-11-18 deploy.
-- Tests: `cd C:\Users\hiheo\Claude\waggle-dev; python -m pytest -q` (222 pass, ~9 s, fully offline).
+- Tests: `cd C:\Users\hiheo\Claude\waggle-dev; python -m pytest -q` (289 pass, ~13 s, fully offline).
 - Deploy a tested milestone: in the live checkout `git merge --ff-only overnight`, then `.\reload-waggle.ps1`
   (exit code 255 from that script is PowerShell piping noise; read its lines).
 - Health: `python -m waggle.cli doctor`. Dashboard: http://127.0.0.1:8897.
@@ -22,8 +22,15 @@ section) -> BLOCKERS.md.
   estimates (~0.06 per Haiku agent step, ~0.2 per Sonnet step); look at a few days of `waggle budget` before tuning.
 - Approvals: "approve K7QH" / "deny K7QH". A bare "yes" only answers what the same chat was just asked.
 - Open blockers: B-04 (voice), B-05 (calendar account), B-06 (wake-word mic).
+- Chat: Sonnet answers and tool jobs, Opus only for deep+hard (config.json chat_* keys). Router prompt v2 is
+  active (`python -m waggle.cli learn` history; rollback with prompts.rollback("router")). Chat benchmark:
+  `python bench/chat_bench.py waggle` (results in ~/.waggle/bench). Voice: turbo STT + voice_turn fixes.
 
 ## Next tasks, in order
+0. **User checks on the phone**: one Telegram text, one voice note (say "BIOBUZZ" and "FTC"), and pick a reply
+   voice (samples A/B/C were sent). Then turn on `voice.auto_tts` with `auto_tts_mode: voice_only` in Hermes
+   config so voice notes get spoken replies. Latency: chat turns ~8-12 s vs ~5 s for bare Sonnet; most of it
+   is longer, personalised replies, not overhead.
 1. **Telegram leg**: when the user is back, have them send `objective: ...` and an `approve <code>` from Telegram
    (the plugin path is the same as the terminal one tested live, but Telegram itself wasn't driven in mission 3).
 2. **Approval matching for non-shell tools**: shell commands now match on the command; Write/Edit/MCP calls still

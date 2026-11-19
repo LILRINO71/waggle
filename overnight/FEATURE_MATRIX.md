@@ -152,3 +152,16 @@ Upstream: H = Hermes Agent, OJ = OpenJarvis, W = Waggle original.
 | Corrections | none | `graph_correct` tool: retract / confirm / merge / update | test_graph | tested |
 | False relationships | substring project match ("Claude" -> "Kalshi Claude Desk") | exact/alias/spelling-variant match only | test_graph | **live-verified** |
 | Command Center operations view | objectives list only | budget, approvals with codes, active/parked/blocked, failures, workers, last recovery, local vs Claude | test_dashboard, test_trust | **live-verified** (screenshot) |
+
+## Telegram & voice intelligence (deployed 2026-11-19, d24fb06)
+
+| Capability | Before | Approach | Tests | Status |
+|---|---|---|---|---|
+| Voice note understanding | wrapper + raw mishearings sent to the model | voice_turn.parse, FTC fixes + config `voice_fixes`, spoken-reply hint | test_voice_chat | **live-verified** (gateway; Telegram app pending user) |
+| STT model | whisper small | turbo + vocabulary initial_prompt (Hermes config.yaml) | - | **live-verified** on the user's real note |
+| Failed transcription | model guessed from a file path | honest "send it again or type it" | test_voice_chat | tested |
+| Follow-ups | 1200-char turns, lost on restart | 8 exchanges, 2500-char replies, rebuilt from traces | test_voice_chat | **live-verified** (across a reload) |
+| Answer quality | low-effort headline-first, "short and easy" | full-quality answer prompt, compute in reason, router v2 | test_voice_chat, routing bench | **live-verified** (chat bench) |
+| Deep vs hardest | deep fell through to a tool job | Sonnet medium; deep+hard -> Opus, 150 s, Sonnet fallback | test_voice_chat | Sonnet live-verified; Opus tested |
+| Exact approvals | "deleting files [code]" | command shown with the code | test_voice_chat | **live-verified** |
+| Verifier precision | invented requirements | judge stated requirements only | live check (pass + fail) | **live-verified** |

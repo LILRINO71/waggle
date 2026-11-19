@@ -132,3 +132,43 @@ Fixed and deployed (d81a055, e4bf9aa, e44d4e3, 453fe07; 277 tests):
   for portfolio", 0.3 s on the GPU.
 - Voice: three Kokoro samples (A current bm_daniel 1.25x, B af_heart 1.05x, C am_michael 1.05x) sent to Telegram;
   waiting for the user's pick.
+
+## Telegram & voice intelligence upgrade, 2026-11-19 09:00-09:25
+
+Benchmark first (bench/chat_bench.py: the same 9-turn conversation through the live gateway vs direct Sonnet/Opus;
+results in ~/.waggle/bench, not the repo). Causes of the weak answers, from the traces:
+- Wrong math: the "answer" reply is written inside the routing JSON at low effort, headline first (1.01 m for a
+  3.14 m drive question). The learned router prompt v1 also told it to keep answers "short and easy".
+- Lost follow-ups: each remembered turn was cut to 1200 chars and the history lived only in gateway memory.
+- "quick: derivative of x^2 sin x" got a quiz: the tutor guide always checked understanding first.
+- Deep questions with deep_model == router model got no answer and fell through to a tool job.
+- Voice notes reached the model with the Hermes wrapper and raw mishearings ("bio bus", "ethics").
+
+Fixed and deployed (43d8b17, 9e87582, fb1e389, d24fb06; 289 tests):
+- waggle/voice_turn.py: voice notes become what was said (wrapper stripped, FTC terms fixed, personal
+  `voice_fixes` from config.json), marked as spoken so the reply is short spoken sentences; a failed
+  transcription gets "I couldn't make out that voice message..." instead of a guess.
+- Conversation memory: 8 exchanges, replies up to 2500 chars, rebuilt from traces after a gateway restart.
+- Router: answers at full quality, numbers worked out in "reason" first, "quick" means answer. Router prompt v2
+  (~/.waggle/prompts/router) scored 0.975 tuning / 1.0 holdout, same as v1; a first draft scored 0.95/0.90 (too
+  many "debug"/"rigorous" questions answered inline) and was not activated.
+- Deep: free-text Sonnet at medium effort; deep+hard -> chat_deep_model (Opus) with 150 s limit and Sonnet fallback.
+- Approval lines name the exact command: "deleting files `rm C:/...` [JDVH]".
+- Objective verifier judges against the task's stated requirements (a correct note was failed twice for
+  citation details nobody asked for); a report missing a required step still fails.
+
+Live checks (through the gateway with `hermes chat -q`; the Telegram app itself needs the user):
+- STT on the user's real voice note: small "BioBus Robot ... for for for extra bodies"; turbo "BioBus robot ... for
+  portfolio for ethics robotics"; turbo + vocabulary prompt "BIOBUZZ robot repositories ... PDF I can use for
+  portfolio, for ethics robotics" (1.1 s on the GPU); voice_turn then makes it "for FTC robotics".
+- Benchmark after: drive math 3.14 m (correct), derivative answered first, follow-ups keep "that", voice note read as
+  BIOBUZZ + FTC with spoken-style reply. Median wall time 11.7 s (10.7 s before; direct Sonnet ~5 s without context).
+- PDF to Telegram: "send me ...Portfolio.pdf here on Telegram" -> act -> send_to_me ok, no approval, 26.7 s.
+- Approval: "delete the file ..." -> asks with code JDVH; "approve JDVH" ran exactly that command, file gone,
+  approval state used.
+- Objective from chat: "objective: write a short note ..." planned 2 steps; stuck on the old verifier; after the fix
+  "retry objective e826f2da" from chat -> done, report sent.
+- Gateway restart: question, reload-waggle (new PID), follow-up "how long would that take?" answered about the
+  transfer it had recommended.
+- Hard proof: routed deep (not hard) -> Sonnet medium, correct, 12.7 s. Opus path covered by tests only.
+- Budget after the session: background 0.343 / 4 units, interactive 1.54; doctor 13/13.
