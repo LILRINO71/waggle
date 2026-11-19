@@ -26,7 +26,7 @@ Upstream: H = Hermes Agent, OJ = OpenJarvis, W = Waggle original.
 | Delegation / subagents              | H/OJ      | none for Claude                   | —                                | `delegate` MCP tool → named agent run               | test_agents    | done           |
 | MCP integrations                    | H/OJ      | claude.ai connectors (email)      | only email path                  | agent runs get connectors + waggle MCP              | test_agent     | done           |
 | Gmail / Drive / Docs                | claude.ai | read + drafts (connected route)   | —                                | keep; agent also gets them                          | test_connected | existing       |
-| Google Calendar / Tasks             | claude.ai | —                                 | not connected                    | auto-detected when connected                        | test_connected | blocked (B-01) |
+| Google Calendar / Tasks             | claude.ai | —                                 | not connected                    | auto-detected when connected; in the morning brief  | test_connected | **live** (B-05) |
 
 ## Skills
 
@@ -98,3 +98,24 @@ Upstream: H = Hermes Agent, OJ = OpenJarvis, W = Waggle original.
 | Audit log | OJ | — | — | ~/.waggle/audit.jsonl | test_policy | **live** |
 | Restart recovery | H | — | orphaned jobs stay "running" | jobs.recover() at gateway start | test_jobs | **live** |
 | Health check | H | `hermes doctor` | Waggle parts not checked | `waggle doctor` | test_doctor | **live** |
+
+## Phase 2: autonomy, memory graph, verified control (deployed 2026-11-18, c554063)
+
+| Capability | Up | Waggle before | Gap | Approach | Tests | Status |
+|---|---|---|---|---|---|---|
+| Persistent objectives (survive restarts) | mission | jobs = single Opus builds | no multi-step goals | objectives.py: SQLite objectives/steps/log | test_objectives | **live** |
+| Goal decomposition + dependencies | mission | — | — | Sonnet plan, <=8 steps, deps only on earlier steps | test_objectives | **live** |
+| Background execution + recovery | mission | — | — | detached worker per objective; routines tick supervises/restarts every 5 min | test_objectives | **live** |
+| Step verification + retry + block | mission | — | tool success taken as task success | verify each step against done_when; 1 retry; then blocked + notify | test_objectives | **live** |
+| Approvals inside background work | mission | 30-min approvals | background steps would expire | 24 h approvals for objective/routine sessions; "yes" resumes | test_objectives | **live** |
+| Completion reports | mission | — | — | Haiku report -> project log + vault note Objectives/<slug> + notify | test_objectives | **live** |
+| Start from any interface | mission | — | — | "objective: ..." in voice/Telegram/CLI; objective_create tool for agents | test_objectives | **live** |
+| Knowledge graph (projects, people, ideas, decisions) | mission/OJ | flat vault | no relationships | graph.py from vault links + dated Decisions + local-model chat extraction | test_graph | **live** |
+| Decision tracking | mission | manual | decisions in chat were lost | extracted decisions filed into the project's Decisions section (dated, "from chat") | test_graph | **live** |
+| Graph context per turn | mission | — | — | entities mentioned -> links + latest decisions added to the turn | test_graph | **live** |
+| Cross-interface continuity | mission | per-session history | voice and Telegram didn't share | recent_elsewhere: last exchanges from other interfaces on a new conversation | test_memory_care | **live** |
+| Verified computer use / browser skills | mission | tools only | no verify discipline | reviewed skills (observe-act-verify), agents told to load them | test_waggle_skills | **live** |
+| Research + objective-planning skills | mission | — | — | research-brief (3+ sources, cross-check, vault note), objective-planning | test_waggle_skills | **live** |
+| Proactive objective watch | mission | stale projects only | stuck objectives silent | blocked 12 h / waiting yes 3 h / stalled 2 h -> important finding, weekly dedupe | test_proactive | **live** |
+| Objectives in Command Center + HQ | mission | — | — | panels with step progress, linked notes | test_dashboard, test_hq | **live** |
+

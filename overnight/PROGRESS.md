@@ -28,3 +28,25 @@
   `python -c "from waggle import prompts; prompts.rollback('router')"`.
 - Calendar: connected route + agents pick up Google Calendar/Tasks/Sheets automatically once connected (B-01);
   connector calls now also go through the policy hook. Tests no longer run a real `claude mcp list`. 183 tests.
+
+## Phase 2 (autonomous development mission), 2026-11-18 evening
+
+- **1ab65a1** objectives engine (persistent goals -> Sonnet plan -> background worker with specialist agents,
+  per-step verification, 1 retry, block + notify, 24 h approvals for background sessions, report + vault note),
+  cross-interface continuity (`traces.recent_elsewhere`), knowledge graph (`graph.py`: vault links, dated
+  project decisions, people, local-model extraction of entities/relations/decisions from chats; decisions filed
+  into the project's Decisions section; graph context per turn; `graph_query`/`graph_note`; `waggle-graph`
+  cron every 6 h with silent stdout).
+- **cc256b9** four reviewed skills shipped in `skills/` and installed by install.py: verified-computer-use,
+  verified-browser-task, research-brief, objective-planning. Agents are told to load the verified-* skills.
+- **c554063** proactive objective watch (blocked 12 h / waiting for yes 3 h / stalled 2 h, weekly dedupe) and
+  objectives panels in the Command Center and the HQ note. **222 tests.**
+- 21:44 **Deployed** to main (rollback point: `0e74e97`). Live checks:
+  - `waggle doctor` 12/12 (8 cron jobs incl. waggle-graph; Twilio now configured).
+  - Graph job on the real vault: 3.7 s, silent; 50 nodes / 48 edges / 13 decisions; BIOBUZZ query returns
+    the project's real decisions.
+  - Skill search against the real 228-skill index: each of the 4 new skills ranks #1 for its test request.
+  - `hermes chat -q "objective: write a short note ..."`: replied in 7 s; worker planned 1 step, ran it,
+    verified it, wrote `Inbox/Waggle deploy check.md`, reported: **done in 21.9 s, no human input**.
+  - Earlier: direct objective test (2 steps, 41.9 s) and the nightly-project-review routine ran at 21:30
+    (status "quiet": nothing worth reporting).
