@@ -128,6 +128,12 @@ python -m pytest -q      # 56 tests: routing, local sort, quota, memory, project
   nothing leaves the PC) -> answer. Screen control is Hermes's `computer_use` (cua-driver); Waggle adds a
   guardrail so acting in banking, password, settings or messaging apps, or typing anything that looks like a
   password, card number or key, needs your OK.
+- **Phase 5 (specialists + benchmark):** Sonnet is briefed as a tutor, FTC mentor, engineer or planner (picked
+  for free by keywords, plus your own rules from `Me/Specialists/*.md` in the vault). Robotics and code answers
+  get one budgeted second-opinion pass, only while Waggle is under half its quota share. `python -m waggle.bench`
+  scores the router on 40 labelled requests plus a 20-request held-out set; see [docs/BENCHMARK.md](docs/BENCHMARK.md).
+  Current: 100% routing on both sets, 0 wasted Sonnet calls, ~40% of requests handled locally for free;
+  specialist pick is 95% on the tuning set but 70% held-out (keyword matching is the weak spot).
 - **Phase 4:** screen: on-request screenshots read by a local vision model, mouse/keyboard control, background watching
 - **Phase 5:** budgeted specialist roles (sequential, not parallel) + the Waggle benchmark (success, quality, quota, latency, autonomy, reliability, proactivity)
 - **Phase 6:** a small Jarvis panel on top of Hermes's dashboard: live jobs, quota, project status

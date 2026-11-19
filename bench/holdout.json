@@ -1,0 +1,22 @@
+[
+  {"text": "good night", "want": "simple", "spec": "general"},
+  {"text": "how far is the moon", "want": "simple", "spec": "general"},
+  {"text": "what day is christmas this year", "want": "simple", "spec": "general"},
+  {"text": "pause the music", "want": "simple", "spec": "general"},
+  {"text": "how do you say thank you in japanese", "want": "simple", "spec": "general"},
+  {"text": "what's 12 times 17", "want": "simple", "spec": "general"},
+  {"text": "who won the super bowl last year", "want": "simple", "spec": "general"},
+  {"text": "launch obsidian", "want": "simple", "spec": "general"},
+  {"text": "how should we wire the encoders so odometry doesn't drift", "want": "reasoning", "spec": "robotics"},
+  {"text": "walk me through solving a related rates problem with a ladder", "want": "reasoning", "spec": "tutor"},
+  {"text": "why is my java teleop loop lagging when I add telemetry", "want": "reasoning", "spec": "coder"},
+  {"text": "what's a good way to split chores with my siblings fairly", "want": "reasoning", "spec": "general"},
+  {"text": "explain how transformers use attention like I'm new to ML", "want": "reasoning", "spec": "tutor"},
+  {"text": "lay out a study schedule for finals over the next two weeks", "want": "reasoning", "spec": "planner"},
+  {"text": "is a 3d printed PETG bracket strong enough to hold a 312 rpm motor", "want": "reasoning", "spec": "robotics"},
+  {"text": "what should I put in my college essay about robotics", "want": "reasoning", "spec": "general"},
+  {"text": "build a tool that converts my onshape exports into laser cutter files", "want": "build", "spec": "general"},
+  {"text": "make a website where my team can log practice match scores", "want": "build", "spec": "general"},
+  {"text": "write a game in python where a bee collects pollen", "want": "build", "spec": "coder"},
+  {"text": "create a dashboard that shows my claude usage over the week", "want": "build", "spec": "general"}
+]

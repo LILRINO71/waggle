@@ -10,7 +10,7 @@
 import re
 import time
 
-from . import claude_cli, events, ollama, quota
+from . import claude_cli, events, ollama, quota, specialists
 from .config import Settings
 
 TRIVIAL_PATTERNS = [
@@ -93,24 +93,36 @@ def local_sort(text, settings=None, chat=None):
     return "unsure", 0.0
 
 
-def decide(text, memory_ctx="", settings=None, asker=None, sorter=None):
+def adjust(text, cat):
+    """Overrule a 'simple' sort when the cheap signals disagree; Sonnet then settles it.
+    - a build keyword ("make an app") means it is probably not simple;
+    - study, code and robot questions are where the user most needs a right answer and where a 4B model is
+      weakest (benchmark: both of its misses were these, sorted 'simple' at 0.95 confidence)."""
+    if cat != "simple":
+        return cat
+    if heuristic(text) == "big" or specialists.pick(text) in ("tutor", "coder", "robotics"):
+        return "unsure"
+    return cat
+
+
+def decide(text, memory_ctx="", settings=None, asker=None, sorter=None, review_allowed=None):
     t0 = time.time()
-    d = _decide(text, memory_ctx, settings, asker, sorter)
+    d = _decide(text, memory_ctx, settings, asker, sorter, review_allowed)
     d["latency_s"] = round(time.time() - t0, 2)
     events.log("route", route=d["route"], by=d.get("by"), sort=d.get("sort"), reason=d.get("reason", "")[:200],
-               latency_s=d["latency_s"], chars=len(text or ""))
+               latency_s=d["latency_s"], chars=len(text or ""), specialist=d.get("specialist"),
+               reviewed=d.get("reviewed", False))
     return d
 
 
-def _decide(text, memory_ctx="", settings=None, asker=None, sorter=None):
+def _decide(text, memory_ctx="", settings=None, asker=None, sorter=None, review_allowed=None):
     s = settings or Settings.load()
     h = heuristic(text)
     if h == "trivial":
         return {"route": "local", "reason": "trivial request", "reply": "", "build_prompt": "", "title": "",
                 "by": "heuristic"}
     cat, conf = (sorter or local_sort)(text, s)
-    if h == "big" and cat == "simple":
-        cat = "unsure"  # keyword says build, model says simple: let Sonnet settle it
+    cat = adjust(text, cat)
     if cat == "simple" and conf >= 0.7:
         return {"route": "local", "reason": f"local sort: simple ({conf:.2f})", "reply": "", "build_prompt": "",
                 "title": "", "by": "local-sort", "sort": cat}
@@ -121,8 +133,10 @@ def _decide(text, memory_ctx="", settings=None, asker=None, sorter=None):
         return out
     asker = asker or claude_cli.ask
     prompt = f"{memory_ctx}\n\nUser message:\n{text}"
+    spec = specialists.pick(text)
     try:
-        res = asker(prompt, model=s.router_model, system=ROUTER_SYSTEM, schema=ROUTE_SCHEMA, purpose="route")
+        res = asker(prompt, model=s.router_model, system=ROUTER_SYSTEM + specialists.guide(spec, s),
+                    schema=ROUTE_SCHEMA, purpose="route")
     except claude_cli.ClaudeError as e:
         out = local_route(text, memory_ctx, s)
         out["reason"] = f"Sonnet unavailable ({e.kind}): {e}"
@@ -137,6 +151,10 @@ def _decide(text, memory_ctx="", settings=None, asker=None, sorter=None):
             d.update(route="local", reason=f"wanted Opus but {why}", looked_big=True)
     d["by"] = "sonnet"
     d["sort"] = cat
+    d["specialist"] = spec
+    if d["route"] == "sonnet":
+        d["reply"], d["reviewed"] = specialists.review(text, d.get("reply", ""), spec, s, asker=asker,
+                                                       allowed=review_allowed)
     return d
 
 
