@@ -137,7 +137,8 @@ add(schema("notify_me", "Send the user (only the user) a message on their phone.
 def _load_providers():
     """Optional modules add their own tools (agents, routines, recall, models)."""
     import importlib
-    for mod in ("waggle.traces", "waggle.agents", "waggle.routines", "waggle.models"):
+    for mod in ("waggle.traces", "waggle.learning", "waggle.agents", "waggle.routines", "waggle.models",
+                "waggle.engines"):
         try:
             m = importlib.import_module(mod)
         except ImportError:

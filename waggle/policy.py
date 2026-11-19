@@ -204,7 +204,8 @@ WAGGLE_SAFE = {"vault_search", "remember", "project_status", "project_update", "
                "weather", "look_at_screen", "skill_search", "skill_load", "skill_list", "recall", "routine_list",
                "routine_add", "routine_pause", "routine_resume", "delegate", "agent_list", "jobs_list",
                "hermes_tools", "model_catalog", "start_build", "notify_me", "rate_finding", "skill_create",
-               "skill_update", "skill_hub_search", "agent_status", "learning_report", "memory_status"}
+               "skill_update", "skill_hub_search", "agent_status", "learning_report", "memory_status",
+               "agent_note", "routine_add", "routine_list", "routine_pause", "routine_resume", "memory_review"}
 
 
 def _short(tool, args):

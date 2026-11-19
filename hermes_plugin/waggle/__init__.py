@@ -148,7 +148,8 @@ def on_pre_llm_call(session_id=None, user_message="", platform="", **kwargs):
     if d["route"] == "sonnet" and d.get("reply"):
         return _hand_over(session_id, user_message, d["reply"] + news_text, meta)
     if d["route"] == "act":
-        reply = _run_agent(session_id, user_message, ctx, d.get("agent_model") or "haiku", platform)
+        reply = _run_agent(session_id, user_message, ctx, d.get("agent_model") or "haiku", platform,
+                           hard=bool(d.get("hard")))
         if reply is not None:
             return _hand_over(session_id, user_message, reply + news_text, meta)
         extras.append("Claude's tool agent is unavailable right now; do the best you can with your own tools.")
@@ -206,19 +207,24 @@ def _trace(session_id, user_message, reply, route="", model="", specialist="", s
         log.warning("trace failed: %s", e)
 
 
-def _run_agent(session_id, request, ctx, model, platform, approved_note=""):
+def _run_agent(session_id, request, ctx, model, platform, approved_note="", hard=False):
     """Run a Claude tool agent. Returns the reply text, or None to let the local model try.
     Jobs that outlast agent_wait_s keep running and send their result to the phone."""
     from waggle import agent as wagent
+    from waggle import agents as wagents
     s = Settings.load()
     _agent_last[session_id] = (request, ctx, model)
+    name = wagents.choose(request, hard)
+    if wagents.AGENTS[name]["model"] == "deep" and model == s.agent_model:
+        model = s.agent_deep_model  # coder / researcher / robotics work gets the stronger model
     box, lock = {}, threading.Lock()
     prompt = request + (f"\n\n({approved_note})" if approved_note else "")
 
     def work():
         try:
-            res = wagent.run(prompt, model=model, context=ctx, session=session_id or "", agent_name="general",
-                             settings=s)
+            res = wagent.run(prompt, model=model, context=ctx, session=session_id or "", agent_name=name,
+                             agent_rules=wagents.instructions(name, s), settings=s,
+                             timeout=1800 if name in ("researcher", "coder") else 900)
         except Exception as e:
             res = wagent.AgentResult(error=f"{type(e).__name__}: {e}")
         if not res.text and res.error and ("limit" in res.error.lower() or "not found" in res.error.lower()):
@@ -228,7 +234,7 @@ def _run_agent(session_id, request, ctx, model, platform, approved_note=""):
         skills_used = [json.loads(st["input"]).get("name", "") for st in res.steps
                        if st["tool"].endswith("skill_load") and st["input"].startswith("{")] if res.steps else []
         _trace(session_id, request, reply or res.error, route="act", model=res.model, steps=res.steps, ok=res.ok,
-               error=res.error, tokens=res.usage, skills_used=skills_used, agent="general", turns=res.turns,
+               error=res.error, tokens=res.usage, skills_used=skills_used, agent=name, turns=res.turns,
                approvals=len(res.approvals))
         with lock:
             box["reply"], box["done"] = reply, True

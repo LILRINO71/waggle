@@ -74,11 +74,37 @@ DEEP_SYSTEM = """You are Waggle, a calm, sharp personal assistant, answering a q
 reasoning. Use the user's notes to personalise. Be correct first, then concise; no filler."""
 
 
+RECURRING = re.compile(r"\b(every|each|daily|weekly|monthly|weekdays?|weekends?|nightly|hourly)\b")
+
+
+def router_prompt():
+    """The active router prompt: a benchmark-approved learned version, else the built-in one."""
+    from . import prompts
+    return prompts.get("router", ROUTER_SYSTEM)
+
+
+def classify(text, memory_ctx="", settings=None, asker=None, system=None):
+    """Just the routing label (answer / act / connected / deep / opus / local), nothing executed.
+    Used by the benchmark and by learning to score prompt versions."""
+    s = settings or Settings.load()
+    if heuristic(text) == "trivial":
+        return "local"
+    if CONNECTED_HINT.search(text or ""):
+        return "connected"
+    asker = asker or claude_cli.ask
+    spec = specialists.pick(text)
+    res = asker(f"{memory_ctx}\n\nUser message:\n{text}", model=s.router_model,
+                system=(system or router_prompt()) + specialists.guide(spec, s), schema=ROUTE_SCHEMA,
+                purpose="bench", effort="low")
+    route = (res.get("json") or {}).get("route", "")
+    return {"sonnet": "answer", "local": "act"}.get(route, route)
+
+
 def heuristic(text):
     t = (text or "").strip().lower()
     if not t:
         return "trivial"
-    if any(re.search(p, t) for p in TRIVIAL_PATTERNS):
+    if any(re.search(p, t) for p in TRIVIAL_PATTERNS) and not RECURRING.search(t):
         return "trivial"
     if any(re.search(p, t) for p in BIG_TASK_HINTS):
         return "big"
@@ -181,7 +207,7 @@ def _decide(text, memory_ctx="", settings=None, asker=None, sorter=None, review_
     prompt = f"{memory_ctx}\n\nUser message:\n{text}"
     spec = specialists.pick(text)
     try:
-        res = asker(prompt, model=s.router_model, system=ROUTER_SYSTEM + specialists.guide(spec, s),
+        res = asker(prompt, model=s.router_model, system=router_prompt() + specialists.guide(spec, s),
                     schema=ROUTE_SCHEMA, purpose="route", effort="low" if s.router_model == "haiku" else "medium")
     except claude_cli.ClaudeError as e:
         out = local_route(text, memory_ctx, s)

@@ -1,0 +1,22 @@
+[
+  {"text": "what does 'abliterated' mean for an AI model?", "want": "answer"},
+  {"text": "give me a pep talk before my robotics competition", "want": "answer"},
+  {"text": "what's a good name for a study playlist?", "want": "answer"},
+  {"text": "how many credits do I need to graduate early?", "want": "answer"},
+  {"text": "rename every screenshot on my desktop to include today's date", "want": "act"},
+  {"text": "how much free space does my D drive have", "want": "act"},
+  {"text": "find all my Python projects that don't have a README", "want": "act"},
+  {"text": "search the web for FTC teams that used a pickleball shooter and list three", "want": "act"},
+  {"text": "every night at 10, tell me what's left on my project to-do lists", "want": "act"},
+  {"text": "close all the Chrome windows except the one with my email", "want": "act"},
+  {"text": "has anyone emailed me about my college application?", "want": "connected"},
+  {"text": "open the doc I wrote about the shooter analysis and read me the conclusion", "want": "connected"},
+  {"text": "draft an email to my teacher asking for an extension (don't send it)", "want": "connected"},
+  {"text": "show me the 3 most recent files in my Google Drive", "want": "connected"},
+  {"text": "prove that there are infinitely many primes", "want": "deep"},
+  {"text": "my robot's odometry drifts 5 cm per meter; analyse every likely cause and how to test each", "want": "deep"},
+  {"text": "explain eigenvectors rigorously with a worked 3x3 example", "want": "deep"},
+  {"text": "build an iOS-style habit tracker web app with streaks and notifications", "want": "opus"},
+  {"text": "make a 2D platformer game in Godot with three levels", "want": "opus"},
+  {"text": "create a full stack app for my team to track robot parts inventory", "want": "opus"}
+]
