@@ -1,13 +1,13 @@
 ---
 name: verified-computer-use
-description: "Control a desktop app (click, type, open, fill) with an observe-act-verify loop so a step only counts when the screen proves it worked."
-version: 1.0.0
+description: "Control desktop apps, checking the screen after each step."
+version: 1.0.1
 author: Waggle
 platforms: [windows]
 metadata:
   hermes:
     category: waggle
-    tags: [computer use, desktop, click, type, app, window, screen, automation, verify]
+    tags: [computer use, desktop, click, type, open, fill, app, window, screen, automation, verify]
     related_skills: [verified-browser-task]
 ---
 

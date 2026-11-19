@@ -1,13 +1,13 @@
 ---
 name: research-brief
-description: "Research a question across several sources, cross-check the facts, and save a short cited brief to the vault."
-version: 1.0.0
+description: "Research a question across sources and save a cited brief."
+version: 1.0.1
 author: Waggle
 platforms: [windows, macos, linux]
 metadata:
   hermes:
     category: waggle
-    tags: [research, sources, compare, look up, find out, brief, report, citations, vault]
+    tags: [research, sources, compare, look up, find out, brief, report, citations, cross-check, facts, vault]
     related_skills: [verified-browser-task, objective-planning]
 ---
 

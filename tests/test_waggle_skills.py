@@ -13,7 +13,9 @@ def test_skills_parse_and_have_no_scripts():
     found = {}
     for md in REPO_SKILLS.glob("*/SKILL.md"):
         meta, body = skills.parse_frontmatter(md.read_text(encoding="utf-8"))
-        assert meta["name"] == md.parent.name and len(meta["description"]) > 40
+        desc = meta["description"]
+        # Hermes's prompt index clips descriptions past 60 chars (agent/skill_utils.py SKILL_PROMPT_DESC_LIMIT)
+        assert meta["name"] == md.parent.name and 30 <= len(desc) <= 60 and desc.endswith("."), desc
         assert meta["metadata"]["hermes"]["tags"]
         assert skills.audit_dir(md.parent)["level"] == "none"
         found[meta["name"]] = body

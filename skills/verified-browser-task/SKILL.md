@@ -1,13 +1,13 @@
 ---
 name: verified-browser-task
-description: "Do a multi-step job on a website (look something up behind a page, fill a form, collect a list) with a real browser, checking the page after each step."
-version: 1.0.0
+description: "Run multi-step website jobs, checking the page each step."
+version: 1.0.1
 author: Waggle
 platforms: [windows, macos, linux]
 metadata:
   hermes:
     category: waggle
-    tags: [browser, website, web page, form, scrape, collect, login, click, verify]
+    tags: [browser, website, web page, form, fill, scrape, collect, list, login, click, verify]
     related_skills: [verified-computer-use, research-brief]
 ---
 

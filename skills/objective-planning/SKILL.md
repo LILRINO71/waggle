@@ -1,7 +1,7 @@
 ---
 name: objective-planning
-description: "Decide whether a request should be an objective, a routine, a delegated task or a direct answer, and write a goal that plans and verifies well."
-version: 1.0.0
+description: "Choose objective, routine, delegate or answer; set the goal."
+version: 1.0.1
 author: Waggle
 platforms: [windows, macos, linux]
 metadata:
