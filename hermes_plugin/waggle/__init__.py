@@ -22,7 +22,7 @@ if _repo.exists() and _repo.read_text(encoding="utf-8").strip() not in sys.path:
     sys.path.insert(0, _repo.read_text(encoding="utf-8").strip())
 
 from waggle import (call, desktop, events, hq, jobs, learn, live, memory, notify, ollama, projects, quota, router, screen,
-                    security, selfbuild, vault)
+                    policy, security, selfbuild, toolkit, traces, vault)
 from waggle.config import Settings
 
 log = logging.getLogger("waggle")
@@ -59,8 +59,13 @@ def on_pre_llm_call(session_id=None, user_message="", platform="", **kwargs):
         return {"action": "block", "message": "Noted, thanks. " + ("I'll look for more like that." if useful
                                                                    else "I'll be pickier about those.")}
     _reindex_soon()
+    _turn[session_id] = {"t0": time.time(), "platform": platform}
     if session_id and user_message:
         _last_msg[session_id] = user_message
+        try:  # "no, I meant..." / "perfect, thanks" -> feedback on Waggle's previous answer
+            traces.judge_followup(session_id, user_message)
+        except Exception as e:
+            log.warning("feedback capture failed: %s", e)
     extras = []
     news = notify.unseen()
     if news:
@@ -81,6 +86,14 @@ def on_pre_llm_call(session_id=None, user_message="", platform="", **kwargs):
     if recent:
         ctx += "\n\n<recent_conversation>\n" + recent + "\n</recent_conversation>"
     _remember_turn(session_id, "User", user_message)
+
+    # "yes" to an approval an agent asked for -> grant exactly those calls and finish the job.
+    if YES.match(user_message) and session_id in _agent_last and policy.pending(session_id):
+        granted = policy.grant(session=session_id)
+        req, actx, model = _agent_last[session_id]
+        note = "The user approved: " + "; ".join(g["summary"] for g in granted) + ". Do those now and finish."
+        return _hand_over(session_id, user_message, _run_agent(session_id, req, actx, model, platform, note),
+                          {"route": "act", "model": model, "approved": len(granted)})
 
     # The last turn asked "which city?" -> this short reply is the city.
     asked = _awaiting_city.pop(session_id, None)
@@ -130,8 +143,15 @@ def on_pre_llm_call(session_id=None, user_message="", platform="", **kwargs):
     d = router.decide(user_message, ctx)
     vault.journal(f"route={d['route']} by={d.get('by')} - {user_message[:80]!r}")
     news_text = ("\n\n" + "\n".join(f"(Update: {n['text']})" for n in news)) if news else ""
+    meta = {"route": d["route"], "model": d.get("answered_by") or d.get("agent_model") or d.get("by"),
+            "specialist": d.get("specialist")}
     if d["route"] == "sonnet" and d.get("reply"):
-        return _hand_over(session_id, user_message, d["reply"] + news_text)
+        return _hand_over(session_id, user_message, d["reply"] + news_text, meta)
+    if d["route"] == "act":
+        reply = _run_agent(session_id, user_message, ctx, d.get("agent_model") or "haiku", platform)
+        if reply is not None:
+            return _hand_over(session_id, user_message, reply + news_text, meta)
+        extras.append("Claude's tool agent is unavailable right now; do the best you can with your own tools.")
     if d["route"] == "opus" and d.get("build_prompt"):
         title = d.get("title") or "Build"
         proj = (projects.find(user_message) or [None])[0]
@@ -139,7 +159,8 @@ def on_pre_llm_call(session_id=None, user_message="", platform="", **kwargs):
         jobs.launch(job_id)
         msg = (f"On it. I gave this to Opus as a background build: **{title}**.\n"
                f"I'll ping you when it's done (job `{job_id}`). Ask \"build status\" any time.{news_text}")
-        return _hand_over(session_id, user_message, msg)
+        return _hand_over(session_id, user_message, msg, {"route": "opus", "model": "opus"})
+    _turn[session_id].update(route=d["route"], model="local", specialist=d.get("specialist"))
     if d.get("looked_big"):
         extras.append("Claude is unavailable right now (" + d.get("reason", "") + "). Do the best you can locally, "
                       "and tell the user a stronger version can run once the Claude limit resets.")
@@ -152,7 +173,7 @@ _pending = {}
 _pending_lock = threading.Lock()
 
 
-def _hand_over(session_id, user_message, reply):
+def _hand_over(session_id, user_message, reply, meta=None):
     """Deliver a Claude-written reply immediately: the turn ends here with no local-model call.
 
     (The old placeholder trick made the local model write "OK" first, 3-9 s wasted per message.) Hermes stores
@@ -160,8 +181,70 @@ def _hand_over(session_id, user_message, reply):
     own transcript (_convo) and hands it to whichever model answers next."""
     _remember_turn(session_id, "Waggle", reply)
     learn.learn_async(user_message, reply)
+    meta = meta or {}
+    if meta.get("route") != "act":  # agent turns are traced by the agent thread (with their tool steps)
+        _trace(session_id, user_message, reply, **meta)
     threading.Thread(target=_refresh_hq, daemon=True).start()
     return {"action": "block", "message": reply}
+
+
+_turn = {}  # session_id -> {"t0", "platform", route...} for the turn in progress
+_agent_last = {}  # session_id -> (request, context, model) of the last agent job (for approvals)
+YES = re.compile(r"^\s*(y|yes|yeah|yep|yup|sure|ok(ay)?|go ahead|do it|approved?|confirm(ed)?|allow( it)?)"
+                 r"([\s,!.]+(do it|go ahead|please|you can|approved?))*[\s!.]*$", re.I)
+
+
+def _trace(session_id, user_message, reply, route="", model="", specialist="", steps=None, ok=True, error="",
+           tokens=None, skills_used=None, **extra):
+    t = _turn.get(session_id) or {}
+    try:
+        traces.record(user_message, session=session_id or "", platform=t.get("platform", ""), route=route,
+                      model=model or "", specialist=specialist or "", agent=extra.pop("agent", ""),
+                      latency_s=round(time.time() - t.get("t0", time.time()), 2), ok=ok, error=error, reply=reply,
+                      tokens=tokens, steps=steps, skills_used=skills_used, extra=extra)
+    except Exception as e:
+        log.warning("trace failed: %s", e)
+
+
+def _run_agent(session_id, request, ctx, model, platform, approved_note=""):
+    """Run a Claude tool agent. Returns the reply text, or None to let the local model try.
+    Jobs that outlast agent_wait_s keep running and send their result to the phone."""
+    from waggle import agent as wagent
+    s = Settings.load()
+    _agent_last[session_id] = (request, ctx, model)
+    box, lock = {}, threading.Lock()
+    prompt = request + (f"\n\n({approved_note})" if approved_note else "")
+
+    def work():
+        try:
+            res = wagent.run(prompt, model=model, context=ctx, session=session_id or "", agent_name="general",
+                             settings=s)
+        except Exception as e:
+            res = wagent.AgentResult(error=f"{type(e).__name__}: {e}")
+        if not res.text and res.error and ("limit" in res.error.lower() or "not found" in res.error.lower()):
+            reply = None
+        else:
+            reply = (res.text or f"That didn't work: {res.error[:200]}") + wagent.approval_message(res)
+        skills_used = [json.loads(st["input"]).get("name", "") for st in res.steps
+                       if st["tool"].endswith("skill_load") and st["input"].startswith("{")] if res.steps else []
+        _trace(session_id, request, reply or res.error, route="act", model=res.model, steps=res.steps, ok=res.ok,
+               error=res.error, tokens=res.usage, skills_used=skills_used, agent="general", turns=res.turns,
+               approvals=len(res.approvals))
+        with lock:
+            box["reply"], box["done"] = reply, True
+            late = box.get("late")
+        if late and reply:
+            _remember_turn(session_id, "Waggle", reply)
+            notify.send(reply[:3500])
+
+    th = threading.Thread(target=work, daemon=True, name="waggle-agent")
+    th.start()
+    th.join(s.agent_wait_s)
+    with lock:
+        if box.get("done"):
+            return box["reply"]
+        box["late"] = True
+    return "On it. This one takes a bit longer, so I'll message you the result when it's done."
 
 
 _convo = {}  # session_id -> recent (speaker, text) pairs
@@ -194,9 +277,15 @@ def on_transform_llm_output(response_text="", session_id="", **kwargs):
     return swap if swap else reply  # None leaves the model's own reply unchanged
 
 
-def on_post_llm_call(user_message="", assistant_response="", **kwargs):
+def on_post_llm_call(user_message="", assistant_response="", session_id="", **kwargs):
     if user_message and assistant_response:
         learn.learn_async(user_message, assistant_response)
+        t = _turn.pop(session_id, None) or {}
+        if t.get("route") and t.get("platform") not in SKIP_ROUTING_PLATFORMS:
+            _turn[session_id] = t
+            _trace(session_id, user_message, assistant_response, route=t["route"], model="local",
+                   specialist=t.get("specialist") or "")
+            _turn.pop(session_id, None)
     threading.Thread(target=_refresh_hq, daemon=True).start()  # Obsidian HQ shows this turn right away
 
 
@@ -221,6 +310,10 @@ def on_pre_tool_call(tool_name="", args=None, session_id="", **kwargs):
     directive = security.check_tool_call(tool_name, args)
     if directive or tool_name != "computer_use":
         return directive
+    return _targeting(tool_name, args, session_id)
+
+
+def _targeting(tool_name, args, session_id):
     # cua-driver refuses the Claude window, so "whatever is in front" fails whenever Claude is in front:
     # aim every action at a named app (the one this conversation is working in).
     if args.get("app"):
@@ -235,161 +328,10 @@ def on_pre_tool_call(tool_name="", args=None, session_id="", **kwargs):
             "'open <app>'."}
 
 
-# ---- tools ---------------------------------------------------------------------------------------
+# ---- tools: defined once in waggle.toolkit (also served to Claude agents over MCP) -------------------
 
-def t_vault_search(args, **kw):
-    hits = memory.search(args.get("query", ""), k=int(args.get("k", 6)))
-    return json.dumps([{"path": h["path"], "score": h["score"], "text": h["text"][:800]} for h in hits])
-
-
-def t_remember(args, **kw):
-    kind = args.get("kind", "fact")
-    if kind not in learn.FILES:
-        kind = "fact"
-    filed = learn.file_facts([{"kind": kind, "text": args.get("text", "")}])
-    return json.dumps({"saved": bool(filed), "note": learn.FILES[kind]})
-
-
-def t_start_build(args, **kw):
-    s = Settings.load()
-    ok, why = quota.can_escalate(s.builder_model, s)
-    if not ok:
-        return json.dumps({"started": False, "reason": why})
-    job_id = jobs.create(args.get("title", "Build"), args["prompt"], args.get("request", args["prompt"]))
-    jobs.launch(job_id)
-    return json.dumps({"started": True, "job_id": job_id})
-
-
-def t_build_status(args, **kw):
-    rows = sorted(jobs.load().values(), key=lambda j: j.get("created", 0), reverse=True)[:8]
-    return json.dumps([{k: j.get(k) for k in ("id", "title", "status", "workdir", "note")} |
-                       {"result": (j.get("result") or "")[:500]} for j in rows])
-
-
-def t_waggle_status(args, **kw):
-    return json.dumps({"quota": quota.status(), "jobs": len(jobs.load()), "vault": Settings.load().vault,
-                       "stats": events.summary()})
-
-
-def _project_name(args):
-    name = args.get("project", "")
-    known = [p["name"] for p in projects.all_projects()]
-    if name in known:
-        return name
-    hits = projects.find(name)
-    return hits[0] if hits else None
-
-
-def t_project_status(args, **kw):
-    name = _project_name(args) if args.get("project") else None
-    if not name:
-        return json.dumps({"projects": projects.all_projects()})
-    return json.dumps({"project": name, "state": projects.sections(name), "tasks": projects.tasks(name)})
-
-
-def t_project_update(args, **kw):
-    name = _project_name(args)
-    if not name:
-        return json.dumps({"ok": False, "error": "unknown project", "known": [p["name"] for p in projects.all_projects()]})
-    action = args.get("action", "log")
-    text = args.get("text", "")
-    if action == "add_task":
-        projects.add_task(name, text)
-    elif action == "complete_task":
-        done = projects.complete_task(name, text)
-        return json.dumps({"ok": bool(done), "completed": done})
-    elif action in ("Current focus", "Open problems", "Decisions", "Goal", "Resources"):
-        projects._set_section(name, action, text)
-        events.log("project_update", project=name, action=action)
-    else:
-        projects.add_log(name, text)
-    return json.dumps({"ok": True, "project": name})
-
-
-def t_weather(args, **kw):
-    try:
-        return live.weather(args.get("location") or None, args.get("day", "tomorrow"))
-    except Exception as e:
-        return f"Weather service unavailable right now ({type(e).__name__}). Tell the user and try web_search."
-
-
-def _call_me(minutes, about):
-    """Place or schedule a call to the user; returns context telling the model what happened."""
-    if not call.configured():
-        return ("<waggle_action>Phone calls aren't set up yet. Tell the user in one sentence to run "
-                "'Setup Calls.bat' in the waggle folder (free Twilio trial).</waggle_action>")
-    msg = about or "You asked me to call you."
-    if minutes <= 0.05:
-        res = call.call(msg, reason="asked", force=True)
-        what = "Calling the user now." if res["ok"] else f"The call failed: {res['why']}."
-    else:
-        due = call.schedule(msg, minutes)
-        what = f"Call scheduled for {time.strftime('%I:%M %p', time.localtime(due)).lstrip('0')}."
-    return f"<waggle_action>{what} Confirm it to the user in one short sentence.</waggle_action>"
-
-
-def t_call_me(args, **kw):
-    return _call_me(float(args.get("minutes") or 0), args.get("message", ""))
-
-
-def t_look_at_screen(args, **kw):
-    try:
-        q = args.get("question", "What is on my screen?")
-        if _ctx is not None:
-            return desktop.screen_context(q, _dispatch, vision=lambda x: screen.look(x))
-        return screen.look(q)
-    except Exception as e:
-        return f"Could not look at the screen ({type(e).__name__}: {e})."
-
-
-def t_rate_finding(args, **kw):
-    events.log("feedback", finding=args.get("finding_id"), useful=bool(args.get("useful")),
-               note=args.get("note", "")[:300])
-    return json.dumps({"ok": True})
-
-
-def _schema(name, desc, props, required):
-    return {"name": name, "description": desc,
-            "parameters": {"type": "object", "properties": props, "required": required}}
-
-
-TOOLS = [
-    (_schema("vault_search", "Search the user's Obsidian vault (their profile, projects, journal, ideas, people) "
-             "for notes relevant to a question. Use before answering anything personal.",
-             {"query": {"type": "string"}, "k": {"type": "integer"}}, ["query"]), t_vault_search),
-    (_schema("remember", "Save a durable fact about the user (like, dislike, preference, goal, fact, person, "
-             "project, idea) to their vault. Use when the user says 'remember' or states a lasting preference.",
-             {"kind": {"type": "string", "enum": list(learn.FILES)}, "text": {"type": "string"}},
-             ["kind", "text"]), t_remember),
-    (_schema("start_build", "Hand a big multi-step build (app, website, game, multi-file code) to Claude Opus as "
-             "a background job. Write a detailed prompt: goal, audience, features, tech, definition of done.",
-             {"title": {"type": "string"}, "prompt": {"type": "string"}, "request": {"type": "string"}},
-             ["title", "prompt"]), t_start_build),
-    (_schema("build_status", "List recent background build jobs and their status/results.", {}, []), t_build_status),
-    (_schema("waggle_status", "Show Claude Pro quota use, job count, vault location and usage stats.", {}, []),
-     t_waggle_status),
-    (_schema("project_status", "Get the structured state of one of the user's projects (goal, focus, open problems, "
-             "next actions, decisions, log), or list all projects if no name is given. Use for 'where were we with X'.",
-             {"project": {"type": "string"}}, []), t_project_status),
-    (_schema("project_update", "Update a project's state after meaningful progress. action: 'log' (add a dated log "
-             "entry), 'add_task', 'complete_task', or replace a section: 'Current focus', 'Open problems', "
-             "'Decisions', 'Goal', 'Resources'. Do not log chit-chat.",
-             {"project": {"type": "string"}, "action": {"type": "string"}, "text": {"type": "string"}},
-             ["project", "action", "text"]), t_project_update),
-    (_schema("weather", "Get the weather forecast. Use for ANY weather question. Leave location empty to use the "
-             "user's saved home city; if the result says NO_LOCATION, ask the user for their city.",
-             {"location": {"type": "string", "description": "City, e.g. 'Fargo, ND'. Empty = saved home city."},
-              "day": {"type": "string", "enum": ["today", "tomorrow", "week"]}}, []), t_weather),
-    (_schema("call_me", "Phone the user (a real call) now or after some minutes, reading out a short message.",
-             {"message": {"type": "string"}, "minutes": {"type": "number", "description": "0 = now"}},
-             ["message"]), t_call_me),
-    (_schema("look_at_screen", "Take a screenshot of the user's PC screen and have a local vision model answer a "
-             "question about it (read errors, describe windows). Stays on the PC.",
-             {"question": {"type": "string"}}, ["question"]), t_look_at_screen),
-    (_schema("rate_finding", "Record whether a proactive suggestion from Waggle was useful (the user's reaction).",
-             {"finding_id": {"type": "string"}, "useful": {"type": "boolean"}, "note": {"type": "string"}},
-             ["finding_id", "useful"]), t_rate_finding),
-]
+TOOLS = toolkit.TOOLS
+_call_me = toolkit.call_me_text
 
 
 _ctx = None
@@ -443,10 +385,43 @@ def _wake_starts_conversation():
     return True
 
 
+def _list_tools():
+    """Every Hermes tool whose requirements are met, as {name, description, parameters}."""
+    from tools.registry import registry
+    out = []
+    for d in registry.get_definitions(set(registry.get_all_tool_names()), quiet=True):
+        f = d.get("function", d)
+        out.append({"name": f.get("name"), "description": (f.get("description") or "")[:1500],
+                    "parameters": f.get("parameters") or {"type": "object", "properties": {}}})
+    return out
+
+
+def _bridge_pre(name, args):
+    """Same computer-use targeting as for the local model (session 'bridge')."""
+    if name != "computer_use":
+        return None
+    return _targeting(name, args, "bridge")
+
+
+def _start_bridge():
+    """Let Claude agents use Hermes's tools through this gateway (127.0.0.1 + token, see waggle/bridge.py).
+    Only the gateway hosts it: an interactive `hermes chat` window would otherwise steal the port file."""
+    if "gateway" not in " ".join(sys.argv).lower():
+        return
+    try:
+        from waggle import bridge
+        port, _ = bridge.start(_dispatch, _list_tools, pre=_bridge_pre)
+        log.info("waggle bridge on 127.0.0.1:%s", port)
+    except Exception as e:
+        log.warning("waggle bridge failed to start: %s", e)
+
+
 def register(ctx):
     global _ctx
     _ctx = ctx
+    toolkit.set_dispatch(_dispatch)
     _wake_starts_conversation()
+    _start_bridge()
     vault.init()
     for schema, handler in TOOLS:
         ctx.register_tool(name=schema["name"], toolset="waggle", schema=schema, handler=handler)

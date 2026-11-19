@@ -37,8 +37,10 @@ CONNECTORS = ["Gmail", "Google_Drive", "Google_Docs"]
 ROUTE_SCHEMA = {
     "type": "object",
     "properties": {
-        "route": {"type": "string", "enum": ["local", "answer", "connected", "deep", "opus"]},
+        "route": {"type": "string", "enum": ["answer", "act", "connected", "deep", "opus", "local"]},
         "reason": {"type": "string"},
+        "hard": {"type": "boolean", "description": "route=act only: true when the task needs careful multi-step "
+                 "reasoning (debugging, research with many sources, engineering), false for quick jobs"},
         "reply": {"type": "string", "description": "Your full answer to the user when route=answer, else empty"},
         "build_prompt": {"type": "string",
                          "description": "When route=opus: a complete, detailed prompt for the builder, else empty"},
@@ -52,8 +54,11 @@ ROUTER_SYSTEM = """You are the brain of Waggle, a personal AI agent. Pick who ha
   advice, explanations, plans, writing and study help. Speak like a quick, natural human conversation partner.
 - "connected": the job needs the user's Gmail, Google Drive or Google Docs (reading mail, finding a file or doc,
   drafting a reply). Another call with those connectors answers; leave "reply" empty.
-- "local": the job needs the PC's tools (control an app or the desktop, read/write files, run a command, set a
-  timer or reminder); a small local model with those tools does it.
+- "act": the job means DOING something with tools, not just talking: files or folders on the PC, running a
+  command or script, web research that needs looking things up (with sources), controlling an app, the browser or
+  the screen, scheduling a recurring task, using a skill, acting on email/Drive (not just reading), or any
+  multi-step task. A Claude agent with real tools does it; leave "reply" empty. Set "hard" for complex jobs.
+- "local": only for a trivial PC action a small local model can do alone (open an app, a quick timer).
 - "deep": only when a stronger model clearly matters: hard math or proofs, tricky debugging, detailed engineering
   trade-offs, long careful writing. A bigger model will answer instead of you.
 - "opus": a big multi-step build that needs a strong coding agent working for a long time (apps, websites, games,
@@ -187,7 +192,16 @@ def _decide(text, memory_ctx="", settings=None, asker=None, sorter=None, review_
         d["route"] = "answer"
     if d.get("route") == "connected":
         d["reply"], d["route"] = connected_answer(text, memory_ctx, s, asker), "answer"
-    if d.get("route") not in ("local", "answer", "deep", "opus"):
+    if d.get("route") == "local" and s.agent_enabled:
+        d["route"] = "act"  # a Claude agent with Hermes's tools beats the 4B model at anything but trivia
+    if d.get("route") == "act":
+        model = s.agent_deep_model if d.get("hard") else s.agent_model
+        ok, why = quota.can_escalate(model, s)
+        if ok:
+            d["agent_model"] = model
+        else:
+            d.update(route="local", reason=f"wanted a tool agent but {why}", looked_big=bool(d.get("hard")))
+    if d.get("route") not in ("local", "answer", "deep", "opus", "act"):
         return local_route(text, memory_ctx, s)
     if d["route"] == "deep" and s.deep_model != s.router_model:
         ok, why = quota.can_escalate(s.deep_model, s)
@@ -201,7 +215,10 @@ def _decide(text, memory_ctx="", settings=None, asker=None, sorter=None, review_
         d["route"] = "answer"
     if d["route"] == "answer":
         d.setdefault("answered_by", s.router_model)
-        d["route"] = "sonnet" if d.get("reply") else "local"  # "sonnet" = a Claude-written reply (legacy name)
+        # "sonnet" = a Claude-written reply (legacy name); no reply means it needs doing, not saying.
+        d["route"] = "sonnet" if d.get("reply") else ("act" if s.agent_enabled else "local")
+        if d["route"] == "act":
+            d["agent_model"] = s.agent_model
     if d["route"] == "opus":
         ok, why = quota.can_escalate(s.builder_model, s)
         if not ok:

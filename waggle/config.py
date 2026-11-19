@@ -21,6 +21,13 @@ class Settings:
     deep_model: str = "sonnet"  # hard reasoning the router hands up; also the second-opinion reviewer
     review_enabled: bool = False  # second-opinion pass on robotics/code answers (adds ~10 s)
     builder_model: str = "opus"
+    # Tool-using agents (waggle/agent.py): quick jobs on Haiku, harder multi-step work on Sonnet.
+    agent_enabled: bool = True
+    agent_model: str = "haiku"
+    agent_wait_s: float = 45.0  # longer agent jobs keep going in the background and report on Telegram
+    agent_deep_model: str = "sonnet"
+    agent_workdir: str = ""  # default: ~/Claude
+    extra_write_roots: list = field(default_factory=list)
     # Share of the Pro limit Waggle may use, and the point where it stops escalating at all.
     waggle_share: float = 0.30
     stop_at: float = 0.85
