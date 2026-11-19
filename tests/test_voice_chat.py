@@ -147,3 +147,15 @@ def test_a_slow_opus_falls_back_to_the_chat_model(settings):
     assert d["reply"] == "Sonnet's answer" and d["answered_by"] == "sonnet"
     assert ("deep", "opus", 150) in calls
 
+
+
+# ---- approvals over chat ---------------------------------------------------------------------------
+
+def test_approval_line_names_the_exact_action_and_code(settings):
+    from waggle import agent, policy
+    aid = policy.request_approval("Bash", {"command": "rm C:/tmp/approval-test.txt"}, "deleting files", "tg5")
+    res = agent.AgentResult(text="", ok=True, approvals=policy.pending("tg5"))
+    line = agent.approval_message(res)
+    code = policy.pending("tg5")[0]["code"]
+    assert "deleting files `rm C:/tmp/approval-test.txt`" in line and f"[{code}]" in line
+    assert aid not in line

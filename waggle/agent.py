@@ -217,5 +217,9 @@ def approval_message(res):
     """A short line asking the user to approve what the agent was blocked on."""
     if not res.approvals:
         return ""
-    items = "; ".join(f"{a['reason']} [{a['code']}]" if a.get("code") else a["reason"] for a in res.approvals[:3])
+    def one(a):  # the exact call, not just its category: "deleting files" alone doesn't say which
+        what = (a.get("summary") or "").split(": $ ", 1)[-1].strip()
+        what = f" `{what[:160]}`" if what else ""
+        return f"{a['reason']}{what}" + (f" [{a['code']}]" if a.get("code") else "")
+    items = "; ".join(one(a) for a in res.approvals[:3])
     return f"\n\nI need your OK for: {items}. Reply \"yes\" and I'll do it (or \"deny <code>\")."
