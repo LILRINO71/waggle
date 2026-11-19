@@ -473,3 +473,15 @@ def test_approve_code_grants_exactly_one_and_resumes(settings, quiet, plug):
     assert "no longer open" in again  # can't be reused
     bogus, _ = plug._approval_turn("tg-1", "approve ZZZZ", "telegram", prev_msg_at=0.0)
     assert "Nothing was done" in bogus
+
+
+def test_ops_view_for_the_command_center(settings, quiet):
+    from waggle import doctor
+    oid = objectives.create("goal goal goal", asker=_planner([STEP]), settings=settings)
+    policy.check("Bash", {"command": "rm t"}, session=f"objective-{oid}")
+    objectives.run_step(oid, settings=settings, run_fn=_ok_runner([], approvals=policy.pending(f"objective-{oid}")))
+    op = objectives.ops()
+    assert op["waiting"][0]["objective"] == oid and op["waiting"][0]["title"] == "Trust test"
+    assert op["active"] == [] and op["workers"] == []
+    st, detail, _ = doctor.check_background(settings)
+    assert "1 waiting approval" in detail

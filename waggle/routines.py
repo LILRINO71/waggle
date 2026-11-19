@@ -185,11 +185,23 @@ def run_one(rid, settings=None, run_fn=None, verify_fn=None, now=None):
         data[rid]["last_status"] = f"skipped: {why}"
         _save(data)
         return "skipped"
+    from . import budget
+    try:  # routines are background work: they need room in the background budget (atomic with other workers)
+        ticket = budget.reserve(model, "routine", None, None, s)
+    except budget.Deferred as e:
+        data[rid]["next_run"] = max(now + 300, min(e.until, now + 6 * 3600))
+        data[rid]["last_status"] = f"deferred: {e.reason}"
+        _save(data)
+        return "skipped"
     data[rid].update(running_since=now)
     _save(data)
     task = (f"{r['task']}\n\n(This is the scheduled routine '{r['name']}'. If nothing needs the user's attention, "
             f"reply exactly {QUIET}.)")
-    res = (run_fn or agents.run)(r["agent"], task, session=f"routine-{rid}", settings=s)
+    try:
+        with budget.using(ticket, "routine"):
+            res = (run_fn or agents.run)(r["agent"], task, session=f"routine-{rid}", settings=s, purpose="routine")
+    finally:
+        budget.release(ticket)
     text = (res.text or "").strip()
     status = "ok" if res.ok else f"error: {res.error[:120]}"
     quiet = text.strip().upper().startswith(QUIET)
@@ -198,7 +210,8 @@ def run_one(rid, settings=None, run_fn=None, verify_fn=None, now=None):
             vault.append(f"Routines/{r['name']}", f"\n## {time.strftime('%Y-%m-%d %H:%M')}\n\n{text}\n")
         if r["deliver"] in ("telegram", "both"):
             complete, missing = (verify_fn or agents.verify)(r["task"], text, settings=s)
-            note = "" if complete else f"\n\n(Waggle's check: may be incomplete: {missing[:200]})"
+            note = ("\n\n(Not double-checked: no budget for the check.)" if complete and str(missing).startswith(
+                "(not verified") else "" if complete else f"\n\n(Waggle's check: may be incomplete: {missing[:200]})")
             notify.send(f"🔁 {r['name']}\n\n{text[:3200]}{note}")
     elif not res.ok and r["deliver"] in ("telegram", "both"):
         notify.send(f"🔁 Routine '{r['name']}' failed: {res.error[:300]}")
@@ -232,6 +245,8 @@ def tick(settings=None, run_fn=None, verify_fn=None, now=None):
 
 
 def main():
+    from . import budget
+    budget.set_background("routine")
     ensure_defaults()
     try:
         from . import jobs

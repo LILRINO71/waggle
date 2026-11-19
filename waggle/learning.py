@@ -361,6 +361,8 @@ def main():
             for m in r["misses"]:
                 print(f"  want {m['want']:<9} got {m['got']:<9} {m['text']}")
         return
+    from . import budget
+    budget.set_background("learning")
     out = run(optimize="optimize" in sys.argv)
     if out["drafted"] or (out["optimize"] or {}).get("deployed"):
         print(f"Waggle learned this week: {len(out['drafted'])} new skill(s)"

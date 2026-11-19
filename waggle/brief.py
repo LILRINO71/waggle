@@ -94,6 +94,8 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8")
     except (AttributeError, ValueError):
         pass
+    from . import budget
+    budget.set_background("brief")
     print(compose())
 
 

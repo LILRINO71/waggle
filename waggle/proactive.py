@@ -337,6 +337,8 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8")  # emoji on a cp1252 Windows console
     except (AttributeError, ValueError):
         pass
+    from . import budget
+    budget.set_background("proactive")
     if len(sys.argv) > 1 and sys.argv[1] == "consolidate":
         from . import learn
         learn.consolidate()  # silent: the profile note changes, nothing is sent

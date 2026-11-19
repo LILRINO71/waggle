@@ -129,6 +129,8 @@ def snapshot():
         "objectives": _cached("objectives", 10, lambda: __import__("waggle.objectives", fromlist=["x"]).status()[:8]),
         "cron": _cached("cron", 30, cron_jobs),
         "approvals": policy.pending(),
+        "ops": _cached("ops", 5, lambda: __import__("waggle.objectives", fromlist=["x"]).ops()),
+        "budget": _cached("budget", 15, lambda: __import__("waggle.budget", fromlist=["x"]).status(s)),
         "audit": [a for a in _jsonl_tail("audit.jsonl", 200) if a.get("decision") != "allow"][-12:],
         "notifications": _jsonl_tail("notifications.jsonl", 10),
         "skills": _cached("skills", 300, skills.stats),
@@ -244,6 +246,9 @@ footer{color:var(--dim);font-size:12px;padding:0 28px 24px}
 <div class="sub" style="margin-top:8px" id="qtext"></div></section>
 <section class="card s7"><h2>Activity</h2><div class="feed"><table id="activity"></table></div></section>
 <section class="card s5"><h2>Needs you</h2><div id="approvals"></div><h2 style="margin-top:16px">Running</h2><div id="running"></div></section>
+<section class="card s5"><h2>Background budget <b id="bpct"></b></h2><div class="bar"><i id="bbar" style="width:0"></i></div>
+<div class="sub" style="margin-top:8px" id="btext"></div><div id="bmodels" style="margin-top:10px"></div><div id="bdecisions" style="margin-top:10px"></div></section>
+<section class="card s7"><h2>Background work</h2><div id="ops"></div></section>
 <section class="card s12"><h2>Objectives</h2><div id="objectives"></div></section>
 <section class="card s4"><h2>Agents</h2><div id="agents"></div></section>
 <section class="card s4"><h2>Routines</h2><div id="routines"></div></section>
@@ -275,7 +280,21 @@ function render(d){
  const a=d.activity||[];$("activity").innerHTML=a.length?`<tr><th>When</th><th>Route</th><th>Request</th><th>Tools</th><th>Time</th></tr>`+
   a.map(r=>`<tr><td class="dim">${ago(r.time)}</td><td>${tag(r.route)}</td><td>${esc(r.request)}${r.feedback<0?' <span class="bad">✗ corrected</span>':r.feedback>0?' <span class="ok">✓</span>':""}</td>
   <td>${r.tools||""}</td><td class="${r.ok?"":"bad"}">${r.latency_s!=null?r.latency_s+"s":""}</td></tr>`).join(""):empty("No conversations yet.");
- const ap=d.approvals||[];$("approvals").innerHTML=ap.length?ap.map(x=>`<div class="row"><span>${esc(x.reason)}</span><span class="mono dim">${esc(x.summary.slice(0,60))}</span></div>`).join(""):empty("Nothing waiting on you.");
+ const ap=(d.ops||{}).waiting||[];const left=t=>{const m=Math.max(0,Math.round((t-Date.now()/1000)/60));return m>=120?Math.round(m/60)+" h":m+" min"};
+ $("approvals").innerHTML=ap.length?ap.map(x=>`<div class="row"><span><span class="tag t-act mono">${esc(x.code)}</span> ${esc(x.summary.slice(0,70))}<br><span class="dim">${esc(x.reason)}${x.title?" · objective "+esc(x.title):" · "+esc(x.kind)}</span></span><span class="dim">expires in ${left(x.expires)}</span></div>`).join("")+`<div class="sub" style="margin-top:6px">Reply "approve CODE" or "deny CODE".</div>`:empty("Nothing waiting on you.");
+ const b=d.budget||{};const bp=b.limit_units?Math.round(100*(b.background_units+b.reserved_units)/b.limit_units):0;
+ $("bpct").textContent=b.limit_units!=null?bp+"%":"";$("bbar").style.width=Math.min(100,bp)+"%";
+ $("btext").innerHTML=b.error?esc(b.error):`Today: ${(b.background_units||0).toFixed(3)} of ${(b.limit_units||0).toFixed(2)} units · ${(b.remaining_units||0).toFixed(3)} left · resets ${new Date((b.resets_at||0)*1000).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}<br>`+
+  `${b.can_start?'<span class="ok">background can start work</span>':'<span class="bad">waiting:</span> '+esc(b.why||"")} · ${b.running_calls||0}/${b.max_workers||0} calls running · chat used ${(b.interactive_units||0).toFixed(3)} units`+
+  (b.estimated_rows?` · <span class="dim">${b.estimated_rows} estimated rows</span>`:"");
+ const tr=(d.today||{}).by_route||{};const loc=tr.local||0;const cloud=Object.entries(tr).filter(([k])=>k!=="local").reduce((a,[,v])=>a+v,0);
+ $("bmodels").innerHTML=`<div class="row"><span>Chat turns local / Claude</span><span>${loc} / ${cloud}</span></div>`+(b.by_model||[]).map(m=>`<div class="row"><span>${m.local?'<span class="tag t-local">local</span>':'<span class="tag t-answer">cloud</span>'} ${esc(m.model)} <span class="dim">${esc(m.kind)}</span></span><span class="dim">${m.calls} calls · ${m.units} u${m.measured<m.calls?" · "+(m.calls-m.measured)+" est.":""}</span></span></div>`).join("");
+ $("bdecisions").innerHTML=(b.decisions||[]).slice(0,5).map(x=>`<div class="row"><span><span class="tag ${x.action==="defer"?"t-opus":"t-act"}">${esc(x.action)}</span> ${esc(x.reason)}</span><span class="dim">${ago(x.time)}</span></div>`).join("");
+ const op=d.ops||{};const orow=(o,extra)=>`<div class="row"><span>${o.worker_live?'<span class="dot ok live" style="display:inline-block"></span> ':""}${esc(o.title||o.id)} <span class="dim mono">${esc(o.id)}</span></span><span class="dim">${extra}</span></div>`;
+ $("ops").innerHTML=`<h3 class="dim" style="margin:0 0 4px;font-size:12px">ACTIVE</h3>`+((op.active||[]).length?op.active.map(o=>orow(o,`${o.done}/${o.total} · ${o.parked?"parked: "+esc((o.defer_reason||"").slice(0,70)):o.worker_live?"working":"queued"}`)).join(""):empty("Nothing in flight."))+
+  `<h3 class="dim" style="margin:10px 0 4px;font-size:12px">BLOCKED</h3>`+((op.blocked||[]).length?op.blocked.map(o=>orow(o,`<span class="bad">${esc((o.error||o.status).slice(0,90))}</span>`)).join(""):empty("Nothing blocked."))+
+  `<h3 class="dim" style="margin:10px 0 4px;font-size:12px">RECENT FAILURES</h3>`+((op.failures||[]).length?op.failures.slice(0,5).map(f=>`<div class="row"><span><span class="tag">${esc(f.kind)}</span> ${esc(f.title)}: ${esc(f.text.slice(0,90))}</span><span class="dim">${ago(f.time)}</span></div>`).join(""):empty("No failures."))+
+  `<div class="sub" style="margin-top:8px">Workers: ${(op.workers||[]).length} · last recovery: ${op.last_recovery?ago(op.last_recovery):"never needed"}</div>`;
  const run=(d.jobs||[]).filter(j=>["running","queued","paused_limit"].includes(j.status));
  $("running").innerHTML=run.length?run.map(j=>`<div class="row"><span><span class="dot ok live" style="display:inline-block"></span> ${esc(j.title)}</span><span class="tag">${esc(j.status)}</span></div>`).join(""):empty("No background builds running.");
  const ag=d.agents||{};const ak=Object.keys(ag);$("agents").innerHTML=ak.length?ak.map(k=>`<div class="row"><span>${esc(k)}</span><span class="dim">${ag[k].runs} runs · ${Math.round(100*ag[k].ok/ag[k].runs)}% ok · ${ag[k].median_s??"–"}s</span></div>`).join(""):empty("No agent runs this week yet.");

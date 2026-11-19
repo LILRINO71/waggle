@@ -167,12 +167,32 @@ def check_phone():
         "Get a Twilio number + verify your cell, then run Setup Calls.bat."
 
 
+def check_background(s):
+    """Background budget + objectives: nothing stuck, nothing waiting forever, workers really alive."""
+    from . import budget, objectives
+    b = budget.status(s)
+    o = objectives.ops()
+    stale = [r for r in o["active"] if not r["worker_live"] and not r["parked"]
+             and time.time() - (r["updated"] or 0) > 3600]
+    detail = (f"background {b['background_units']:.3f}/{b['limit_units']:.2f} units today, "
+              f"{len(o['active'])} active, {len(o['waiting'])} waiting approval, {len(o['blocked'])} blocked")
+    if b["limit_units"] <= 0:
+        return "warn", detail + "; background Claude use is off", "python -m waggle.cli budget set 4"
+    if stale:
+        return ("warn", detail + f"; {len(stale)} objective(s) idle over an hour with no worker",
+                "the waggle-routines cron restarts them every 5 min; check it runs (Scheduled jobs)")
+    if o["blocked"]:
+        return "warn", detail, "say 'objective status' and resume or cancel the blocked ones"
+    return "ok", detail, ""
+
+
 def run_all(settings=None):
     s = settings or Settings.load()
     checks = [("Hermes config", check_hermes_config), ("Gateway + bridge", check_gateway),
               ("Local AI (Ollama)", lambda: check_ollama(s)), ("Voice", check_voice), ("Claude", check_claude),
               ("Scheduled jobs", check_cron), ("Vault + memory", lambda: check_vault(s)), ("Skills", check_skills),
-              ("Builds", check_jobs), ("Startup", check_startup), ("Disk", check_disk), ("Phone calls", check_phone)]
+              ("Builds", check_jobs), ("Startup", check_startup), ("Disk", check_disk), ("Phone calls", check_phone),
+              ("Background work", lambda: check_background(s))]
     out = []
     for name, fn in checks:
         try:

@@ -747,6 +747,41 @@ def status(key=None):
     return rows
 
 
+def ops(now=None):
+    """What the Command Center shows: in flight (and why parked), waiting for approval, blocked, recent failures,
+    live workers and the last recovery."""
+    from . import policy
+    now = now or time.time()
+    con = _db()
+    try:
+        rows = [dict(r) for r in con.execute(
+            "SELECT o.id, o.title, o.status, o.error, o.updated, o.worker_pid, o.lease_until, o.deferred_until, "
+            "o.defer_reason, (SELECT COUNT(*) FROM steps s WHERE s.objective_id=o.id AND s.status='done') AS done, "
+            "(SELECT COUNT(*) FROM steps s WHERE s.objective_id=o.id) AS total FROM objectives o "
+            "WHERE o.status IN ('planning','active','waiting_approval','blocked','paused') ORDER BY o.updated DESC")]
+        failures = [dict(r) for r in con.execute(
+            "SELECT l.objective_id AS id, o.title, l.time, l.kind, l.text FROM log l JOIN objectives o ON o.id="
+            "l.objective_id WHERE l.kind IN ('blocked','retry','error','expired','denied') ORDER BY l.time DESC "
+            "LIMIT 8")]
+        rec = con.execute("SELECT MAX(time) FROM log WHERE kind='recovered'").fetchone()[0]
+    finally:
+        con.close()
+    for r in rows:
+        r["worker_live"] = bool(r["worker_pid"]) and (r["lease_until"] or 0) > now and _alive(r["worker_pid"])
+        r["parked"] = (r["deferred_until"] or 0) > now
+    waiting = []
+    for p in policy.pending():
+        sess = str(p.get("session", ""))
+        oid = sess.split("-", 1)[1] if sess.startswith("objective-") else ""
+        title = next((r["title"] for r in rows if r["id"] == oid), "")
+        waiting.append({"code": p["code"], "summary": p["summary"], "reason": p["reason"], "expires": p["expires"],
+                        "objective": oid, "title": title, "kind": sess.split("-", 1)[0] if sess else "chat"})
+    return {"active": [r for r in rows if r["status"] in ("planning", "active")],
+            "blocked": [r for r in rows if r["status"] in ("blocked", "paused")],
+            "waiting": waiting, "failures": failures, "workers": [r for r in rows if r["worker_live"]],
+            "last_recovery": rec}
+
+
 def _write_note(oid):
     """Human-readable mirror in the vault: Objectives/<title>.md (status, plan, results, report)."""
     try:

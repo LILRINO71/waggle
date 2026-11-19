@@ -13,7 +13,7 @@ def test_snapshot_has_every_panel(monkeypatch):
     traces.record("hello", route="sonnet", model="haiku", reply="hi", latency_s=2.0)
     snap = dashboard.snapshot()
     for key in ("health", "quota", "today", "activity", "jobs", "agents", "routines", "approvals", "audit", "skills",
-                "learning", "memory", "models", "errors", "cron", "objectives"):
+                "learning", "memory", "models", "errors", "cron", "objectives", "ops", "budget"):
         assert key in snap, key
     assert snap["activity"][0]["request"] == "hello"
     json.dumps(snap, default=str)
