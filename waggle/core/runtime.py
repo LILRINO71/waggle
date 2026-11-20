@@ -80,7 +80,11 @@ def retention(payload=None):
 
 # ---- guard --------------------------------------------------------------------------------------------------
 
+NOT_APPROVED_DETAIL = "no approved manifest; run python -m waggle.guard approve"
+
+
 def _violations(result):
+    """guard.verify()'s answer as a list of violations (each a dict with a `kind`, or a string)."""
     if result is None or result is True:
         return []
     if result is False:
@@ -89,20 +93,33 @@ def _violations(result):
         found = result.get("violations") or []
         if not found and result.get("ok") is False:
             found = ["guard.verify() reported not ok"]
-        return [str(v) for v in found]
+        return list(found)
     if isinstance(result, (list, tuple, set)):
-        return [str(v) for v in result]
+        return list(result)
     found = getattr(result, "violations", None)
     if found is not None:
-        return [str(v) for v in found]
+        return list(found)
     if getattr(result, "ok", True) is False:
         return ["guard.verify() reported not ok"]
     return []
 
 
+def _kind(violation):
+    return violation.get("kind") if isinstance(violation, dict) else None
+
+
+def _describe(violation):
+    if isinstance(violation, dict):
+        return f"{violation.get('kind')}: {violation.get('path')}"
+    return str(violation)
+
+
 def check_guard(now=None):
     """Run guard.verify() if the guard is installed. Violations (or a guard that errors) freeze the safety core
-    until a later clean check. Returns the status saved in meta guard.status."""
+    until a later clean check. A checkout whose only finding is that no manifest was ever approved is `not
+    approved`: recorded as not ready in the ledger, but not a violation and not a freeze (an existing freeze
+    stays until a clean check, so deleting the manifest never lifts one). Returns the status saved in meta
+    guard.status."""
     import importlib
     now = store.now_or(now)
     try:
@@ -119,9 +136,16 @@ def check_guard(now=None):
             violations = _violations(guard.verify())
         except Exception as e:  # a guard that cannot check fails closed
             violations = [f"guard error: {type(e).__name__}: {e}"]
-    if violations:
-        events.emit("integrity_violation", source="guard", now=now, data={"violations": violations[:50]})
-        ledger.record("safety_core", False, method="guard.verify", detail="; ".join(violations)[:1000], now=now)
+    if violations and all(_kind(v) == "no_manifest" for v in violations):
+        ledger.record("safety_core", False, method="guard.verify", detail=NOT_APPROVED_DETAIL, now=now)
+        frozen = store.get_meta("guard.frozen") == "1"
+        status = {"status": "frozen" if frozen else "not approved", "checked_at": now, "violations": 0,
+                  "detail": NOT_APPROVED_DETAIL}
+    elif violations:
+        described = [_describe(v) for v in violations]
+        events.emit("integrity_violation", source="guard", now=now,
+                    data={"violations": [v if isinstance(v, dict) else str(v) for v in violations[:50]]})
+        ledger.record("safety_core", False, method="guard.verify", detail="; ".join(described)[:1000], now=now)
         store.set_meta("guard.frozen", "1")
         status = {"status": "frozen", "checked_at": now, "violations": len(violations)}
     else:

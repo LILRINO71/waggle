@@ -2,7 +2,9 @@
 kinds, timers and transports. A module that fails to import or register is recorded (event and a failed
 capability `plugin:<module>`) and the core keeps running without it.
 
-WAGGLE_CORE_PLUGINS (comma-separated module names) adds modules for tests and experiments."""
+WAGGLE_CORE_PLUGINS (comma-separated module names) adds modules for tests and experiments; with
+WAGGLE_CORE_PLUGINS_ONLY=1 those are the only modules loaded (tests use this so a test core never loads the
+production plug-ins)."""
 import importlib
 import logging
 import os
@@ -17,6 +19,8 @@ log = logging.getLogger("waggle.core.plugins")
 
 def modules():
     extra = [m.strip() for m in os.environ.get("WAGGLE_CORE_PLUGINS", "").split(",") if m.strip()]
+    if os.environ.get("WAGGLE_CORE_PLUGINS_ONLY") == "1":
+        return extra
     return [*MODULES, *(m for m in extra if m not in MODULES)]
 
 
