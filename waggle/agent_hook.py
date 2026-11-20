@@ -247,7 +247,10 @@ def handle(event):
 
 def main(script=False):
     try:
-        event = json.loads(sys.stdin.read() or "{}")
+        # Claude Code sends UTF-8. Decode it ourselves: -I ignores PYTHONUTF8 / PYTHONIOENCODING, and the console
+        # code page would turn a non-ASCII command into an error (a deny) or into different text.
+        raw = sys.stdin.buffer.read() if hasattr(sys.stdin, "buffer") else sys.stdin.read()
+        event = json.loads((raw.decode("utf-8") if isinstance(raw, bytes) else raw) or "{}")
         bad = integrity_failure(script=script)
         out = lockdown(bad, event.get("tool_name", ""), event.get("tool_input")) if bad else handle(event)
     except Exception as e:  # fail closed

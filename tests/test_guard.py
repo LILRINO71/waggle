@@ -1493,3 +1493,39 @@ def test_end_to_end_a_copied_checkout_is_locked_until_approved_on_its_own(pkg, t
     event = {"tool_name": "Read", "tool_input": {"file_path": "x"}, "cwd": str(copy)}
     assert hook_subprocess(other, event)["permissionDecision"] == "deny"
     assert hook_subprocess(pkg, dict(event, cwd=str(pkg.root)))["permissionDecision"] == "allow"
+
+
+# ---- the hook command ---------------------------------------------------------------------------
+
+def test_the_hook_is_started_isolated_everywhere_it_is_registered():
+    """agent.settings_json is the one place the hook command is built; tool agents, connector runs
+    (claude_cli.connector_flags) and long-lived chat sessions (chat_session.build_cmd) all pass it as --settings."""
+    from waggle import agent
+    cmd = agent.settings_json()["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+    assert cmd.startswith('"') and ' -I -S "' in cmd and cmd.endswith('agent_hook.py"')
+    for rel in ("waggle/claude_cli.py", "waggle/chat_session.py"):
+        text = (REAL_ROOT / rel).read_text(encoding="utf-8")
+        assert "settings_json()" in text and "agent_hook" not in text, rel
+
+
+def test_end_to_end_non_ascii_tool_input_in_isolated_mode(pkg):
+    """-I ignores PYTHONUTF8: the hook decodes Claude Code's UTF-8 itself, so non-ASCII input is neither an error
+    (a deny) nor different text."""
+    moved = pkg.root.parent / "Ünïcödé Ёлка"
+    shutil.move(str(pkg.root), str(moved))
+    pkg.root = moved
+    assert guard_subprocess(pkg, "approve", "--yes").returncode == 0
+
+    def run(event):
+        r = subprocess.run([sys.executable, "-I", "-S", "-c", HOOK_RUNNER, str(pkg.root / "waggle" / "agent_hook.py"),
+                            str(pkg.home)], input=json.dumps(event, ensure_ascii=False).encode("utf-8"),
+                           capture_output=True, env=pkg.env, cwd=str(pkg.root), timeout=60)
+        assert r.returncode == 0, r.stderr
+        return json.loads(r.stdout)["hookSpecificOutput"]
+
+    ok = run({"tool_name": "Bash", "cwd": str(pkg.root), "tool_input": {"command": "echo café ☕ ü Ёлка > notes.txt"}})
+    assert ok["permissionDecision"] == "allow", ok
+    held = run({"tool_name": "Write", "cwd": str(pkg.root), "tool_input": {
+        "file_path": str(pkg.root / "waggle" / "policy.py"), "content": "ü ☕"}})
+    assert held["permissionDecision"] == "deny" and "NEEDS_APPROVAL" in held["permissionDecisionReason"]
+    assert "safety files" in held["permissionDecisionReason"]  # the path was read as written, so it matched
