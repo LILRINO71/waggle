@@ -176,8 +176,12 @@ class StreamWriter:
     {"delivered", "messages", "error", "edits", "first_shown_at"}."""
 
     def __init__(self, delivery, interval=1.2, stream=True, clean=plain_text, clock=time.time, sleep=time.sleep,
-                 tick=0.2):
+                 tick=0.2, on_first_shown=None, first_hold_s=0.4, first_min_chars=80):
         self.d, self.interval, self.clean, self.clock, self.sleep, self.tick = delivery, interval, clean, clock, sleep, tick
+        self.on_first_shown = on_first_shown  # called once, right after the first words were posted
+        # The first post waits until the text has first_min_chars or first_hold_s passed since the first words:
+        # a one-line answer that completes inside the hold goes out once, whole, with no edit (and no edit gap).
+        self.first_hold_s, self.first_min_chars, self._first_update = first_hold_s, first_min_chars, None
         self.stream = stream and getattr(delivery, "can_edit", True)
         self.limit = max(200, int(getattr(delivery, "max_len", 4000) or 4000) - 96)
         self.handles, self.shown = [], []  # one per message: its handle and the text it shows now
@@ -189,6 +193,8 @@ class StreamWriter:
     def update(self, text):
         with self._lock:
             self._latest = text or ""
+            if self._first_update is None and self._latest.strip():
+                self._first_update = self.clock()
         if self.stream and self._thread is None:
             ctx = contextvars.copy_context()  # a transport may read the caller's context (e.g. which chat)
             self._thread = threading.Thread(target=ctx.run, args=(self._loop,), daemon=True, name="waggle-stream")
@@ -198,8 +204,10 @@ class StreamWriter:
         while not self._stop.is_set():
             if self.clock() - self._last_push >= self.interval:
                 with self._lock:
-                    latest = self._latest
-                if latest and self.clean(latest) != "\n\n".join(self.shown):
+                    latest, first = self._latest, self._first_update
+                held = (not self.handles and first is not None and len(latest) < self.first_min_chars
+                        and self.clock() - first < self.first_hold_s)
+                if latest and not held and self.clean(latest) != "\n\n".join(self.shown):
                     self._push(latest, final=False)
             self._stop.wait(self.tick)
 
@@ -234,6 +242,11 @@ class StreamWriter:
                 self.shown.append(chunk)
                 if self.first_shown_at is None:
                     self.first_shown_at = self.clock()
+                    if self.on_first_shown:
+                        try:
+                            self.on_first_shown()
+                        except Exception:
+                            pass
             self._last_push = self.clock()
         return ok
 
@@ -264,6 +277,39 @@ class StreamWriter:
                 "edits": self.edits, "first_shown_at": self.first_shown_at, "message_ids": ids}
 
 
+class Typing:
+    """Keeps the "typing..." indicator alive until the first words are posted: the first call at once, then one
+    every `every` seconds (Telegram shows it for about 5 s), until stop(). Best effort: errors are ignored."""
+
+    def __init__(self, delivery, every=4.0, limit_s=600.0):
+        self.d, self.every, self.limit_s = delivery, every, limit_s
+        self._stop, self._thread, self.sent = threading.Event(), None, 0
+
+    def start(self):
+        if self._thread is None and not self._stop.is_set():
+            ctx = contextvars.copy_context()
+            self._thread = threading.Thread(target=ctx.run, args=(self._loop,), daemon=True, name="waggle-typing")
+            self._thread.start()
+        return self
+
+    def _loop(self):
+        t0 = time.monotonic()
+        while not self._stop.is_set() and time.monotonic() - t0 < self.limit_s:
+            try:
+                self.d.typing()
+                self.sent += 1
+            except Exception:
+                pass
+            self._stop.wait(self.every)
+
+    def stop(self):
+        self._stop.set()
+
+    @property
+    def running(self):
+        return self._thread is not None and self._thread.is_alive()
+
+
 # ---- Telegram through Waggle's own Bot API client ------------------------------------------------------------
 
 class BotApiDelivery(Delivery):
@@ -291,8 +337,10 @@ class BotApiDelivery(Delivery):
     @property
     def api(self):
         if self._api is None:
-            from waggle.core.telegram import BotApi  # lazy: the core's client, only when this transport is used
-            self._api = BotApi()
+            import importlib
+            telegram = importlib.import_module("waggle.core.telegram")  # lazy: only when this transport is used
+            make = getattr(telegram, "default_api", None)
+            self._api = make() if make else telegram.BotApi()  # one shared keep-alive client per process
         return self._api
 
     def _call(self, fn, *args, **kwargs):
