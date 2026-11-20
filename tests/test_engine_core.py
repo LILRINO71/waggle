@@ -137,9 +137,8 @@ def test_turn_origin_reaches_the_tools_environment(settings):
 
 def test_register_core_registers_inbound_timer_and_one_prewarm_per_core_start(settings, monkeypatch):
     registered = []
-    inbound = types.ModuleType("waggle.core.inbound")
-    inbound.register = registered.append
-    monkeypatch.setitem(sys.modules, "waggle.core.inbound", inbound)
+    from waggle.core import inbound
+    monkeypatch.setattr(inbound, "register", registered.append)
     from waggle.core import settings as core_settings
     core_settings.path("core.pid").write_text(json.dumps({"pid": 123, "ctime": 1, "started": 1000.5}), "utf-8")
     kinds = chat_jobs.register_core()
