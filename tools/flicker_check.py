@@ -80,7 +80,7 @@ def drop_tasks():
 def register_task(name, args, *, limit_minutes, restart=False):
     """One task: Once at the next minute, repeating every minute, MultipleInstances IgnoreNew; started now too."""
     restart_part = "-RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1)" if restart else ""
-    limit = "[TimeSpan]::Zero" if limit_minutes == 0 else f"(New-TimeSpan -Minutes {limit_minutes})"
+    limit = "([TimeSpan]::Zero)" if limit_minutes == 0 else f"(New-TimeSpan -Minutes {limit_minutes})"
     script = f"""
 $ErrorActionPreference = 'Stop'
 $a = New-ScheduledTaskAction -Execute '{pythonw()}' -Argument '{args}' -WorkingDirectory '{REPO}'
@@ -285,6 +285,7 @@ def main(argv=None):
         print(f"  [{e['label'][:28]}] t={e['t']:.1f} {e['ev']} {e.get('class') or e.get('state')} "
               f"{(e.get('title') or '')[:30]!r} by={e.get('related_by')} proc={e.get('process')} "
               f"cmd={(e.get('cmd') or '')[:90]!r} chain={(who or [])[:4]}")
+    store.close_all()
     shutil.rmtree(home, ignore_errors=True)
     return 0
 
