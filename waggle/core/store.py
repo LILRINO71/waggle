@@ -22,7 +22,7 @@ import waggle.config as config
 
 DB_NAME = "runtime.db"
 BUSY_TIMEOUT_MS = 15000
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # Events younger than this (by the real clock) cannot be deleted; the retention job removes older ones.
 EVENT_DELETE_GUARD_S = 89 * 86400
@@ -79,6 +79,9 @@ MIGRATIONS = {
         "CREATE TRIGGER events_no_early_delete BEFORE DELETE ON events "
         f"WHEN OLD.ts > CAST(strftime('%s','now') AS REAL) - {EVENT_DELETE_GUARD_S} "
         "BEGIN SELECT RAISE(ABORT, 'events are append-only until retention'); END",
+    ],    # v3: free-form delivery details (title, topic, decision id, reply target) that transports may use.
+    3: [
+        "ALTER TABLE outbox ADD COLUMN meta TEXT",
     ],
 }
 

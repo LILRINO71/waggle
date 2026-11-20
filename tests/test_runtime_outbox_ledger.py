@@ -153,3 +153,12 @@ def test_method_is_required():
         ledger.record("x", True, method="")
     with pytest.raises(TypeError):
         ledger.record("x", True)
+
+
+def test_outbox_meta_round_trips_and_defaults_to_empty():
+    from waggle.core import outbox
+    a = outbox.enqueue("text", "hello", meta={"title": "Reminder", "decision_id": "d1"})
+    b = outbox.enqueue("text", "plain")
+    assert outbox.get(a)["meta"] == {"title": "Reminder", "decision_id": "d1"}
+    assert outbox.get(b)["meta"] == {}
+    assert [r["meta"] for r in outbox.claim_due()] == [{"title": "Reminder", "decision_id": "d1"}, {}]

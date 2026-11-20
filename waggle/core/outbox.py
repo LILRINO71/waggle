@@ -19,7 +19,7 @@ def retry_delay(attempts):
 
 
 def enqueue(kind, body="", *, chat="", file=None, idem_key=None, priority=0, origin="", not_before=None,
-            expires=None, now=None):
+            expires=None, meta=None, now=None):
     """Queue a message; with an idem_key already used, returns the existing row's id and changes nothing."""
     if kind not in KINDS:
         raise ValueError(f"outbox kind must be one of {KINDS}, not {kind!r}")
@@ -30,11 +30,11 @@ def enqueue(kind, body="", *, chat="", file=None, idem_key=None, priority=0, ori
             if row:
                 return row[0]
         cur = con.execute(
-            "INSERT INTO outbox(idem_key, chat, kind, body, file, priority, origin, not_before, expires, state, "
-            "attempts, created, updated) VALUES(?,?,?,?,?,?,?,?,?,'queued',0,?,?)",
+            "INSERT INTO outbox(idem_key, chat, kind, body, file, priority, origin, not_before, expires, meta, "
+            "state, attempts, created, updated) VALUES(?,?,?,?,?,?,?,?,?,?,'queued',0,?,?)",
             (idem_key, str(chat or ""), kind, body or "", None if file is None else str(file), int(priority),
              origin or "", None if not_before is None else float(not_before),
-             None if expires is None else float(expires), now, now))
+             None if expires is None else float(expires), store.dumps(meta), now, now))
         return cur.lastrowid
 
 
@@ -124,7 +124,7 @@ def expire(now=None):
 
 def get(id):  # noqa: A002 - the public API name
     row = store.connect().execute("SELECT * FROM outbox WHERE id=?", (id,)).fetchone()
-    return dict(row) if row else None
+    return _row(row) if row else None
 
 
 def list(state=None, chat=None, limit=100):  # noqa: A001 - the public API name
@@ -138,5 +138,11 @@ def list(state=None, chat=None, limit=100):  # noqa: A001 - the public API name
         args.append(str(chat))
     sql = "SELECT * FROM outbox" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY id DESC LIMIT ?"
     args.append(int(limit))
-    return [dict(r) for r in store.connect().execute(sql, args).fetchall()]
+    return [_row(r) for r in store.connect().execute(sql, args).fetchall()]
+
+
+def _row(r):
+    d = dict(r)
+    d["meta"] = store.loads(d.get("meta")) or {}
+    return d
 

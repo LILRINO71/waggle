@@ -77,7 +77,7 @@ def test_upgrades_a_version_1_database(tmp_path):
     path = tmp_path / "old.db"
     _v1_database(path)
     con = store.connect(path)
-    assert store.schema_version(con) == 2
+    assert store.schema_version(con) == store.SCHEMA_VERSION
     job = con.execute("SELECT * FROM jobs WHERE idem_key='k1'").fetchone()
     assert job["kind"] == "old" and job["detached"] == 0 and job["lease_s"] is None
     assert con.execute("SELECT body FROM outbox WHERE idem_key='o1'").fetchone()[0] == "hi"
