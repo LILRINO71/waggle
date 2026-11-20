@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import guard
 from .config import Settings, data_path
 
 ALLOW, ASK, DENY = "allow", "ask", "deny"
@@ -264,12 +265,48 @@ def _only_to_self(args, settings=None):
     return bool(mine and who) and all(w in mine for w in who)
 
 
-def decide(tool_name, args=None, settings=None):
+# Names the older Hermes bridge used for a shell; kept so the guard still looks at their command.
+_OTHER_SHELL = {"terminal", "shell", "execute_command", "run_command", "process"}
+_MUTATING_MCP = re.compile(r"write|edit|create|save|move|copy|rename|delete|remove|append|patch|replace|upload|"
+                           r"overwrite", re.I)
+# MCP tool names that only look: every other MCP tool (put_file, run, apply...) has all its string arguments checked.
+_LOOKING_MCP = re.compile(r"^(read|get|list|search|find|view|show|query|fetch|describe|stat|head|tree|count|"
+                          r"download|export)(_|$)|_(info|status|metadata)$", re.I)
+
+
+def _guard_hit(name, base, args, cwd):
+    """Why this call needs the user's yes because it could change a protected safety file (waggle.guard), or None.
+    Runs before the write-roots test, so a protected file inside a write root is still asked about."""
+    try:
+        if name in WRITE_TOOLS or name in {"write_file", "patch"}:
+            return guard.write_hit(args, cwd, patch=name == "patch")
+        if name in SHELL_TOOLS or name in _OTHER_SHELL:
+            return guard.shell_hit(args.get("command") or args.get("cmd") or "",
+                                   args.get("cwd") or args.get("workdir") or cwd)
+        if name == "execute_code":  # Hermes runs this Python itself
+            return guard.code_hit(args.get("code") or "", args.get("cwd") or args.get("workdir") or cwd)
+        if name.startswith("mcp__") and not name.startswith("mcp__waggle__") and (
+                _MUTATING_MCP.search(base) or not _LOOKING_MCP.search(base)):
+            return guard.write_hit(args, cwd, deep=True)
+    except Exception:  # prefer asking too often over letting an unchecked call through
+        return "the guard could not check whether this touches Waggle's safety files"
+    return None
+
+
+def decide(tool_name, args=None, settings=None, cwd=None):
     """Decision for one tool call (before approvals are consulted)."""
+    bad = guard.gate()  # fail closed like the hook when the safety files on disk no longer match the manifest
+    if bad:
+        return Decision(DENY, "integrity_violation: Waggle's safety files changed or could not be verified ("
+                        + ", ".join(str(b.get("file")) for b in bad) + "); the user must run "
+                        "`python -m waggle.guard approve`")
     args = args or {}
     raw = tool_name or ""
     name = raw.lower()
     base = name.split("__")[-1]  # mcp__server__tool -> tool
+    hit = _guard_hit(name, base, args, cwd) if isinstance(args, dict) else None
+    if hit and not (name in SHELL_TOOLS and classify_shell(str(args.get("command") or args.get("cmd") or ""))[0] == DENY):
+        return Decision(ASK, hit)
     if name in READ_TOOLS:
         path = args.get("file_path") or args.get("path") or args.get("notebook_path") or ""
         if path and is_secret_path(path):
@@ -290,7 +327,7 @@ def decide(tool_name, args=None, settings=None):
         return Decision(action, why)
     if name.startswith("mcp__waggle__"):
         if base == "hermes_tool":
-            return decide(str(args.get("name", "")), args.get("args") or {}, settings)
+            return decide(str(args.get("name", "")), args.get("args") or {}, settings, cwd)
         return Decision(ALLOW) if base in WAGGLE_SAFE else Decision(ASK, f"Waggle tool {base}")
     if name == "computer_use":
         from .security import screen_risk
@@ -524,9 +561,9 @@ def audit(tool, args, decision, source="agent"):
         f.write(json.dumps(row) + "\n")
 
 
-def check(tool, args=None, session="", source="agent", settings=None):
+def check(tool, args=None, session="", source="agent", settings=None, cwd=None):
     """Full check: policy, then one-time approvals; logs to the audit trail. Returns a Decision."""
-    d = decide(tool, args, settings)
+    d = decide(tool, args, settings, cwd)
     if d.action == ASK:
         if _consume(tool, args, session):
             d = Decision(ALLOW, "approved by the user")

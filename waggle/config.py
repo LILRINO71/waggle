@@ -93,6 +93,8 @@ class Settings:
     units: str = "imperial"
     # Turn engine (waggle/chat_engine.py): one long-lived Claude process per chat, streamed replies.
     engine_enabled: bool = False  # True = the turn engine answers in the gateway; False = the old router path
+    # Telegram chat ids whose typed messages the gateway hands to the core's turn engine (empty = none).
+    engine_chats: list = field(default_factory=list)
     chat_tools: list = field(default_factory=lambda: ["Read", "Glob", "Grep", "Bash", "PowerShell", "WebSearch",
                                                       "WebFetch"])
     chat_effort: str = "low"

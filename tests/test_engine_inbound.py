@@ -74,7 +74,7 @@ def test_background_task_tool_queues_a_core_job(monkeypatch):
 
 
 def test_register_core_and_a_job_delivers_its_result_once(monkeypatch):
-    assert chat_engine.register_core() == [chat_jobs.JOB_KIND, chat_jobs.REAP_KIND]
+    assert chat_engine.register_core() == [chat_jobs.JOB_KIND, chat_jobs.REAP_KIND, chat_jobs.PREWARM_KIND]
     runs = []
     monkeypatch.setattr("waggle.agents.run", lambda *a, **k: runs.append(a) or Res("The summary."))
     jid, key = chat_jobs.start("telegram:5", "Summarise the repo")
@@ -117,7 +117,7 @@ def test_crashed_agent_still_tells_the_user():
 
 def test_reap_job(monkeypatch):
     chat_jobs.register_core()
-    monkeypatch.setattr(chat_engine.pool(), "reap", lambda now=None: ["telegram:9"])
+    monkeypatch.setattr(chat_engine.pool(), "reap", lambda now=None, keep=(): ["telegram:9"])
     jobs.enqueue(chat_jobs.REAP_KIND)
     assert jobs.run_one()["result"] == {"stopped": ["telegram:9"]}
 
