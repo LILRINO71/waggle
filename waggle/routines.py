@@ -3,9 +3,12 @@
 - Stored in ~/.waggle/routines.json, so they survive restarts; a Hermes cron job (waggle-routines, every 5 min)
   calls tick(), which runs at most one due routine per tick (bounded cost) and recovers interrupted runs.
 - Schedules: 5-field cron ("0 7 * * 1"), "every 30m / 2h / 1d", "daily 21:30", "weekly mon 07:00",
-  "weekdays 08:00".
+  "weekdays 08:00", and one-shots: "once 2026-11-20 19:00" ("remind me at 7", "call me at 7 tomorrow").
+- One-shot reminders and "call me at 7" are not routines: they are core timers (followups.add, call.schedule_at).
+  A "once" schedule here runs an agent routine once and is then marked done.
 - Delivery: telegram (the user's phone), vault (Routines/<name>.md log), or both. Monitor-style routines answer
-  NOTHING_NEW when there's nothing worth saying, and then stay quiet. Results are checked by a cheap verify
+  NOTHING_NEW when there's nothing worth saying, and then stay quiet, unless the routine is always_report (the
+  nightly review feeds the evening note, which always goes out). Results are checked by a cheap verify
   step before they are pushed to the phone.
 - Pause / resume / remove / run now; quota-aware (skips when Waggle's share of the Claude budget is used up).
 """
@@ -21,7 +24,9 @@ from .config import Settings, data_path
 DAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 QUIET = "NOTHING_NEW"
 DEFAULTS = [
-    {"name": "nightly-project-review", "schedule": "daily 21:30", "agent": "monitor", "deliver": "both",
+    # Feeds the evening note (brief.evening_note, always sent): reports to the vault, never answers NOTHING_NEW.
+    {"name": "nightly-project-review", "schedule": "daily 20:30", "agent": "monitor", "deliver": "vault",
+     "always_report": True,
      "task": "Review the user's active projects: check each repo under C:\\Users\\hiheo\\Claude for uncommitted or "
              "unpushed work (git status / git log origin..HEAD), projects whose notes have no next action, and "
              "anything stale for 7+ days. Update project notes with project_update when you find something real. "
@@ -31,6 +36,8 @@ DEFAULTS = [
              "top 3 priorities for next week with dates. Save it to the vault as Journal/Weekly Review <date>.md. "
              "Then give a 4-sentence summary."},
 ]
+# Earlier default definitions: a routine still exactly like this was never edited by the user and is upgraded.
+OLD_DEFAULTS = {"nightly-project-review": {"schedule": "daily 21:30", "deliver": "both"}}
 
 
 def _load():
@@ -65,8 +72,11 @@ def _field(spec, lo, hi):
 
 
 def normalize(schedule):
-    """Friendly schedule -> 5-field cron, or ('every', seconds)."""
+    """Friendly schedule -> 5-field cron, ('every', seconds) or ('once', timestamp)."""
     s = (schedule or "").strip().lower()
+    m = re.fullmatch(r"(?:once|at)\s+(\d{4}-\d{2}-\d{2})[ t](\d{1,2}):(\d{2})", s)
+    if m:
+        return ("once", dt.datetime.fromisoformat(f"{m.group(1)} {int(m.group(2)):02d}:{m.group(3)}").timestamp())
     m = re.fullmatch(r"every\s+(\d+)\s*(m|min|mins|minutes?|h|hr|hrs|hours?|d|days?)", s)
     if m:
         n, u = int(m.group(1)), m.group(2)[0]
@@ -87,6 +97,8 @@ def normalize(schedule):
 def next_run(schedule, after=None):
     after = after or time.time()
     norm = normalize(schedule)
+    if isinstance(norm, tuple) and norm[0] == "once":
+        return norm[1] if norm[1] > after else None
     if isinstance(norm, tuple):
         return after + norm[1]
     minute, hour, dom, mon, dow = norm.split()
@@ -104,9 +116,11 @@ def next_run(schedule, after=None):
 
 # ---- CRUD ----------------------------------------------------------------------------------------
 
-def add(name, schedule, task, agent="general", deliver="telegram", enabled=True):
+def add(name, schedule, task, agent="general", deliver="telegram", enabled=True, always_report=False, source=""):
     name = re.sub(r"[^a-z0-9-]+", "-", name.lower()).strip("-")[:50] or "routine"
     nxt = next_run(schedule)  # validates
+    if nxt is None:
+        raise ValueError(f"{schedule!r} is in the past")
     if agent not in agents.AGENTS:
         agent = "general"
     data = _load()
@@ -114,17 +128,23 @@ def add(name, schedule, task, agent="general", deliver="telegram", enabled=True)
     data[rid] = {"name": name, "schedule": schedule, "task": task, "agent": agent, "deliver": deliver,
                  "enabled": enabled, "created": data.get(rid, {}).get("created", time.time()), "next_run": nxt,
                  "last_run": data.get(rid, {}).get("last_run"), "last_status": data.get(rid, {}).get("last_status"),
-                 "runs": data.get(rid, {}).get("runs", 0)}
+                 "runs": data.get(rid, {}).get("runs", 0), "always_report": bool(always_report),
+                 "source": source or ""}
     _save(data)
     return rid
 
 
 def ensure_defaults():
     data = _load()
-    have = {v["name"] for v in data.values()}
+    have = {v["name"]: k for k, v in data.items()}
     for d in DEFAULTS:
-        if d["name"] not in have:
-            add(d["name"], d["schedule"], d["task"], d["agent"], d["deliver"])
+        old = OLD_DEFAULTS.get(d["name"])
+        rid = have.get(d["name"])
+        if rid is None:
+            add(d["name"], d["schedule"], d["task"], d["agent"], d["deliver"], always_report=d.get("always_report"))
+        elif old and all(data[rid].get(k) == v for k, v in old.items()) and data[rid].get("task") == d["task"]:
+            add(d["name"], d["schedule"], d["task"], d["agent"], d["deliver"], enabled=data[rid].get("enabled", True),
+                always_report=d.get("always_report"))
 
 
 def find(key):
@@ -195,8 +215,12 @@ def run_one(rid, settings=None, run_fn=None, verify_fn=None, now=None):
         return "skipped"
     data[rid].update(running_since=now)
     _save(data)
-    task = (f"{r['task']}\n\n(This is the scheduled routine '{r['name']}'. If nothing needs the user's attention, "
-            f"reply exactly {QUIET}.)")
+    if r.get("always_report"):
+        task = (f"{r['task']}\n\n(This is the scheduled routine '{r['name']}'. Always reply with a short report of at "
+                "most 3 lines, even when little changed; never reply NOTHING_NEW.)")
+    else:
+        task = (f"{r['task']}\n\n(This is the scheduled routine '{r['name']}'. If nothing needs the user's "
+                f"attention, reply exactly {QUIET}.)")
     try:
         with budget.using(ticket, "routine"):
             res = (run_fn or agents.run)(r["agent"], task, session=f"routine-{rid}", settings=s, purpose="routine")
@@ -205,6 +229,8 @@ def run_one(rid, settings=None, run_fn=None, verify_fn=None, now=None):
     text = (res.text or "").strip()
     status = "ok" if res.ok else f"error: {res.error[:120]}"
     quiet = text.strip().upper().startswith(QUIET)
+    if r.get("always_report") and res.ok and (quiet or not text):
+        text, quiet = "Checked the repos and project notes: nothing changed that needs you tomorrow.", False
     if res.ok and not quiet and text:
         if r["deliver"] in ("vault", "both"):
             vault.append(f"Routines/{r['name']}", f"\n## {time.strftime('%Y-%m-%d %H:%M')}\n\n{text}\n")
@@ -212,16 +238,22 @@ def run_one(rid, settings=None, run_fn=None, verify_fn=None, now=None):
             complete, missing = (verify_fn or agents.verify)(r["task"], text, settings=s)
             note = ("\n\n(Not double-checked: no budget for the check.)" if complete and str(missing).startswith(
                 "(not verified") else "" if complete else f"\n\n(Waggle's check: may be incomplete: {missing[:200]})")
-            notify.send(f"🔁 {r['name']}\n\n{text[:3200]}{note}")
+            notify.send(f"🔁 {r['name']}\n\n{text[:3200]}{note}", origin="routine", source=r.get("source"))
     elif not res.ok and r["deliver"] in ("telegram", "both"):
-        notify.send(f"🔁 Routine '{r['name']}' failed: {res.error[:300]}")
+        notify.send(f"🔁 Routine '{r['name']}' failed: {res.error[:300]}", origin="routine", source=r.get("source"))
     data = _load()
     if rid in data:
         data[rid].pop("running_since", None)
-        data[rid].update(last_run=now, last_status="quiet" if quiet else status,
-                         runs=data[rid].get("runs", 0) + 1, next_run=next_run(r["schedule"], after=now))
+        _finish_run(data[rid], now, "quiet" if quiet else status)
         _save(data)
     return "quiet" if quiet else status
+
+
+def _finish_run(r, now, status):
+    nxt = next_run(r["schedule"], after=now)
+    r.update(last_run=now, last_status=status, runs=r.get("runs", 0) + 1, next_run=nxt)
+    if nxt is None:  # a one-shot: done, kept for the record
+        r.update(enabled=False, last_status=status if status.startswith("done") else f"done ({status})")
 
 
 def tick(settings=None, run_fn=None, verify_fn=None, now=None):
@@ -238,7 +270,8 @@ def tick(settings=None, run_fn=None, verify_fn=None, now=None):
     if changed:
         _save(data)
     due = sorted(((r["next_run"], rid) for rid, r in data.items()
-                  if r.get("enabled") and not r.get("running_since") and r.get("next_run", 0) <= now))
+                  if r.get("enabled") and not r.get("running_since") and r.get("next_run") is not None
+                  and r["next_run"] <= now))
     if not due:
         return None
     return due[0][1], run_one(due[0][1], settings, run_fn, verify_fn, now)

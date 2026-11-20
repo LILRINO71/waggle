@@ -1,10 +1,16 @@
 """Morning brief: Waggle reaches out first, every day, without being asked.
 
-At 7:30 (cron, delivered to Telegram) it sends a short brief: today's weather, the next action on your most
-active projects, builds that finished or are running, anything waiting for you, and one suggestion. The facts
-are gathered for free; the local model only phrases them in Waggle's voice (plain list if it's down).
+At brief_time (07:30; a core timer, outreach.brief, queues it in the outbox, and a brief missed while the PC was
+off is still sent up to brief_catchup_hours later, never in the afternoon) it sends a short brief: today's weather, the
+next action on your most active projects, today's dated items, builds that finished or are running, anything
+waiting for you, and one suggestion. The facts are gathered for free; the local model only phrases them in
+Waggle's voice (plain list if it's down).
+
+evening_note() is the daily evening note (evening_time, always sent): what Waggle did today, what it learned,
+what you worked on, what it kept for tonight, and what is open tomorrow.
 """
 import datetime as dt
+import time
 
 from . import events, jobs, live, notify, ollama, projects
 from .config import Settings
@@ -38,6 +44,15 @@ def facts(settings=None, now=None):
             out.append(f"Build still running: {j.get('title')}")
         elif j.get("status") == "done" and j.get("finished", 0) > now.timestamp() - 86400:
             out.append(f"Build finished overnight: {j.get('title')}")
+    try:
+        from . import watchers
+        day0 = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        ups = watchers.upcoming_items(s, day0, day0 + dt.timedelta(days=1))
+        if ups:
+            out.append("Dated items today: " + "; ".join(
+                (f"{i['when']:%H:%M} " if i["has_time"] else "") + i["text"][:80] for i in ups[:5]))
+    except Exception:  # noqa: BLE001
+        pass
     cal = calendar_today(s)
     if cal:
         out.append("Calendar today: " + cal)
@@ -88,15 +103,87 @@ def compose(settings=None, chat=None):
     return "🐝 " + text
 
 
-def main():
-    import sys
+def _learned(now):
+    """learning.today_learned() when the knowledge side provides it (str or list); else []."""
     try:
-        sys.stdout.reconfigure(encoding="utf-8")
-    except (AttributeError, ValueError):
+        from . import learning
+        fn = getattr(learning, "today_learned", None)
+        got = fn() if fn else None
+    except Exception:  # noqa: BLE001
+        got = None
+    if not got:
+        return []
+    if isinstance(got, str):
+        return [x.strip(" -•") for x in got.splitlines() if x.strip()][:4]
+    return [str(x.get("text") if isinstance(x, dict) else x)[:160] for x in list(got)[:4]]
+
+
+def _nightly_review(s, now):
+    """Today's entry of the nightly-project-review routine (vault log), if it ran."""
+    from . import vault
+    text = vault.read("Routines/nightly-project-review", s)
+    day = dt.datetime.fromtimestamp(now).strftime("%Y-%m-%d")
+    parts = text.split("\n## ")
+    for part in reversed(parts):
+        if part.startswith(day):
+            body = [x.strip() for x in part.splitlines()[1:] if x.strip()]
+            return body[:3]
+    return []
+
+
+def evening_note(settings=None, now=None, activity=None):
+    """Tonight's note: what Waggle did, what it learned, what the user worked on, what's open tomorrow.
+    Always returns text (it is sent every day, even when little happened). Facts only, no model."""
+    from . import followups, initiative, watchers
+    s = settings or Settings.load()
+    now = now or time.time()
+    nowd = dt.datetime.fromtimestamp(now)
+    start = nowd.replace(hour=0, minute=0, second=0, microsecond=0)
+    lines = [f"🌙 Evening note, {nowd:%A %b %d}"]
+    sent = [r for r in notify.rows(since=start.timestamp()) if r["status"] == "sent"
+            and r["origin"] not in ("evening",) and r["kind"] in ("text", "voice", "call")]
+    work = initiative.signals_between(start.timestamp(), now + 1)
+    done = [w["title"] for w in work if w["kind"] in ("objective", "build", "routine") and w["status"] == "told"]
+    did = []
+    if done:
+        did.append("; ".join(done[:4]))
+    if sent:
+        did.append(f"sent you {len(sent)} message(s)")
+    lines.append("Did: " + ("; ".join(did) if did else "nothing beyond watching (no jobs ran, nothing worth a "
+                                                           "message)") + ".")
+    learned = _learned(now)
+    lines.append("Learned: " + ("; ".join(learned) if learned else "nothing new recorded today") + ".")
+    if activity is None:
+        try:
+            activity = watchers.repo_activity(s, start.timestamp(), now)
+        except Exception:  # noqa: BLE001
+            activity = {}
+    if activity:
+        lines.append("You worked on: " + "; ".join(f"{k} ({len(v)} commit{'s' if len(v) > 1 else ''})"
+                                                    for k, v in list(activity.items())[:5]) + ".")
+    review = _nightly_review(s, now)
+    if review:
+        lines.append("Project review: " + " ".join(review)[:300])
+    saved = initiative.evening_items(now, s)
+    if saved:
+        lines.append("Saved for tonight:\n" + "\n".join(f"• {x['title'][:140]}" for x in saved[:6]))
+    tomorrow = (start + dt.timedelta(days=1))
+    after = tomorrow + dt.timedelta(days=1)
+    open_ = [f"check in: {i['what'][:80]}" for i in followups.upcoming(tomorrow.timestamp(), after.timestamp())]
+    try:
+        open_ += [f"{i['when']:%H:%M} " * i["has_time"] + i["text"][:80]
+                  for i in watchers.upcoming_items(s, tomorrow, after)]
+    except Exception:  # noqa: BLE001
         pass
-    from . import budget
-    budget.set_background("brief")
-    print(compose())
+    lines.append("Tomorrow: " + ("; ".join(open_[:6]) if open_ else "nothing scheduled that I know of") + ".")
+    initiative.close_evening([x["key"] for x in saved], now)
+    return "\n".join(lines)
+
+
+def main():
+    """Thin caller kept for the old waggle-brief cron entry: the core timer outreach.brief decides when it is due."""
+    from . import tick
+    tick.main([])
 
 
 if __name__ == "__main__":
