@@ -22,7 +22,7 @@ import waggle.config as config
 
 DB_NAME = "runtime.db"
 BUSY_TIMEOUT_MS = 15000
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # Events younger than this (by the real clock) cannot be deleted; the retention job removes older ones.
 EVENT_DELETE_GUARD_S = 89 * 86400
@@ -87,6 +87,20 @@ MIGRATIONS = {
     # (max_attempts, detached) from the process that claims it.
     4: [
         "ALTER TABLE jobs ADD COLUMN defaults_pending INTEGER NOT NULL DEFAULT 0",
+    ],
+    # v5: the inbox for messages handed to the core (POST /turn). The v1 sketch keyed rows by Telegram's
+    # update_id; turns now have their own id and an optional dedupe key, and update_id becomes an optional
+    # unique column for the later polling step. Any v1 rows are kept in inbox_v1.
+    5: [
+        "ALTER TABLE inbox RENAME TO inbox_v1",
+        "CREATE TABLE inbox(id INTEGER PRIMARY KEY AUTOINCREMENT, turn_id TEXT NOT NULL UNIQUE, dedupe_key TEXT "
+        "UNIQUE, update_id INTEGER UNIQUE, chat TEXT NOT NULL, address TEXT NOT NULL DEFAULT '', platform TEXT "
+        "NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT 'text', text TEXT NOT NULL DEFAULT '', media TEXT, "
+        "origin TEXT NOT NULL DEFAULT '', state TEXT NOT NULL DEFAULT 'waiting', attempts INTEGER NOT NULL "
+        "DEFAULT 0, received_ts REAL NOT NULL, started REAL, finished REAL, error TEXT, pid INTEGER, "
+        "pid_ctime INTEGER, updated REAL)",
+        "CREATE INDEX inbox_chat_state ON inbox(chat, state, id)",
+        "CREATE INDEX inbox_state ON inbox(state, id)",
     ],
 }
 
