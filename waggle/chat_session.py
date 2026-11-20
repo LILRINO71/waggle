@@ -115,10 +115,15 @@ def build_cmd(chat, settings, claude, resume="", new_session="", servers=None, o
     from .agent import hidden_servers, settings_json
     s = settings
     model = claude_cli.MODEL_IDS.get(s.chat_model or s.router_model, s.chat_model or s.router_model)
+    cfg = settings_json()
+    if not getattr(s, "chat_thinking", False):
+        # Haiku spent ~7 s "thinking" before the first word of a 150-word answer even at --effort low (measured
+        # 2026-11-20); a chat reply should start at once. settings.chat_thinking=true turns it back on.
+        cfg = {**cfg, "alwaysThinkingEnabled": False}
     cmd = [claude, "-p", "--input-format", "stream-json", *claude_cli.STREAM_FLAGS,
            "--model", model, "--effort", s.chat_effort or "low", "--disable-slash-commands",
            "--tools", ",".join(s.chat_tools or []),
-           "--settings", json.dumps(settings_json()),
+           "--settings", json.dumps(cfg),
            "--mcp-config", mcp_config(chat, s, origin),
            "--append-system-prompt", CHAT_SYSTEM]
     hide = hidden_servers(servers if servers is not None else claude_cli.mcp_servers(claude))
@@ -216,6 +221,7 @@ class ChatSession:
         self._fresh = False
         self.origin = "user"  # where this chat's messages come from (set per turn by the engine)
         self._proc_origin = None
+        self._marked = False  # this turn's message was the session's first (it is counted as sent, see _run)
 
     # -- process management
     def claude(self):
@@ -239,6 +245,8 @@ class ChatSession:
         resume = row.get("claude_session") if allow_resume else ""
         if resume and (row.get("session_turns") or 0) >= s.chat_session_max_turns:
             resume = ""  # long enough: start fresh, seeded with the recent transcript
+        if resume and not (row.get("session_turns") or 0):
+            resume = ""  # a pre-warmed process that never got a message: Claude never wrote that session down
         new_id = "" if resume else str(uuid.uuid4())
         cmd, self.model = build_cmd(self.chat, s, claude, resume=resume, new_session=new_id, origin=self.origin)
         env = claude_cli.clean_env()
@@ -278,6 +286,7 @@ class ChatSession:
     def turn(self, text, on_text=None, on_tool=None, timeout=None, origin=None):
         """Send one user message, stream the reply. Never raises for Claude-side failures: see .kind/.error."""
         res = TurnResult()
+        self._marked = False
         t0 = self.clock()
         timeout = timeout or self.settings.chat_turn_timeout_s
         with self.lock:
@@ -295,9 +304,13 @@ class ChatSession:
                 res.kind, res.error = "missing" if isinstance(e, FileNotFoundError) else "error", f"{type(e).__name__}: {e}"
                 return res
             parser = self._run(text, on_text, on_tool, t0, timeout, res)
-            if res.kind == "crash" and not parser.text and not res.retried:
-                # died before saying anything: start again (resume, or fresh if the resume itself failed)
+            gone = self._session_gone(res, parser)
+            if gone or (res.kind == "crash" and not parser.text and not res.retried):
+                # died before saying anything: start again (resume, or fresh if the resume itself failed);
+                # Claude does not know the stored session (never written, or deleted): start a fresh one
                 res.retried = True
+                if gone:
+                    chat_store.set_session(self.chat, "", turns=0)
                 self.stop()
                 try:
                     res.resumed = self._start(allow_resume=not (res.restarted and res.resumed))
@@ -324,8 +337,17 @@ class ChatSession:
         if res.ok or parser.result is not None:
             row = chat_store.get_chat(self.chat) or {}
             chat_store.set_session(self.chat, parser.session_id or row.get("claude_session") or "",
-                                   turns=(row.get("session_turns") or 0) + 1, model=self.model)
+                                   turns=(row.get("session_turns") or 0) + (0 if self._marked else 1),
+                                   model=self.model)
         return res
+
+    @staticmethod
+    def _session_gone(res, parser):
+        """The turn ended with Claude's "No conversation found" for the session we resumed (and said nothing)."""
+        if res.kind or res.retried or parser.result is None or parser.text:
+            return False
+        err = parser.error()
+        return bool(err and "no conversation found" in err[1].lower())
 
     def _run(self, text, on_text, on_tool, t0, timeout, res):
         parser = claude_cli.StreamParser(on_text=on_text, on_tool=on_tool, clock=self.clock)
@@ -339,6 +361,11 @@ class ChatSession:
             self.stop()
             return parser
         self._seed = ""
+        row = chat_store.get_chat(self.chat) or {}
+        if not (row.get("session_turns") or 0):
+            # Claude writes the session down once it has a message: from now on it can be resumed
+            chat_store.set_session(self.chat, row.get("claude_session") or "", turns=1)
+            self._marked = True
         deadline = t0 + timeout
         while True:
             left = deadline - self.clock()

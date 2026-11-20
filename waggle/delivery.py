@@ -171,22 +171,35 @@ def split_long(text, limit):
 class StreamWriter:
     """Shows a reply while it is written. update(full_text) any number of times, then finish(final_text).
 
-    A background thread pushes at most one change per `interval` seconds; finish() stops it, waits out the
-    interval and sends the final text (edit, or a new message if the edit failed). Returns from finish():
-    {"delivered", "messages", "error", "edits", "first_shown_at"}."""
+    A background thread pushes at most one change per `interval` seconds (it wakes at once for the first words
+    and then at the next due time); finish() stops it, waits out the interval and sends the final text (edit, or a
+    new message if the edit failed). Returns from finish():
+    {"delivered", "messages", "error", "edits", "first_shown_at", "message_ids"}.
+
+    Short answers go out once: the first post waits until the text has first_min_chars or first_hold_s passed
+    since the first words, and an answer shorter than pace_min_chars is never split into steps.
+
+    Pacing: the model can write a whole answer in well under a second (the CLI hands over its text in a burst), but
+    a chat app takes about one edit per second. So a long answer that is already complete (or far ahead of what is
+    shown) is revealed in steps of at least pace_chars characters, one per `interval`, and at most pace_steps steps
+    in all: the first words appear at once, the text grows, the whole is there a few seconds later. Text that
+    arrives slower than that is shown as it arrives, with no delay. pace_chars=0 turns pacing off."""
 
     def __init__(self, delivery, interval=1.2, stream=True, clean=plain_text, clock=time.time, sleep=time.sleep,
-                 tick=0.2, on_first_shown=None, first_hold_s=0.4, first_min_chars=80):
+                 tick=0.2, on_first_shown=None, first_hold_s=0.4, first_min_chars=80, pace_chars=170,
+                 pace_steps=5, pace_min_chars=400):
         self.d, self.interval, self.clean, self.clock, self.sleep, self.tick = delivery, interval, clean, clock, sleep, tick
         self.on_first_shown = on_first_shown  # called once, right after the first words were posted
         # The first post waits until the text has first_min_chars or first_hold_s passed since the first words:
         # a one-line answer that completes inside the hold goes out once, whole, with no edit (and no edit gap).
         self.first_hold_s, self.first_min_chars, self._first_update = first_hold_s, first_min_chars, None
+        self.pace_chars, self.pace_steps, self.pace_min_chars = int(pace_chars or 0), max(1, int(pace_steps)), pace_min_chars
+        self._pace_used = 0
         self.stream = stream and getattr(delivery, "can_edit", True)
         self.limit = max(200, int(getattr(delivery, "max_len", 4000) or 4000) - 96)
         self.handles, self.shown = [], []  # one per message: its handle and the text it shows now
         self._latest, self._last_push, self._lock = "", 0.0, threading.Lock()
-        self._stop, self._thread = threading.Event(), None
+        self._stop, self._wake, self._thread = threading.Event(), threading.Event(), None
         self.edits, self.first_shown_at, self.error = 0, None, ""
 
     # -- feeding
@@ -199,21 +212,64 @@ class StreamWriter:
             ctx = contextvars.copy_context()  # a transport may read the caller's context (e.g. which chat)
             self._thread = threading.Thread(target=ctx.run, args=(self._loop,), daemon=True, name="waggle-stream")
             self._thread.start()
+        if not self.handles:
+            self._wake.set()  # re-check the first post's hold now, not at the next tick
+
+    def _shown_text(self):
+        return "\n\n".join(self.shown)
+
+    def _hold_left(self, latest, first):
+        """Seconds the first post still waits (0 when it may go out)."""
+        if self.handles or first is None or len(latest) >= self.first_min_chars:
+            return 0.0
+        return max(0.0, self.first_hold_s - (self.clock() - first))
 
     def _loop(self):
         while not self._stop.is_set():
-            if self.clock() - self._last_push >= self.interval:
+            wait = self.tick
+            since = self.clock() - self._last_push
+            if since >= self.interval:
                 with self._lock:
                     latest, first = self._latest, self._first_update
-                held = (not self.handles and first is not None and len(latest) < self.first_min_chars
-                        and self.clock() - first < self.first_hold_s)
-                if latest and not held and self.clean(latest) != "\n\n".join(self.shown):
-                    self._push(latest, final=False)
-            self._stop.wait(self.tick)
+                hold = self._hold_left(latest, first) if latest.strip() else 0.0
+                if hold > 0:
+                    wait = min(wait, hold)
+                elif latest.strip():
+                    cleaned = self.clean(latest)
+                    shown = self._shown_text()
+                    if cleaned != shown:
+                        view = self._next_view(cleaned, rest=shown)
+                        if view != shown:
+                            self._push_view(view, final=False)
+            else:
+                wait = min(wait, max(0.005, self.interval - since))
+            self._wake.wait(wait)
+            self._wake.clear()
+
+    # -- pacing
+    def _next_view(self, cleaned, rest=""):
+        """What to show next: all of `cleaned`, or a prefix of it ending at a word boundary (paced reveal)."""
+        shown_len = len(rest)
+        remaining = len(cleaned) - shown_len
+        if not self.pace_chars or len(cleaned) < self.pace_min_chars or remaining <= 0:
+            return cleaned
+        steps_left = max(1, self.pace_steps - self._pace_used)
+        chunk = max(self.pace_chars, -(-remaining // steps_left))
+        if remaining <= chunk:
+            return cleaned
+        limit = shown_len + chunk
+        cut = max(cleaned.rfind(" ", shown_len, limit + 1), cleaned.rfind("\n", shown_len, limit + 1))
+        if cut <= shown_len:
+            cut = limit
+        self._pace_used += 1
+        return cleaned[:cut].rstrip()
 
     # -- sending
     def _push(self, text, final):
-        chunks = split_long(self.clean(text), self.limit)
+        return self._push_view(self.clean(text), final)
+
+    def _push_view(self, cleaned, final):
+        chunks = split_long(cleaned, self.limit)
         ok = True
         for i, chunk in enumerate(chunks):
             if not chunk.strip():
@@ -259,10 +315,24 @@ class StreamWriter:
 
     def finish(self, final_text):
         self._stop.set()
+        self._wake.set()
         if self._thread is not None:
             self._thread.join(timeout=35)
         final = final_text or ""
-        delivered = self._push(final, final=True) if final.strip() else False
+        delivered = False
+        if final.strip():
+            cleaned = self.clean(final)
+            if self.stream and self._first_update is not None:
+                # the answer was streamed to us: reveal what is still hidden in paced steps, then the whole
+                for _ in range(self.pace_steps + 2):
+                    view = self._next_view(cleaned, rest=self._shown_text())
+                    if view == cleaned:
+                        break
+                    if self.clock() - self._last_push < self.interval:
+                        self.sleep(self.interval - (self.clock() - self._last_push))
+                    if not self._push_view(view, final=False):
+                        break
+            delivered = self._push_view(cleaned, final=True)
         if not delivered and not self.error:
             self.error = "the message could not be posted or updated"
         ids = []

@@ -1,0 +1,173 @@
+{
+"about": "Text deltas of the final answer of one real Sonnet turn after a tool call (claude 2.1.326, --input-format stream-json --include-partial-messages): the CLI handed over all 46 deltas within 4 ms, after a 2 s wait.",
+"deltas": [
+[
+0.0,
+"The command print"
+],
+[
+0.0,
+"ed `hello-from-sh"
+],
+[
+0.0,
+"ell`.\n\nShells are"
+],
+[
+0.0,
+" useful because they turn repet"
+],
+[
+0.0,
+"itive work into something"
+],
+[
+0.0,
+" you can say in"
+],
+[
+0.0,
+" a"
+],
+[
+0.0,
+" single line."
+],
+[
+0.0,
+" Instead of cl"
+],
+[
+0.0,
+"icking through wind"
+],
+[
+0.0,
+"ows,"
+],
+[
+0.0,
+" you type"
+],
+[
+0.001,
+" a command, ch"
+],
+[
+0.001,
+"ain it with others"
+],
+[
+0.001,
+", and get the same"
+],
+[
+0.001,
+" result every"
+],
+[
+0.001,
+" time. They"
+],
+[
+0.001,
+" let you search"
+],
+[
+0.001,
+" th"
+],
+[
+0.001,
+"ousands of files in"
+],
+[
+0.001,
+" a"
+],
+[
+0.001,
+" moment, r"
+],
+[
+0.001,
+"ename or move them"
+],
+[
+0.001,
+" in bulk, and automate"
+],
+[
+0.001,
+" ch"
+],
+[
+0.001,
+"ores with scripts that run while"
+],
+[
+0.001,
+" you sleep. They"
+],
+[
+0.002,
+" also work over"
+],
+[
+0.002,
+" rem"
+],
+[
+0.002,
+"ote connections, so"
+],
+[
+0.002,
+" you"
+],
+[
+0.002,
+" can manage a server from"
+],
+[
+0.002,
+" anywhere. Once"
+],
+[
+0.002,
+" lear"
+],
+[
+0.002,
+"ned, they"
+],
+[
+0.002,
+" make"
+],
+[
+0.002,
+" n"
+],
+[
+0.002,
+"early every"
+],
+[
+0.003,
+" techn"
+],
+[
+0.003,
+"ical task faster and"
+],
+[
+0.003,
+" eas"
+],
+[
+0.003,
+"ier to repeat."
+]
+]
+}
