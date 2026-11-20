@@ -281,8 +281,10 @@ def _guard_hit(name, base, args, cwd):
         if name in WRITE_TOOLS or name in {"write_file", "patch"}:
             return guard.write_hit(args, cwd, patch=name == "patch")
         if name in SHELL_TOOLS or name in _OTHER_SHELL:
+            # Claude Code's Bash tool runs Git Bash and its PowerShell tool runs PowerShell; other shell tools: any.
             return guard.shell_hit(args.get("command") or args.get("cmd") or "",
-                                   args.get("cwd") or args.get("workdir") or cwd)
+                                   args.get("cwd") or args.get("workdir") or cwd, shell=name if name in SHELL_TOOLS
+                                   else None)
         if name == "execute_code":  # Hermes runs this Python itself
             return guard.code_hit(args.get("code") or "", args.get("cwd") or args.get("workdir") or cwd)
         if name.startswith("mcp__") and not name.startswith("mcp__waggle__") and (

@@ -1753,3 +1753,98 @@ def test_past_the_ceiling_waggle_stops_and_says_which_setting_to_raise(world, mo
     ok, why = quota.can_escalate("haiku", s)
     assert quota.window_estimate(s) == quota.ESTIMATE_BOUNDS[1] * s.window_units_estimate
     assert not ok and "window_units_estimate" in why
+
+
+# ---- reading a protected file through the shell is decided exactly as before the guard ---------------------------
+# Found live: a review agent's grep with a quoted "a|b|c" regex, then `sed -n 1,40p waggle/guard.py`, was held as
+# "changing Waggle's own safety files". The quoted | was split as a pipe and sed was not known as a reader.
+
+REAL_REVIEW_1 = ('grep -nE "subprocess|shell=True|os\\.system|eval\\(|exec\\(" waggle/guard.py waggle/claude_cli.py '
+                 "waggle/core/procs.py waggle/agent_hook.py waggle/core/control.py waggle/core/runtime.py | head -40; "
+                 "echo ---; sed -n 1,40p waggle/guard.py")
+REAL_REVIEW_2 = ('grep -nE "subprocess|shell=True|os\\.system|eval\\(|exec\\(" waggle/claude_cli.py waggle/agent.py '
+                 "waggle/core/runtime.py hermes_plugin/waggle/__init__.py | head -25")
+
+BASH_READS = [
+    REAL_REVIEW_1, REAL_REVIEW_2,
+    "cat waggle/guard.py", "type waggle/guard.py", "more waggle/guard.py", "head -n 40 waggle/guard.py",
+    "tail -5 waggle/policy.py", "wc -l waggle/*.py", "grep -n 'decide|check' waggle/policy.py", "rg -n 'a|b' waggle",
+    "findstr /n decide waggle\\policy.py", "sed -n 1,40p waggle/guard.py", "sed -n '/def /p' waggle/guard.py",
+    "sed -n -e 1p -e '$p' waggle/guard.py", "sed 's/a/b/g' waggle/guard.py", "sed -nE '/x|y/{p;q}' waggle/guard.py",
+    "sed -n '10,20{=;p}' waggle/guard.py", "awk 'NR<5' waggle/guard.py", "awk -F: '{print $1}' waggle/guard.py",
+    "awk '$3 > 5 || /def/ {print NR\": \"$0}' waggle/guard.py", "awk 'length > 120' waggle/policy.py",
+    "sort waggle/guard.py", "sort -u -k1,1 waggle/guard.py | uniq -c", "uniq waggle/guard.py", "uniq -c waggle/guard.py",
+    "cut -c1-10 waggle/guard.py", "cat waggle/guard.py | tr a-z A-Z", "diff waggle/guard.py waggle/policy.py",
+    "cmp waggle/guard.py waggle/policy.py", "ls -la waggle", "dir waggle", "stat waggle/guard.py", "file waggle/guard.py",
+    "find waggle -name '*.py'", "find . -name guard.py -print", "sha256sum waggle/guard.py",
+    "md5sum waggle/*.py", "certutil -hashfile waggle\\guard.py SHA256", "git log -p waggle/guard.py",
+    "git show HEAD:waggle/guard.py", "git diff waggle/guard.py", "git status", "git blame waggle/guard.py",
+    "git grep -n decide", "git ls-files waggle", "python -m pytest -q tests/test_guard.py",
+    "grep -c x waggle/guard.py && wc -l waggle/guard.py; head -5 waggle/policy.py",
+    'grep -n "a > b" waggle/guard.py', 'grep -n "x>$y" waggle/guard.py', "grep -n \"it's\" waggle/guard.py",
+    "echo \"files: $(ls waggle | wc -l)\"; cat waggle/guard.py",
+]
+PS_READS = [
+    "Get-Content waggle/guard.py -TotalCount 40", "Select-String -Path waggle/guard.py -Pattern 'a|b'",
+    "Get-Content waggle/guard.py | Measure-Object -Line", "Get-Item waggle/guard.py", "Get-ChildItem waggle -Recurse",
+    "Test-Path waggle/guard.py", "Get-FileHash waggle/guard.py", "gc waggle/policy.py | sls 'x|y' | select -First 5",
+    "Get-Content waggle/guard.py; Get-Content waggle/policy.py | Select-String \"def (a|b)\"",
+    "\"lines: $((Get-Content waggle/guard.py).Count)\"",
+]
+
+
+@pytest.mark.parametrize("tool,cmd", [("Bash", c) for c in BASH_READS] + [("PowerShell", c) for c in PS_READS])
+def test_shell_reads_of_protected_files_are_decided_as_before_the_guard(world, tool, cmd):
+    d = decide(tool, {"command": cmd}, cwd=world.repo)
+    assert (d.action, d.reason) == policy.classify_shell(cmd), (cmd, d.reason)
+
+
+BASH_WRITES = [
+    "sed -i s/a/b/ waggle/guard.py", "sed -i.bak 's/a/b/' waggle/guard.py", "sed --in-place 's/a/b/' waggle/guard.py",
+    "sed -ni 1p waggle/guard.py", "sed -n 'w waggle/policy.py' notes.txt", "sed -n '1w waggle/policy.py' notes.txt",
+    "sed 's/a/b/w waggle/policy.py' notes.txt", "sed -n '1e rm waggle/policy.py' notes.txt",
+    "sed 's/x/rm waggle\\/policy.py/e' notes.txt", "sed -f fix.sed waggle/guard.py",
+    "awk '{print > \"waggle/policy.py\"}' notes.txt", "awk '{print $0 >> \"waggle/policy.py\"}' notes.txt",
+    "awk 'BEGIN{system(\"rm waggle/policy.py\")}'", "awk 'BEGIN{\"rm waggle/policy.py\" | getline}'",
+    "awk '{print | \"tee waggle/policy.py\"}' notes.txt", "awk -i inplace '{print}' waggle/guard.py",
+    "awk -f prog.awk waggle/guard.py", "sort -o waggle/policy.py notes.txt", "sort notes.txt -o waggle/policy.py",
+    "sort --output=waggle/policy.py notes.txt", "sort -uo waggle/policy.py notes.txt", "uniq notes.txt waggle/policy.py",
+    "find waggle -name '*.py' -exec sed -i s/a/b/ {} +", "find waggle -delete", "find . -name policy.py -delete",
+    "find waggle -fprint waggle/policy.py", "find -delete", "find waggle -ok rm {} \\;", "find . -execdir rm {} \\;",
+    "cat notes.txt | tee waggle/policy.py", "grep x waggle/guard.py | tee -a waggle/policy.py",
+    "ls waggle/*.py | xargs rm", "ls waggle | xargs -I{} cp notes.txt waggle/{}", "git checkout -- waggle/policy.py",
+    "git restore waggle/guard.py", "git apply x.patch", "git stash", "git reset --hard", "git clean -fdx",
+    "git -c core.fsmonitor='rm waggle/policy.py' status", "cat notes.txt > waggle/policy.py",
+    "grep x notes.txt >> waggle/guard.py", "sed -n 1p notes.txt > waggle/policy.py", "head -1 notes.txt 1> waggle/guard.py",
+    "cat $(rm waggle/policy.py)", "cat \"$(rm waggle/policy.py)\"", "cat `rm waggle/policy.py`",
+    "diff <(cat notes.txt) >(tee waggle/policy.py)", "echo \\\"; rm waggle/policy.py; echo \\\"",
+    "PAGER='sed -i s/a/b/ waggle/policy.py' git log", "GIT_EXTERNAL_DIFF=./x.sh git diff waggle/policy.py",
+    "grep -n 'x' waggle/guard.py; sed -i s/a/b/ waggle/policy.py",
+]
+PS_WRITES = [
+    "Set-Content waggle/policy.py x", "Get-Content notes.txt | Out-File waggle/policy.py",
+    "Copy-Item notes.txt waggle/policy.py", "Move-Item notes.txt waggle/guard.py",
+    "Get-Content waggle/guard.py | Set-Content waggle/policy.py", "Get-Content notes.txt > waggle/policy.py",
+    "Select-String x waggle/guard.py | Tee-Object waggle/policy.py", "Get-Content \"$(Remove-Item waggle/policy.py)\"",
+    "echo `\"; Remove-Item waggle/policy.py; echo `\"", "Get-ChildItem waggle | Remove-Item",
+]
+
+
+@pytest.mark.parametrize("tool,cmd", [("Bash", c) for c in BASH_WRITES] + [("PowerShell", c) for c in PS_WRITES]
+                         + [("terminal", c) for c in BASH_WRITES + PS_WRITES])
+def test_shell_writes_that_reach_a_protected_file_still_ask(world, tool, cmd):
+    assert decide(tool, {"command": cmd}, cwd=world.repo).action in (policy.ASK, policy.DENY), (tool, cmd)
+
+
+def test_the_two_real_review_commands_are_allowed(world):
+    for cmd in (REAL_REVIEW_1, REAL_REVIEW_2):
+        for tool in ("Bash", "PowerShell"):
+            assert decide(tool, {"command": cmd}, cwd=world.repo).allowed, (tool, cmd)
+
+
+def test_a_shell_of_unknown_kind_reads_quotes_every_way(world):
+    """cmd.exe does not treat ' as a quote, so for a shell tool that does not say which shell it runs, a | inside
+    single quotes may still be a pipe: a protected file named there keeps asking."""
+    cmd = "grep 'x|python fix.py waggle/policy.py'"
+    assert decide("Bash", {"command": cmd}, cwd=world.repo).allowed
+    assert decide("terminal", {"command": cmd}, cwd=world.repo).action == policy.ASK
