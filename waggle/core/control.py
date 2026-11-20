@@ -160,8 +160,11 @@ def status_text(snap):
         lines.append(f"  loop {name:<13} {state:<8} {'-' if age is None else f'{age:.0f} s'}")
     q = snap["queues"]
     lines.append(f"jobs queued {q['jobs_queued']} running {q['jobs_running']}  outbox queued "
-                 f"{q['outbox_queued']} sending {q['outbox_sending']}")
-    for key in ("oldest_queued_job_age_s", "oldest_queued_outbox_age_s"):
+                 f"{q['outbox_queued']} sending {q['outbox_sending']}  inbox waiting "
+                 f"{q.get('inbox_waiting', 0)} running {q.get('inbox_running', 0)}")
+    lines.append(f"transports: {', '.join(snap.get('transports') or []) or 'none'}  inbound handler: "
+                 f"{'yes' if snap.get('inbound_handler') else 'no'}")
+    for key in ("oldest_queued_job_age_s", "oldest_queued_outbox_age_s", "oldest_waiting_inbox_age_s"):
         if snap.get(key) is not None:
             lines.append(f"{key.replace('_', ' ')}: {snap[key]:.0f}")
     lines.append(f"last 24 h: dead jobs {snap['dead_jobs_24h']}, failed sends {snap['failed_sends_24h']}")

@@ -141,6 +141,12 @@ def prune(older_than_s, now=None):
                            "AND COALESCE(sent_at, updated, created) < ?", (cutoff,)).rowcount
 
 
+def get_by_key(idem_key):
+    """The row queued with this idempotency key, or None."""
+    row = store.connect().execute("SELECT * FROM outbox WHERE idem_key=?", (idem_key,)).fetchone()
+    return _row(row) if row else None
+
+
 def get(id):  # noqa: A002 - the public API name
     row = store.connect().execute("SELECT * FROM outbox WHERE id=?", (id,)).fetchone()
     return _row(row) if row else None
