@@ -9,14 +9,16 @@ Loops (daemon threads; cadences in settings.Cadence):
   worker-N      claim and run registered in-process kinds (default 4 threads; 1 s idle poll)
   dispatcher    claim registered detached kinds and start `python -m waggle.core.jobrun <job> <owner>`
   sender        outbox rows through registered transports; one no-transport event per row
+  inbound       inbox messages through the inbound handler: one thread per chat with waiting messages (up
+                to 8 chats at once), each running that chat's messages in arrival order
   leases        every 5 s: renew in-process leases, flag overdue in-process jobs, kill timed-out detached ones
   housekeeping  every 60 s: jobs.recover, outbox.recover, outbox.expire
   guard         guard.verify hourly
 Retention (done jobs and sent/expired outbox rows older than 30 days, events older than 90 days) runs as the
 daily `core.retention` timer, so a missed night is caught up at the next start.
 
-Stop: the stop file (core.stop in the Waggle home) -> no new work is admitted, in-flight sends and jobs get
-up to 5 s, exit 0. Detached workers keep running and are re-adopted by the next core.
+Stop: the stop file (core.stop in the Waggle home) -> no new work is admitted (POST /turn answers 503),
+in-flight sends, turns and jobs get up to 5 s, exit 0. Detached workers keep running and are re-adopted by the next core.
 """
 import json
 import logging
@@ -28,7 +30,8 @@ import threading
 import time
 from pathlib import Path
 
-from waggle.core import events, health, jobs, ledger, metrics, outbox, plugins, procs, sender, settings, store, timers
+from waggle.core import (events, health, inbound, jobs, ledger, metrics, outbox, plugins, procs, sender, settings,
+                         store, timers)
 
 REPO = settings.REPO
 RETENTION_S = 30 * 86400
@@ -150,6 +153,7 @@ class Core:
         self.loops = {}
         self.threads = {}
         self.inflight = {}
+        self.chat_threads = {}
         self.unhealthy = {}
         self.server = None
         self._state_lock = threading.Lock()
@@ -235,13 +239,15 @@ class Core:
         check_guard()
 
         recovered = jobs.recover()
+        turns = inbound.recover()
         resent = outbox.recover()
         report = timers.catch_up()
         store.set_meta("core.last_catch_up", json.dumps(_catch_up_summary(report), default=str))
-        log.info("recovered jobs %s, outbox rows %s; catch-up fired %s", recovered, resent, len(report["fired"]))
+        log.info("recovered jobs %s, turns %s, outbox rows %s; catch-up fired %s", recovered, turns, resent,
+                 len(report["fired"]))
 
         try:
-            self.server = health.serve(self.loops_view)
+            self.server = health.serve(self.loops_view, accepting_fn=self.accepting_turns)
             ledger.record("core.health_endpoint", True, method="bound 127.0.0.1 at core start", ttl_s=7 * 86400)
         except OSError as e:
             log.error("health server could not start: %s", e)
@@ -253,6 +259,7 @@ class Core:
             self._start_thread(f"worker-{i}", self.cad.poll, lambda i=i: self._worker(f"worker-{i}"))
         self._start_thread("dispatcher", self.cad.poll, self._dispatcher)
         self._start_thread("sender", self.cad.poll, self._sender)
+        self._start_thread("inbound", self.cad.poll, self._inbound)
         self._periodic("leases", self.cad.leases, self.check_leases)
         self._periodic("housekeeping", self.cad.housekeeping, self.housekeeping)
         self._start_thread("guard", self.cad.guard, self._guard_loop)
@@ -285,7 +292,8 @@ class Core:
         store.set_meta("heartbeat", json.dumps({
             "ts": time.time(), "pid": self.pid, "pid_ctime": procs.own_ctime(), "started": self.started,
             "version": self.version, "loops": self.loops_view(), "stopping": self.stopping.is_set(),
-            "in_flight": len(self.inflight)}))
+            "in_flight": len(self.inflight), "transports": sender.kinds(),
+            "inbound_handler": inbound.handler() is not None}))
 
     def shutdown(self):
         log.info("stopping")
@@ -294,12 +302,16 @@ class Core:
             self.heartbeat()
         except Exception:
             log.exception("final heartbeat failed")
-        if self.server is not None:
-            self.server.shutdown()
         deadline = time.time() + self.cad.send_grace
         order = ["sender"] + [n for n in self.threads if n.startswith("worker-")]
         for name in order:
             self.threads[name].join(max(0.0, deadline - time.time()))
+        with self._state_lock:
+            chats = list(self.chat_threads.values())
+        for t in chats:
+            t.join(max(0.0, deadline - time.time()))
+        if self.server is not None:
+            self.server.shutdown()
         left = len(self.inflight)
         events.emit("core.stopped", source="core", data={"pid": self.pid, "in_flight_left": left})
         for name in ("core.stop", "core.pid"):
@@ -426,8 +438,47 @@ class Core:
 
     def housekeeping(self):
         jobs.recover()
+        inbound.recover()
         outbox.recover()
         outbox.expire()
+
+    def accepting_turns(self):
+        return not self.stopping.is_set() and inbound.handler() is not None
+
+    def _inbound(self):
+        cap = settings.inbound_chats()
+        while not self.stopping.is_set():
+            try:
+                if inbound.handler() is not None:
+                    for chat in inbound.waiting_chats():
+                        with self._state_lock:
+                            if chat in self.chat_threads or len(self.chat_threads) >= cap:
+                                continue
+                            t = threading.Thread(target=self._chat_runner, args=(chat,), name=f"core-chat-{chat}",
+                                                 daemon=True)
+                            self.chat_threads[chat] = t
+                        t.start()
+            except Exception as e:
+                self._error("inbound", e)
+            self._tick("inbound")
+            inbound.wait_for_work(self.cad.poll)
+
+    def _chat_runner(self, chat):
+        """Run one chat's waiting messages in order, then end (a new message starts a new runner)."""
+        try:
+            while not self.stopping.is_set():
+                row = inbound.claim_next(chat)
+                if row is None:
+                    with self._state_lock:
+                        if not inbound.has_waiting(chat):
+                            self.chat_threads.pop(chat, None)
+                            return
+                    continue
+                inbound.run(row)
+        except Exception as e:
+            self._error("inbound", e)
+        with self._state_lock:
+            self.chat_threads.pop(chat, None)
 
     def _guard_loop(self):
         while not self.stopping.wait(self.cad.guard):

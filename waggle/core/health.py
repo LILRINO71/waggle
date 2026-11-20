@@ -3,6 +3,9 @@ served on 127.0.0.1 with a bearer token.
 
 GET /health          the snapshot below
 GET /metrics?days=N  metrics_daily for the last N days (default 7)
+POST /turn           an inbound message, JSON {chat, address, text, kind, media, platform, origin, dedupe_key}
+                     -> 202 {"turn_id", "duplicate"} once it is stored; the turn runs later. 503 while the core
+                     is stopping or has no inbound handler (the caller falls back), 400 on a bad body.
 Anything else is 404; without the token everything is 401."""
 import hmac
 import json
@@ -12,11 +15,13 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from waggle.core import ledger, settings, store
+from waggle.core import inbound, ledger, sender, settings, store
 
 log = logging.getLogger("waggle.core.health")
 
-HEARTBEAT_STALE_S = 120.0
+MAX_TURN_BODY = 1_000_000
+TURN_FIELDS = {"chat": (str, int), "address": (str, int), "text": (str,), "kind": (str,), "platform": (str,),
+               "origin": (str,), "dedupe_key": (str, int)}
 
 
 def token():
@@ -71,6 +76,11 @@ def snapshot(loops=None, now=None):
     guard["frozen"] = store.get_meta("guard.frozen") == "1"
     unhealthy = _json_meta("core.unhealthy")
     ready = {r["name"]: r["ready"] for r in ledger.status(now)}
+    if loops is not None:
+        transports, has_handler = sender.kinds(), inbound.handler() is not None
+    else:
+        transports, has_handler = hb.get("transports", []), bool(hb.get("inbound_handler"))
+    inbox = inbound.counts(now)
 
     reasons = []
     if hb_age is None:
@@ -99,7 +109,12 @@ def snapshot(loops=None, now=None):
             "jobs_running": one("SELECT COUNT(*) FROM jobs WHERE state='running'"),
             "outbox_queued": one("SELECT COUNT(*) FROM outbox WHERE state='queued'"),
             "outbox_sending": one("SELECT COUNT(*) FROM outbox WHERE state='sending'"),
+            "inbox_waiting": inbox["waiting"],
+            "inbox_running": inbox["running"],
         },
+        "oldest_waiting_inbox_age_s": inbox["oldest_waiting_age_s"],
+        "transports": transports,
+        "inbound_handler": has_handler,
         "oldest_queued_job_age_s": None if oldest_job is None else now - oldest_job,
         "oldest_queued_outbox_age_s": None if oldest_out is None else max(0.0, now - oldest_out),
         "dead_jobs_24h": one("SELECT COUNT(*) FROM events WHERE kind='job.dead' AND ts>=?", now - 86400),
@@ -123,9 +138,34 @@ def metrics_days(days=7):
     return out
 
 
-def serve(loops_fn=None, port=None):
-    """Start the health server in a daemon thread; returns the server (call .shutdown() to stop it)."""
+def parse_turn(raw):
+    """Validate a POST /turn body; returns submit() keyword arguments or raises ValueError."""
+    try:
+        body = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as e:
+        raise ValueError(f"body is not JSON: {e}") from None
+    if not isinstance(body, dict):
+        raise ValueError("body must be a JSON object")
+    for key, types in TURN_FIELDS.items():
+        value = body.get(key)
+        if value is not None and (isinstance(value, bool) or not isinstance(value, types)):
+            raise ValueError(f"{key} has the wrong type")
+    chat = str(body.get("chat") or "").strip()
+    if not chat:
+        raise ValueError("chat is required")
+    if body.get("text") is None and body.get("media") is None:
+        raise ValueError("text or media is required")
+    return {"chat": chat, "text": body.get("text") or "", "address": str(body.get("address") or ""),
+            "kind": body.get("kind") or "text", "media": body.get("media"),
+            "platform": body.get("platform") or "telegram", "origin": body.get("origin") or "user",
+            "dedupe_key": None if body.get("dedupe_key") in (None, "") else str(body["dedupe_key"])}
+
+
+def serve(loops_fn=None, port=None, accepting_fn=None):
+    """Start the health server in a daemon thread; returns the server (call .shutdown() to stop it).
+    `accepting_fn()` says whether POST /turn is accepted now (default: when an inbound handler exists)."""
     secret = token()
+    accepting_fn = accepting_fn or (lambda: inbound.handler() is not None)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
@@ -139,9 +179,34 @@ def serve(loops_fn=None, port=None):
             self.end_headers()
             self.wfile.write(data)
 
-        def do_GET(self):  # noqa: N802 - http.server API
+        def _authorized(self):
             auth = self.headers.get("Authorization", "")
-            if not hmac.compare_digest(auth.encode(), f"Bearer {secret}".encode()):
+            return hmac.compare_digest(auth.encode(), f"Bearer {secret}".encode())
+
+        def do_POST(self):  # noqa: N802 - http.server API
+            if not self._authorized():
+                return self._send(401, {"error": "unauthorized"})
+            if urlparse(self.path).path != "/turn":
+                return self._send(404, {"error": "not found"})
+            if not accepting_fn():
+                return self._send(503, {"error": "not accepting turns now"})
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = -1
+            if length <= 0 or length > MAX_TURN_BODY:
+                return self._send(400, {"error": "a JSON body of at most 1 MB is required"})
+            try:
+                args = parse_turn(self.rfile.read(length))
+                return self._send(202, inbound.submit(**args))
+            except ValueError as e:
+                return self._send(400, {"error": str(e)})
+            except Exception as e:  # storage failed: the caller must fall back
+                log.exception("turn submission failed")
+                return self._send(503, {"error": f"{type(e).__name__}: {e}"})
+
+        def do_GET(self):  # noqa: N802 - http.server API
+            if not self._authorized():
                 return self._send(401, {"error": "unauthorized"})
             url = urlparse(self.path)
             try:
@@ -161,11 +226,13 @@ def serve(loops_fn=None, port=None):
     return server
 
 
-def fetch(path="/health", port=None, timeout=3.0, auth=True):
-    """GET from a running core's health server. Returns (status, body)."""
+def fetch(path="/health", port=None, timeout=3.0, auth=True, body=None):
+    """GET (or POST, with a JSON-able `body`) to a running core's health server. Returns (status, body)."""
     import urllib.error
     import urllib.request
-    req = urllib.request.Request(f"http://127.0.0.1:{port or settings.port()}{path}")
+    data = None if body is None else json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(f"http://127.0.0.1:{port or settings.port()}{path}", data=data,
+                                 headers={"Content-Type": "application/json"} if data else {})
     if auth:
         req.add_header("Authorization", f"Bearer {token()}")
     try:

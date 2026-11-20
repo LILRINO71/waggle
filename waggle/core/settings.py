@@ -13,6 +13,7 @@ import waggle.config as config
 REPO = Path(__file__).resolve().parents[2]
 DEFAULT_PORT = 8896
 DEFAULT_WORKERS = 4
+DEFAULT_INBOUND_CHATS = 8
 
 
 def home():
@@ -40,6 +41,12 @@ def port():
 
 def workers():
     return max(1, int(os.environ.get("WAGGLE_CORE_WORKERS") or _config_value("core_workers", DEFAULT_WORKERS)))
+
+
+def inbound_chats():
+    """How many chats may run turns at the same time."""
+    return max(1, int(os.environ.get("WAGGLE_CORE_INBOUND_CHATS")
+                      or _config_value("core_inbound_chats", DEFAULT_INBOUND_CHATS)))
 
 
 @dataclass(frozen=True)
