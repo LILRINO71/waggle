@@ -4,6 +4,9 @@ throwaway Waggle home, with no gateway and no Telegram. Uses the user's Claude l
 usage: python tests/real_engine_check.py <repo> <empty_temp_home> prep cold warm tool killmid resume killearly stop
        pre-warm check: ... prep cold pause prewarm oneline oneline2 pause prewarm oneline stop
        (add `strict` before `cold` to compare a start with --strict-mcp-config)
+       streaming check (needs `python -m waggle.guard approve --yes` in the repo for this WAGGLE_HOME):
+       ... warm plain toolpara oneline stop  -> per step: first_visible_s (first post, a tool status line included),
+       ttfw_s (first real words), total_s and every post / edit with its time
 Every step is one user message (one real call), except killearly (the killed send plus the automatic retry).
 Prints one JSON line per step; raw stream-json goes to <home>/raw_stream.jsonl.
 """
@@ -32,7 +35,7 @@ s.save()
 
 from waggle import chat_engine, traces  # noqa: E402
 from waggle.chat_session import ChatSession  # noqa: E402
-from waggle.delivery import CollectDelivery  # noqa: E402
+from waggle.delivery import CollectDelivery, Delivery  # noqa: E402
 
 raw = open(home / "raw_stream.jsonl", "a", encoding="utf-8")
 cmds = open(home / "cmds.txt", "a", encoding="utf-8")
@@ -57,6 +60,23 @@ def popen(cmd, **kw):
 
 CHAT = "test:engine-real"
 sess = ChatSession(CHAT, settings=s, popen=popen, transcript=traces.chat_transcript)
+sess.origin = "test"  # the pre-warmed process must already be the one the test turns use
+
+
+class TimedDelivery(Delivery):
+    """Records every post and edit with the seconds since the message was sent."""
+    can_edit, max_len, name = True, 4096, "timed"
+
+    def __init__(self):
+        self.log, self.t0 = [], time.time()
+
+    def post(self, text):
+        self.log.append(("post", round(time.time() - self.t0, 2), text))
+        return 1
+
+    def edit(self, handle, text):
+        self.log.append(("edit", round(time.time() - self.t0, 2), text))
+        return True
 
 
 def kill_tree(pid):
@@ -79,7 +99,8 @@ def turn(label, text, delivery=None):
     rec = chat_engine.run_turn(CHAT, text, d, platform="test", origin="test", context="", settings=s, session=sess,
                                t0=t0)
     out = {"step": label, "answered_by": rec.answered_by, "outcome": rec.outcome, "why": rec.outcome_why,
-           "ttfw_s": rec.ttfw_s, "total_s": rec.total_s, "reply": rec.reply[:300], "session": rec.session,
+           "first_visible_s": rec.first_visible_s, "ttfw_s": rec.ttfw_s, "total_s": rec.total_s,
+           "posts_edits": [(k, t, text[:40]) for k, t, text in getattr(d, "log", [])], "reply": rec.reply[:300], "session": rec.session,
            "tools": [{k: st.get(k) for k in ("tool", "ok", "denied")} | {"result": (st.get("result") or "")[:120]}
                      for st in rec.steps], "trace_id": rec.trace_id, "claims": rec.claims}
     print(json.dumps(out, ensure_ascii=False), flush=True)
@@ -133,8 +154,14 @@ for step in sys.argv[3:]:
         r = sess.warm()
         time.sleep(15)  # the user's message comes later; MCP servers finish connecting meanwhile
         print(json.dumps({"step": "prewarm", **r, "warm_call_s": round(time.time() - t - 15, 2)}), flush=True)
+    elif step == "plain":
+        turn("plain", "Write a plain-prose explanation of how a rainbow forms, about 150 words, in two short "
+                      "paragraphs. No lists.", TimedDelivery())
+    elif step == "toolpara":
+        turn("toolpara", "Run the shell command `echo hello-from-shell` with the Bash tool, then write a paragraph "
+                         "of about 80 words about why shells are useful. No lists.", TimedDelivery())
     elif step == "oneline":
-        turn("oneline", "In one short sentence: what is the capital of France?")
+        turn("oneline", "In one short sentence: what is the capital of France?", TimedDelivery())
     elif step == "oneline2":
         turn("oneline2", "In one short sentence: what is the largest planet?")
     elif step == "stop":

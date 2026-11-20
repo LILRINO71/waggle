@@ -13,12 +13,15 @@ text once) and `max_len` (characters per message). The Hermes plugin implements 
 (hermes_plugin/waggle/__init__.py); BotApiDelivery below implements it over Waggle's own Telegram client
 (waggle.core.telegram.BotApi).
 
-StreamWriter turns a growing reply into a few edits: at most one per `interval` seconds (Telegram allows about
-one per second per chat and silently skips faster interim edits), the final text always sent (it waits out the
-interval first, so the last edit is never the one that gets skipped), long replies continue in a new message.
+StreamWriter turns a growing reply into a few edits: the first words posted at once, then at most one edit per
+`interval` seconds (Telegram allows about one per second per chat and silently skips faster interim edits); text
+that has already arrived is never held back, so the final text is sent immediately; while tools run and nothing has
+been written yet it shows a one-line status derived from the tool call (tool_status), replaced by the answer in
+the same message. Long replies continue in a new message.
 plain_text() makes Markdown/LaTeX safe for chat apps that render neither reliably.
 """
 import contextvars
+import json
 import re
 import threading
 import time
@@ -168,103 +171,189 @@ def split_long(text, limit):
     return chunks
 
 
+def _tool_command(step):
+    raw = str(step.get("input") or "")
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return str(data.get("command") or "")
+    except ValueError:
+        pass
+    m = re.search(r'"command":\s*"((?:[^"\\]|\\.)*)', raw)
+    return m.group(1) if m else ""
+
+
+def _tool_kind(step):
+    """The kind of work one tool call is, by a fixed rule: shell | github | read | files | web | page | edit |
+    mail | calendar | drive | notes | background | other."""
+    name = str(step.get("tool") or "")
+    low = name.lower()
+    if low in ("bash", "powershell"):
+        cmd = _tool_command(step)
+        return "github" if re.search(r"(^|[;&|(]\s*)gh(\.exe)?\s", cmd.strip() + " ") else "shell"
+    simple = {"read": "read", "glob": "files", "grep": "files", "websearch": "web", "webfetch": "page",
+              "write": "edit", "edit": "edit", "multiedit": "edit", "notebookedit": "edit"}
+    if low in simple:
+        return simple[low]
+    if low.startswith("mcp__"):
+        if "gmail" in low:
+            return "mail"
+        if "calendar" in low or "gcal" in low:
+            return "calendar"
+        if "drive" in low or "docs" in low or "sheets" in low:
+            return "drive"
+        if "background_task" in low or "start_build" in low:
+            return "background"
+        if any(w in low for w in ("recall", "vault", "memory", "remember", "search_notes")):
+            return "notes"
+    return "other"
+
+
+_STATUS = {"shell": ("Running a command…", "Running {n} commands…"), "github": ("Checking GitHub…", None),
+           "read": ("Reading a file…", "Reading {n} files…"), "files": ("Searching files…", None),
+           "web": ("Searching the web…", None), "page": ("Reading a web page…", "Reading {n} web pages…"),
+           "edit": ("Editing a file…", "Editing {n} files…"), "mail": ("Checking your email…", None),
+           "calendar": ("Checking your calendar…", None), "drive": ("Checking your files…", None),
+           "notes": ("Checking my notes…", None), "background": ("Starting a background job…", None),
+           "other": ("Working on it…", None)}
+
+
+def tool_status(steps):
+    """One short plain-words status line for the tool calls of a turn so far, from the latest call and how many
+    calls of the same kind there have been ("Reading 2 files…", "Checking GitHub…"). No model is involved."""
+    if not steps:
+        return ""
+    kind = _tool_kind(steps[-1])
+    n = sum(1 for s in steps if _tool_kind(s) == kind)
+    one, many = _STATUS[kind]
+    return many.format(n=n) if many and n > 1 else one
+
+
 class StreamWriter:
     """Shows a reply while it is written. update(full_text) any number of times, then finish(final_text).
 
-    A background thread pushes at most one change per `interval` seconds (it wakes at once for the first words
-    and then at the next due time); finish() stops it, waits out the interval and sends the final text (edit, or a
-    new message if the edit failed). Returns from finish():
-    {"delivered", "messages", "error", "edits", "first_shown_at", "message_ids"}.
-
-    Short answers go out once: the first post waits until the text has first_min_chars or first_hold_s passed
-    since the first words, and an answer shorter than pace_min_chars is never split into steps.
-
-    Pacing: the model can write a whole answer in well under a second (the CLI hands over its text in a burst), but
-    a chat app takes about one edit per second. So a long answer that is already complete (or far ahead of what is
-    shown) is revealed in steps of at least pace_chars characters, one per `interval`, and at most pace_steps steps
-    in all: the first words appear at once, the text grows, the whole is there a few seconds later. Text that
-    arrives slower than that is shown as it arrives, with no delay. pace_chars=0 turns pacing off."""
+    - Text is shown as it arrives: the first words are posted at once (after a hold of at most first_hold_s so a
+      one-line answer goes out as one message), then the message is edited at most once per `interval` seconds.
+    - Text that has already arrived is never held back: finish() sends the complete text immediately (an edit of
+      the message on screen, or one post), without waiting out the interval.
+    - tool(step) shows progress while tools run and no words have been written yet: one short status line is
+      posted at the first tool call and edited (at most once per `interval`) as the work moves on; when the answer
+      arrives it replaces the status in the same message. Words the model wrote before a tool call are shown
+      instead of the status.
+    finish() returns {"delivered", "messages", "error", "edits", "first_shown_at" (first real words on screen),
+    "first_visible_at" (first post of any kind, a status line included), "message_ids"}."""
 
     def __init__(self, delivery, interval=1.2, stream=True, clean=plain_text, clock=time.time, sleep=time.sleep,
-                 tick=0.2, on_first_shown=None, first_hold_s=0.4, first_min_chars=80, pace_chars=170,
-                 pace_steps=5, pace_min_chars=400):
+                 tick=0.2, on_first_shown=None, first_hold_s=0.4, first_min_chars=80, first_settle_s=0.012):
         self.d, self.interval, self.clean, self.clock, self.sleep, self.tick = delivery, interval, clean, clock, sleep, tick
-        self.on_first_shown = on_first_shown  # called once, right after the first words were posted
-        # The first post waits until the text has first_min_chars or first_hold_s passed since the first words:
-        # a one-line answer that completes inside the hold goes out once, whole, with no edit (and no edit gap).
+        self.on_first_shown = on_first_shown  # called once, right after the first post (status line or words)
+        # The first words wait until the text has first_min_chars or first_hold_s passed since they began: a
+        # one-line answer that completes inside the hold goes out once, whole, with no edit.
         self.first_hold_s, self.first_min_chars, self._first_update = first_hold_s, first_min_chars, None
-        self.pace_chars, self.pace_steps, self.pace_min_chars = int(pace_chars or 0), max(1, int(pace_steps)), pace_min_chars
-        self._pace_used = 0
+        self.first_settle_s, self._last_update = first_settle_s, 0.0
         self.stream = stream and getattr(delivery, "can_edit", True)
         self.limit = max(200, int(getattr(delivery, "max_len", 4000) or 4000) - 96)
         self.handles, self.shown = [], []  # one per message: its handle and the text it shows now
         self._latest, self._last_push, self._lock = "", 0.0, threading.Lock()
         self._stop, self._wake, self._thread = threading.Event(), threading.Event(), None
-        self.edits, self.first_shown_at, self.error = 0, None, ""
+        self.edits, self.first_shown_at, self.first_visible_at, self.error = 0, None, None, ""
+        self._tools, self._status, self._status_on_screen, self._real_shown = [], "", "", False
 
     # -- feeding
-    def update(self, text):
-        with self._lock:
-            self._latest = text or ""
-            if self._first_update is None and self._latest.strip():
-                self._first_update = self.clock()
+    def _ensure_thread(self):
         if self.stream and self._thread is None:
             ctx = contextvars.copy_context()  # a transport may read the caller's context (e.g. which chat)
             self._thread = threading.Thread(target=ctx.run, args=(self._loop,), daemon=True, name="waggle-stream")
             self._thread.start()
-        if not self.handles:
-            self._wake.set()  # re-check the first post's hold now, not at the next tick
+
+    def update(self, text):
+        with self._lock:
+            self._latest = text or ""
+            self._last_update = self.clock()
+            if self._first_update is None and self._latest.strip():
+                self._first_update = self.clock()
+        self._ensure_thread()
+        if not self._real_shown:
+            self._wake.set()  # re-check the first words' hold now, not at the next tick
+
+    def tool(self, step):
+        """A tool call started (pass as the session's on_tool)."""
+        if not self.stream:
+            return
+        with self._lock:
+            self._tools.append(step)
+            self._status = tool_status(self._tools)
+        self._ensure_thread()
+        self._wake.set()
 
     def _shown_text(self):
         return "\n\n".join(self.shown)
 
     def _hold_left(self, latest, first):
-        """Seconds the first post still waits (0 when it may go out)."""
-        if self.handles or first is None or len(latest) >= self.first_min_chars:
+        """Seconds the first words still wait (0 when they may go out): until they have first_min_chars and have
+        stopped growing for first_settle_s (a burst the CLI hands over at once is posted whole, not in two parts),
+        but never longer than first_hold_s from the first words."""
+        if self._real_shown or first is None:
             return 0.0
-        return max(0.0, self.first_hold_s - (self.clock() - first))
+        now = self.clock()
+        cap = self.first_hold_s - (now - first)
+        if cap <= 0:
+            return 0.0
+        if len(latest) < self.first_min_chars:
+            return cap
+        return min(cap, max(0.0, self.first_settle_s - (now - self._last_update)))
 
     def _loop(self):
         while not self._stop.is_set():
             wait = self.tick
             since = self.clock() - self._last_push
-            if since >= self.interval:
-                with self._lock:
-                    latest, first = self._latest, self._first_update
-                hold = self._hold_left(latest, first) if latest.strip() else 0.0
+            with self._lock:
+                latest, first, status = self._latest, self._first_update, self._status
+            if latest.strip():
+                hold = self._hold_left(latest, first)
                 if hold > 0:
                     wait = min(wait, hold)
-                elif latest.strip():
+                elif since >= self.interval or not self.handles:
                     cleaned = self.clean(latest)
-                    shown = self._shown_text()
-                    if cleaned != shown:
-                        view = self._next_view(cleaned, rest=shown)
-                        if view != shown:
-                            self._push_view(view, final=False)
-            else:
-                wait = min(wait, max(0.005, self.interval - since))
+                    if cleaned != self._shown_text():
+                        self._push_view(cleaned, final=False)
+                else:
+                    wait = min(wait, max(0.005, self.interval - since))
+            elif status and status != self._status_on_screen:
+                if since >= self.interval or not self.handles:
+                    self._push_status(status)
+                else:
+                    wait = min(wait, max(0.005, self.interval - since))
             self._wake.wait(wait)
             self._wake.clear()
 
-    # -- pacing
-    def _next_view(self, cleaned, rest=""):
-        """What to show next: all of `cleaned`, or a prefix of it ending at a word boundary (paced reveal)."""
-        shown_len = len(rest)
-        remaining = len(cleaned) - shown_len
-        if not self.pace_chars or len(cleaned) < self.pace_min_chars or remaining <= 0:
-            return cleaned
-        steps_left = max(1, self.pace_steps - self._pace_used)
-        chunk = max(self.pace_chars, -(-remaining // steps_left))
-        if remaining <= chunk:
-            return cleaned
-        limit = shown_len + chunk
-        cut = max(cleaned.rfind(" ", shown_len, limit + 1), cleaned.rfind("\n", shown_len, limit + 1))
-        if cut <= shown_len:
-            cut = limit
-        self._pace_used += 1
-        return cleaned[:cut].rstrip()
-
     # -- sending
+    def _visible(self):
+        if self.first_visible_at is None:
+            self.first_visible_at = self.clock()
+            if self.on_first_shown:
+                try:
+                    self.on_first_shown()
+                except Exception:
+                    pass
+
+    def _push_status(self, status):
+        if not self.handles:
+            h = self._safe(self.d.post, status)
+            if h is None or h is False:
+                return False
+            self.handles.append(h)
+            self.shown.append(status)
+            self._visible()
+        else:
+            if not self._safe(self.d.edit, self.handles[0], status):
+                return False
+            self.edits += 1
+            self.shown[0] = status
+        self._status_on_screen = status
+        self._last_push = self.clock()
+        return True
+
     def _push(self, text, final):
         return self._push_view(self.clean(text), final)
 
@@ -276,9 +365,8 @@ class StreamWriter:
                 continue
             if i < len(self.shown) and self.shown[i] == chunk:
                 continue
+            first_post = self.first_visible_at is None  # nothing was on screen before this push
             if i < len(self.handles) and self.handles[i] is not None:
-                if final and self.clock() - self._last_push < self.interval:
-                    self.sleep(self.interval - (self.clock() - self._last_push))
                 done = self._safe(self.d.edit, self.handles[i], chunk)
                 self.edits += 1
                 if not done and final:  # the edit did not land: the final text must, as a new message
@@ -296,13 +384,10 @@ class StreamWriter:
                     break
                 self.handles.append(h)
                 self.shown.append(chunk)
-                if self.first_shown_at is None:
-                    self.first_shown_at = self.clock()
-                    if self.on_first_shown:
-                        try:
-                            self.on_first_shown()
-                        except Exception:
-                            pass
+                self._visible()
+            if ok and not self._real_shown:
+                self._real_shown = True
+                self.first_shown_at = self.first_visible_at if first_post else self.clock()
             self._last_push = self.clock()
         return ok
 
@@ -319,20 +404,7 @@ class StreamWriter:
         if self._thread is not None:
             self._thread.join(timeout=35)
         final = final_text or ""
-        delivered = False
-        if final.strip():
-            cleaned = self.clean(final)
-            if self.stream and self._first_update is not None:
-                # the answer was streamed to us: reveal what is still hidden in paced steps, then the whole
-                for _ in range(self.pace_steps + 2):
-                    view = self._next_view(cleaned, rest=self._shown_text())
-                    if view == cleaned:
-                        break
-                    if self.clock() - self._last_push < self.interval:
-                        self.sleep(self.interval - (self.clock() - self._last_push))
-                    if not self._push_view(view, final=False):
-                        break
-            delivered = self._push_view(cleaned, final=True)
+        delivered = self._push_view(self.clean(final), final=True) if final.strip() else False
         if not delivered and not self.error:
             self.error = "the message could not be posted or updated"
         ids = []
@@ -344,7 +416,8 @@ class StreamWriter:
             if mid is not None:
                 ids.append(mid)
         return {"delivered": delivered, "messages": len(self.handles), "error": "" if delivered else self.error,
-                "edits": self.edits, "first_shown_at": self.first_shown_at, "message_ids": ids}
+                "edits": self.edits, "first_shown_at": self.first_shown_at, "first_visible_at": self.first_visible_at,
+                "message_ids": ids}
 
 
 class Typing:

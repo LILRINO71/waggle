@@ -12,6 +12,7 @@ from waggle.core import outbox, store
 
 @pytest.fixture(autouse=True)
 def _close_store():
+    chat_engine._available.clear()
     yield
     store.close_all()
 
@@ -50,7 +51,7 @@ def test_streamed_turn_is_recorded_in_full(settings, no_local):
     rec, d, fake = turn(settings, script)
     edits = [t for kind, t, _ in d.log]
     assert rec.reply == text and d.messages == [text] and [k for k, _, _ in d.log].count("post") == 1
-    assert len(d.log) >= 2 and all(b - a >= 0.19 for a, b in zip(edits, edits[1:]))
+    assert len(d.log) >= 2 and all(b - a >= 0.19 for a, b in list(zip(edits, edits[1:]))[:-1])  # the final edit is not held
     assert d.typed == 1
     r = row(rec)
     assert r["answered_by"] == "claude-haiku-5-5" and r["turn_outcome"] == "ok" and r["outcome_why"] is None
@@ -229,3 +230,24 @@ def test_recent_background_results_reach_the_next_context(settings):
     assert chat_engine.recent_deliveries("telegram:5", since=time.time() + 60) == ""
     prev = chat_store.touch_chat("telegram:5", "telegram", user=True)
     assert prev == 0.0 and chat_store.touch_chat("telegram:5", user=True) > 0
+
+
+def test_slow_notes_search_is_left_out_of_the_context_not_waited_for(settings, monkeypatch):
+    from waggle import memory
+    monkeypatch.setattr(chat_engine, "CONTEXT_BUDGET_S", 0.2)
+    monkeypatch.setattr(memory, "context_block", lambda text: time.sleep(3) or "A NOTE")
+    t = time.time()
+    ctx = chat_engine.build_context("telegram:5", "hello", False, settings)
+    assert time.time() - t < 1.5 and "A NOTE" not in ctx and "<waggle_context>" in ctx
+    monkeypatch.setattr(memory, "context_block", lambda text: "A NOTE")
+    assert "A NOTE" in chat_engine.build_context("telegram:5", "hello", False, settings)
+
+
+def test_the_usage_check_is_made_once_per_half_minute(settings, monkeypatch):
+    calls = []
+    monkeypatch.setattr(quota, "can_escalate", lambda m, s: calls.append(m) or (True, ""))
+    assert chat_engine.claude_available(settings) == (True, "") and chat_engine.claude_available(settings) == (True, "")
+    assert len(calls) == 1
+    monkeypatch.setattr(quota, "can_escalate", lambda m, s: (False, "budget"))
+    chat_engine._available.clear()
+    assert chat_engine.claude_available(settings) == (False, "limit: budget")

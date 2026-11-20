@@ -37,7 +37,7 @@ def test_streamed_edits_are_throttled_and_the_final_text_lands_once():
     pushes = [t for kind, t, _ in d.log]
     gaps = [b - a for a, b in zip(pushes, pushes[1:])]
     assert out["delivered"] and out["messages"] == 1 and out["message_ids"] == [100]
-    assert len(pushes) <= 1.2 / 0.25 + 2 and all(g >= 0.24 for g in gaps), gaps
+    assert len(pushes) <= 1.2 / 0.25 + 2 and all(g >= 0.24 for g in gaps[:-1]), gaps  # the final edit is not held back
     assert d.messages == [(text + "end.").strip()] and [k for k, _, _ in d.log].count("post") == 1
     assert out["first_shown_at"] is not None
 
@@ -209,65 +209,3 @@ def test_the_first_post_waits_at_most_the_hold():
     assert w2.d.log and w2.d.log[0][0] == "post"
     w.finish("Short start, done.")
     w2.finish("Long enough already.")
-
-
-# ---- pacing: a long answer that is ready at once is still revealed step by step ------------------------------
-
-def _long_text(n=900):
-    words = ("alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu " * 40).split()
-    out = ""
-    for w in words:
-        if len(out) + len(w) + 1 > n:
-            break
-        out += w + " "
-    return out.strip()
-
-
-def test_a_long_answer_that_is_ready_at_once_is_revealed_in_steps_one_interval_apart():
-    d = FakeDelivery()
-    text = _long_text(900)
-    w = StreamWriter(d, interval=0.15, tick=0.01)
-    w.update(text)  # the whole text arrives in one burst
-    time.sleep(0.05)
-    out = w.finish(text)
-    kinds = [k for k, _, _ in d.log]
-    sizes = [len(t) for _, _, t in d.log]
-    stamps = [t for _, t, _ in d.log]
-    assert out["delivered"] and kinds[0] == "post" and kinds.count("post") == 1
-    assert kinds.count("edit") - 1 >= 3 and sizes == sorted(sizes) and sizes[0] <= 200, (kinds, sizes)
-    assert d.messages == [text] and all(b - a >= 0.14 for a, b in zip(stamps, stamps[1:]))
-    assert out["edits"] == kinds.count("edit") and out["first_shown_at"] is not None
-    assert all(t.endswith(tuple("abcdefghijklmnopqrstuvwxyz")) for _, _, t in d.log)  # cut at a word end
-
-
-def test_the_reveal_of_a_huge_answer_is_capped_at_pace_steps():
-    d = FakeDelivery(max_len=10000)
-    text = _long_text(3000)
-    w = StreamWriter(d, interval=0.03, tick=0.005, pace_steps=4)
-    w.update(text)
-    w.finish(text)
-    assert len(d.log) <= 4 + 3 and d.messages == [text]  # one post, at most pace_steps steps and the final edit
-
-
-def test_pacing_can_be_turned_off_and_short_answers_are_never_split():
-    text = _long_text(900)
-    d = FakeDelivery()
-    w = StreamWriter(d, interval=0.05, tick=0.005, pace_chars=0)
-    w.update(text)
-    time.sleep(0.1)
-    w.finish(text)
-    assert [k for k, _, _ in d.log] == ["post"] and d.messages == [text]
-    d2 = FakeDelivery()
-    short = _long_text(380)  # under pace_min_chars
-    w2 = StreamWriter(d2, interval=0.05, tick=0.005)
-    w2.update(short)
-    time.sleep(0.1)
-    w2.finish(short)
-    assert [k for k, _, _ in d2.log] == ["post"] and d2.messages == [short]
-
-
-def test_a_reply_that_was_never_streamed_is_posted_once_whole():
-    d = FakeDelivery()
-    text = _long_text(900)
-    StreamWriter(d, interval=0.05).finish(text)  # a failure notice, an approval answer: nothing was streamed
-    assert [k for k, _, _ in d.log] == ["post"] and d.messages == [text]
