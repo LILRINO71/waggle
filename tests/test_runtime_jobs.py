@@ -281,3 +281,15 @@ def test_prune_removes_only_old_done_jobs():
     jobs.complete(new, "o", now=100)
     assert jobs.prune(50, now=100) == 1
     assert jobs.get(old) is None and jobs.get(dead)["state"] == "dead" and jobs.get(new)["state"] == "done"
+
+
+def test_a_job_queued_without_its_handler_takes_the_registered_settings_at_claim():
+    jid = jobs.enqueue("later", now=0)
+    explicit = jobs.enqueue("later", max_attempts=7, now=0)
+    assert jobs.get(jid)["max_attempts"] == jobs.DEFAULT_MAX_ATTEMPTS
+    jobs.register("later", lambda p: None, max_attempts=1, detached=True)
+    jobs.claim("o", now=1)
+    jobs.claim("o", now=1)
+    assert jobs.get(jid)["max_attempts"] == 1 and jobs.get(jid)["detached"]
+    assert jobs.get(explicit)["max_attempts"] == 7
+    assert jobs.fail(jid, "o", "x", now=2) == "dead"

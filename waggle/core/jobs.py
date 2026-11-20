@@ -72,6 +72,7 @@ def enqueue(kind, payload=None, *, idem_key=None, run_after=None, priority=0, ma
         raise ValueError("job kind is required")
     now = store.now_or(now)
     h = _handlers.get(kind)
+    pending = max_attempts is None and h is None
     if max_attempts is None:
         max_attempts = h.max_attempts if h else DEFAULT_MAX_ATTEMPTS
     with store.transaction() as con:
@@ -81,10 +82,10 @@ def enqueue(kind, payload=None, *, idem_key=None, run_after=None, priority=0, ma
                 return row[0]
         cur = con.execute(
             "INSERT INTO jobs(kind, payload, idem_key, state, priority, attempts, max_attempts, run_after, "
-            "detached, lease_s, created, updated) VALUES(?,?,?,'queued',?,0,?,?,?,?,?,?)",
+            "detached, lease_s, defaults_pending, created, updated) VALUES(?,?,?,'queued',?,0,?,?,?,?,?,?,?)",
             (kind, store.dumps(payload), idem_key, int(priority), int(max_attempts),
              None if run_after is None else float(run_after), int(bool(h and h.detached)),
-             h.lease_s if h else None, now, now))
+             h.lease_s if h else None, int(pending), now, now))
         return cur.lastrowid
 
 
@@ -111,6 +112,9 @@ def claim(owner, *, kinds=None, lease_s=None, now=None):
         con.execute("UPDATE jobs SET state='running', lease_owner=?, lease_until=?, lease_s=?, pid=?, "
                     "pid_ctime=?, started=?, updated=? WHERE id=? AND state='queued'",
                     (owner, now + lease, lease, os.getpid(), procs.own_ctime(), now, now, row["id"]))
+        if h is not None and row["defaults_pending"]:
+            con.execute("UPDATE jobs SET max_attempts=?, detached=?, defaults_pending=0 WHERE id=?",
+                        (h.max_attempts, int(h.detached), row["id"]))
         return get(row["id"])
 
 

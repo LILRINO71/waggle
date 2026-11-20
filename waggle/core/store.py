@@ -22,7 +22,7 @@ import waggle.config as config
 
 DB_NAME = "runtime.db"
 BUSY_TIMEOUT_MS = 15000
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # Events younger than this (by the real clock) cannot be deleted; the retention job removes older ones.
 EVENT_DELETE_GUARD_S = 89 * 86400
@@ -82,6 +82,11 @@ MIGRATIONS = {
     ],    # v3: free-form delivery details (title, topic, decision id, reply target) that transports may use.
     3: [
         "ALTER TABLE outbox ADD COLUMN meta TEXT",
+    ],
+    # v4: a job queued by a process that does not know its kind takes the kind's registered settings
+    # (max_attempts, detached) from the process that claims it.
+    4: [
+        "ALTER TABLE jobs ADD COLUMN defaults_pending INTEGER NOT NULL DEFAULT 0",
     ],
 }
 
