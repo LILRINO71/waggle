@@ -86,14 +86,22 @@ def safe_name(chat):
     return re.sub(r"[^A-Za-z0-9_.-]", "_", chat)[:80] or "chat"
 
 
-def mcp_config(chat, settings=None):
-    """The Waggle MCP server for this chat's brain; it knows which chat it serves (for background results)."""
+def origin_env(origin):
+    """Environment that tells the chat's tools where its messages come from: WAGGLE_TURN_ORIGIN always, and
+    WAGGLE_ORIGIN for a non-user chat, so everything recorded from that process is marked (plan decision 10)."""
+    origin = origin or "user"
+    return {"WAGGLE_TURN_ORIGIN": origin, **({} if origin == "user" else {"WAGGLE_ORIGIN": origin})}
+
+
+def mcp_config(chat, settings=None, origin="user"):
+    """The Waggle MCP server for this chat's brain; it knows which chat it serves (for background results,
+    reminders and calls) and where its messages come from."""
     from .agent import _python, REPO
     cfg = {"mcpServers": {"waggle": {"type": "stdio", "command": _python(),
                                      "args": [str(REPO / "waggle" / "waggle_mcp.py")],
                                      "env": {"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1",
                                              "WAGGLE_HOME": str(data_path(".")), "WAGGLE_CHAT": chat,
-                                             "WAGGLE_SESSION": chat, "WAGGLE_AGENT": "chat"}}}}
+                                             "WAGGLE_SESSION": chat, "WAGGLE_AGENT": "chat", **origin_env(origin)}}}}
     d = data_path("chat_mcp")
     d.mkdir(exist_ok=True)
     p = d / f"{safe_name(chat)}.json"
@@ -101,7 +109,7 @@ def mcp_config(chat, settings=None):
     return str(p)
 
 
-def build_cmd(chat, settings, claude, resume="", new_session="", servers=None):
+def build_cmd(chat, settings, claude, resume="", new_session="", servers=None, origin="user"):
     from .agent import hidden_servers, settings_json
     s = settings
     model = claude_cli.MODEL_IDS.get(s.chat_model or s.router_model, s.chat_model or s.router_model)
@@ -109,7 +117,7 @@ def build_cmd(chat, settings, claude, resume="", new_session="", servers=None):
            "--model", model, "--effort", s.chat_effort or "low", "--disable-slash-commands",
            "--tools", ",".join(s.chat_tools or []),
            "--settings", json.dumps(settings_json()),
-           "--mcp-config", mcp_config(chat, s),
+           "--mcp-config", mcp_config(chat, s, origin),
            "--append-system-prompt", CHAT_SYSTEM]
     hide = hidden_servers(servers if servers is not None else claude_cli.mcp_servers(claude))
     if hide:
@@ -204,6 +212,8 @@ class ChatSession:
         self.last_used = clock()
         self._seed = ""  # transcript to put in front of the first message of a fresh session
         self._fresh = False
+        self.origin = "user"  # where this chat's messages come from (set per turn by the engine)
+        self._proc_origin = None
 
     # -- process management
     def claude(self):
@@ -228,9 +238,12 @@ class ChatSession:
         if resume and (row.get("session_turns") or 0) >= s.chat_session_max_turns:
             resume = ""  # long enough: start fresh, seeded with the recent transcript
         new_id = "" if resume else str(uuid.uuid4())
-        cmd, self.model = build_cmd(self.chat, s, claude, resume=resume, new_session=new_id)
+        cmd, self.model = build_cmd(self.chat, s, claude, resume=resume, new_session=new_id, origin=self.origin)
         env = claude_cli.clean_env()
-        env.update(WAGGLE_SESSION=self.chat, WAGGLE_CHAT=self.chat, WAGGLE_AGENT="chat", PYTHONIOENCODING="utf-8")
+        env.pop("WAGGLE_ORIGIN", None)
+        env.update(WAGGLE_SESSION=self.chat, WAGGLE_CHAT=self.chat, WAGGLE_AGENT="chat", PYTHONIOENCODING="utf-8",
+                   **origin_env(self.origin))
+        self._proc_origin = self.origin
         cwd = s.agent_workdir or str(Path.home() / "Claude")
         self.proc = _Proc(cmd, cwd, env, self.popen)
         self._fresh = not resume
@@ -246,14 +259,31 @@ class ChatSession:
         res.resumed = self._start(allow_resume=True)
         res.fresh_session = self._fresh
 
+    def warm(self):
+        """Start the chat's process now (resuming its stored session) without sending anything, so the next
+        message does not pay the cold start. Returns {"started", "resumed"} or {"error"}."""
+        with self.lock:
+            self.last_used = self.clock()
+            if self.alive():
+                return {"started": False, "resumed": False}
+            try:
+                resumed = self._start(allow_resume=True)
+            except Exception as e:
+                return {"error": f"{type(e).__name__}: {e}"[:300]}
+            return {"started": True, "resumed": resumed}
+
     # -- one turn
-    def turn(self, text, on_text=None, on_tool=None, timeout=None):
+    def turn(self, text, on_text=None, on_tool=None, timeout=None, origin=None):
         """Send one user message, stream the reply. Never raises for Claude-side failures: see .kind/.error."""
         res = TurnResult()
         t0 = self.clock()
         timeout = timeout or self.settings.chat_turn_timeout_s
         with self.lock:
             self.last_used = t0
+            if origin and origin != self.origin:
+                self.origin = origin
+                if self.alive() and self._proc_origin != origin:
+                    self.stop()  # its tools were started for another origin: restart (the session resumes)
             try:
                 self._ensure(res)
             except claude_cli.ClaudeError as e:
@@ -334,6 +364,9 @@ class ChatSession:
                 return parser
 
 
+KEEP_WARM_S = 12 * 3600  # the owner's engine chats stay warm this long between messages
+
+
 class SessionPool:
     """Chat id -> ChatSession. reap() stops processes idle longer than settings.chat_idle_s."""
 
@@ -349,14 +382,17 @@ class SessionPool:
                 self.sessions[chat] = self.factory(chat)
             return self.sessions[chat]
 
-    def reap(self, now=None):
+    def reap(self, now=None, keep=(), keep_idle_s=KEEP_WARM_S):
+        """Stop processes idle longer than settings.chat_idle_s; chats in `keep` (the owner's engine chats) stay
+        warm up to keep_idle_s. Returns the stopped chats."""
         idle = (self.settings or Settings.load()).chat_idle_s
         now = now or time.time()
         stopped = []
         with self._lock:
             items = list(self.sessions.items())
         for chat, sess in items:
-            if sess.alive() and now - sess.last_used > idle and sess.lock.acquire(blocking=False):
+            limit = max(idle, keep_idle_s) if chat in keep else idle
+            if sess.alive() and now - sess.last_used > limit and sess.lock.acquire(blocking=False):
                 try:
                     sess.stop(grace=3.0)
                     stopped.append(chat)

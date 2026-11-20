@@ -7,16 +7,20 @@ its result goes to the core outbox with the idem key "chat.background:<key>", so
 chat exactly once, also when the core restarts in the middle: a re-run job whose result is already in the
 outbox does not run the agent again, and a second enqueue with the same key changes nothing.
 
-register_core() registers the job kinds; the core calls it once at start.
+register_core() registers the job kinds, the reap timer, the inbound handler and the pre-warm; the core calls
+it at start (detached job runners call it too, so it only registers and never starts work itself).
 """
 import json
 import os
 import uuid
 
-from waggle.core import jobs, outbox, store
+from waggle.core import jobs, outbox, store, timers
 
 JOB_KIND = "chat.background"
 REAP_KIND = "chat.reap"
+PREWARM_KIND = "chat.prewarm"
+REAP_EVERY = "5m"
+PREWARM_TIMEOUT_S = 180.0
 JOB_LEASE_S = 2400.0  # an agent run may take up to 30 min; the core keeps its own process's jobs on recovery
 JOB_MAX_ATTEMPTS = 2  # a crash mid-run (core restart) runs it once more
 
@@ -73,16 +77,54 @@ def run_background(payload, runner=None):
 
 
 def reap(payload=None):
-    """Stop chat processes idle longer than settings.chat_idle_s (their sessions resume on the next message)."""
+    """Stop chat processes idle longer than settings.chat_idle_s (their sessions resume on the next message).
+    The owner's engine chats stay warm longer (chat_session.KEEP_WARM_S)."""
+    from waggle import chat_engine, chat_store
+    wanted = chat_engine.engine_chats()
+    keep = {r["chat"] for r in chat_store.chats_with_address() if r.get("address") in wanted}
+    return {"stopped": chat_engine.pool().reap(keep=keep)}
+
+
+def prewarm(payload=None):
+    """Start the processes of the engine chats the user wrote in during the last 24 hours."""
     from waggle import chat_engine
-    return {"stopped": chat_engine.pool().reap()}
+    return {"warmed": chat_engine.prewarm()}
+
+
+def _core_start_key():
+    """One idem key per core start (from core.pid, written before plug-ins load), so detached job runners that
+    also load this module never queue a second pre-warm. None when no core is running."""
+    from waggle.core import settings as core_settings
+    try:
+        data = json.loads(core_settings.path("core.pid").read_text(encoding="utf-8"))
+        return f"{PREWARM_KIND}:{data['pid']}:{data['started']}"
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _register_inbound():
+    """Hand inbound messages from the core to the engine. False when this core has no inbound module yet."""
+    try:
+        from waggle.core import inbound
+    except ImportError:
+        return False
+    from waggle import chat_engine
+    inbound.register(chat_engine.on_inbound)
+    return True
 
 
 def register_core():
-    """Register this module's job kinds with waggle.core.jobs; returns their names."""
+    """Register with the core: the job kinds (background tasks, reaping, pre-warming), the reap timer, the
+    inbound handler, and one pre-warm job per core start. Returns the job kinds."""
     jobs.register(JOB_KIND, run_background, max_attempts=JOB_MAX_ATTEMPTS, lease_s=JOB_LEASE_S)
     jobs.register(REAP_KIND, reap, max_attempts=1)
-    return [JOB_KIND, REAP_KIND]
+    jobs.register(PREWARM_KIND, prewarm, max_attempts=1, timeout_s=PREWARM_TIMEOUT_S)
+    timers.add(REAP_KIND, "interval", REAP_EVERY, REAP_KIND, catch_up="skip", origin="core")
+    _register_inbound()
+    key = _core_start_key()
+    if key:
+        jobs.enqueue(PREWARM_KIND, {}, idem_key=key, priority=5)
+    return [JOB_KIND, REAP_KIND, PREWARM_KIND]
 
 
 def status(chat=None, limit=6):

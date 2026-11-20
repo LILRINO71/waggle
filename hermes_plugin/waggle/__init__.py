@@ -971,6 +971,123 @@ def _start_bridge():
         log.warning("waggle bridge failed to start: %s", e)
 
 
+# ---- admission: typed Telegram text in an engine chat goes to the core's turn engine ----------------------
+# Hermes fires post_gateway_admission once per admitted message, before it starts a turn. For a chat listed in
+# settings.engine_chats (off by default) Waggle posts a plain typed text message to the core's /turn and returns
+# {"action": "handled"} only when the core answers 202, so the gateway never starts its own turn. Everything
+# else (other chats and platforms, groups, topics, voice notes, photos, files, /commands, approval replies,
+# feedback and objective commands), and any failure to reach the core, returns None: the old path answers as
+# before. The admission payload has no message type, so pre_gateway_dispatch records each event's type and media
+# first; a message without that record is never routed.
+
+_seen_types = {}  # message id -> (message type, has media), from pre_gateway_dispatch
+_seen_lock = threading.Lock()
+SEEN_MAX = 500
+CORE_POST_TIMEOUT_S = 2.0
+
+
+def on_pre_gateway_dispatch(event=None, **kwargs):
+    """Remember what kind of message this is (the admission hook does not get it). Never changes dispatch."""
+    try:
+        mid = getattr(event, "message_id", None)
+        if mid is None:
+            return None
+        mtype = getattr(getattr(event, "message_type", None), "value", None) or str(getattr(event, "message_type", ""))
+        media = bool(getattr(event, "media_urls", None))
+        with _seen_lock:
+            _seen_types[str(mid)] = (str(mtype).lower(), media)
+            while len(_seen_types) > SEEN_MAX:
+                _seen_types.pop(next(iter(_seen_types)))
+    except Exception as e:
+        log.warning("waggle pre_gateway_dispatch record failed: %s", e)
+    return None
+
+
+def engine_route(platform, source, message_id, text, settings=None):
+    """(route, reason): route "engine" when this message may go to the core's turn engine, else "old"."""
+    s = settings or Settings.load()
+    src = source or {}
+    if platform != "telegram":
+        return "old", "not telegram"
+    chat_id = str(src.get("chat_id") or "")
+    wanted = {str(c).strip() for c in (getattr(s, "engine_chats", None) or [])}
+    if not chat_id or chat_id not in wanted:
+        return "old", "engine off for this chat"
+    if (src.get("chat_type") or "dm") != "dm" or src.get("thread_id"):
+        return "old", "not the direct chat"
+    if src.get("user_id") and str(src.get("user_id")) != chat_id:
+        return "old", "sender is not the chat's owner"
+    with _seen_lock:
+        seen = _seen_types.pop(str(message_id), None)
+    if seen is None:
+        return "old", "message type unknown"
+    if seen[0] != "text" or seen[1]:
+        return "old", f"not typed text ({seen[0]}{', media' if seen[1] else ''})"
+    t = (text or "").strip()
+    if not t:
+        return "old", "empty"
+    if t.startswith("/"):
+        return "old", "command"
+    from waggle import voice_turn
+    if voice_turn.parse(t, s.voice_fixes)[1] != "text":
+        return "old", "voice"
+    if FEEDBACK.match(t) or OBJECTIVE_CMD.match(t):
+        return "old", "feedback or objective command"
+    if APPROVAL_CMD.match(t) or YES.match(t):
+        return "old", "approval reply"
+    return "engine", ""
+
+
+def post_turn(chat_id, text, message_id, timeout=CORE_POST_TIMEOUT_S):
+    """POST the message to the core's /turn. (accepted, detail): accepted only on HTTP 202."""
+    import urllib.error
+    import urllib.request
+    from waggle.core import settings as core_settings
+    try:
+        token = core_settings.path("core.token").read_text(encoding="utf-8").strip()
+    except OSError:
+        return False, "no core token (core not running?)"
+    if not token:
+        return False, "empty core token"
+    body = {"chat": f"telegram:{chat_id}", "address": str(chat_id), "text": text, "kind": "text", "media": [],
+            "platform": "telegram", "origin": "user", "dedupe_key": f"telegram:{chat_id}:{message_id}"}
+    req = urllib.request.Request(f"http://127.0.0.1:{core_settings.port()}/turn", method="POST",
+                                 data=json.dumps(body).encode("utf-8"),
+                                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            status, raw = resp.status, resp.read(4096)
+    except urllib.error.HTTPError as e:
+        return False, f"core answered {e.code}"
+    except Exception as e:  # refused, timed out, reset: not accepted
+        return False, f"{type(e).__name__}: {e}"[:200]
+    if status != 202:
+        return False, f"core answered {status}"
+    try:
+        data = json.loads(raw or b"{}")
+    except ValueError:
+        data = {}
+    return True, f"turn {data.get('turn_id', '?')}" + (" (duplicate)" if data.get("duplicate") else "")
+
+
+def on_gateway_admission(session_key="", platform="", source=None, message_id=None, text="", **kwargs):
+    """post_gateway_admission: hand typed text in an engine chat to the core; anything else stays on the old path."""
+    t0 = time.time()
+    try:
+        route, why = engine_route(platform, source, message_id, text)
+        if route != "engine":
+            if why not in ("not telegram", "engine off for this chat"):
+                events.log("engine_admission", routed="old", reason=why, platform=platform)
+            return None
+        ok, detail = post_turn(str((source or {}).get("chat_id")), text, message_id)
+        events.log("engine_admission", routed="engine" if ok else "old", reason=detail, platform=platform,
+                   ms=round((time.time() - t0) * 1000))
+        return {"action": "handled"} if ok else None
+    except Exception as e:  # never block a message: the old path answers
+        log.warning("waggle admission hook failed: %s", e)
+        return None
+
+
 def register(ctx):
     global _ctx
     _ctx = ctx
@@ -989,5 +1106,10 @@ def register(ctx):
     except TypeError:  # older Hermes without hold_stream
         ctx.register_hook("transform_llm_output", on_transform_llm_output)
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
+    for hook, fn in (("pre_gateway_dispatch", on_pre_gateway_dispatch), ("post_gateway_admission", on_gateway_admission)):
+        try:  # typed text in an engine chat goes to the core (settings.engine_chats; empty = nothing changes)
+            ctx.register_hook(hook, fn)
+        except Exception as e:  # an older Hermes without these hooks: everything stays on the old path
+            log.warning("waggle could not register %s: %s", hook, e)
     ctx.register_command("waggle", lambda raw: json.dumps(quota.status(), indent=2),
                          description="Waggle quota and status")

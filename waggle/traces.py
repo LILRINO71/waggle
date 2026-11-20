@@ -228,6 +228,17 @@ def code_version():
     return _version
 
 
+def by_turn_id(turn_id):
+    """The most recent record of one turn id (the core's turn id), or None."""
+    if not turn_id:
+        return None
+    con = _db()
+    con.row_factory = sqlite3.Row
+    row = con.execute("SELECT * FROM traces WHERE turn_id=? ORDER BY id DESC LIMIT 1", (str(turn_id),)).fetchone()
+    con.close()
+    return dict(row) if row else None
+
+
 def last(session=None, before=None):
     con = _db()
     con.row_factory = sqlite3.Row

@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from . import chat_store, claude_cli, events, quota, traces
 from .chat_session import VOICE_STYLE, ChatSession, SessionPool
 from .config import Settings
-from .delivery import StreamWriter, plain_text
+from .delivery import StreamWriter, Typing, plain_text
 
 ORIGINS = traces.ORIGINS
 TEST_PLATFORMS = {"cli", "local", "test", "api", "desktop", ""}  # the command-line chat and test clients
@@ -42,6 +42,13 @@ AGENT_PLATFORMS = {"subagent", "delegation", "cron", "kanban", "agent"}
 LOCAL_LABEL = "(Answered by Waggle's small local model because Claude is unavailable right now: {why}.)"
 FAILED = "I couldn't answer that just now: {why}. Nothing was done with it; please send it again in a few minutes."
 CUT_OFF = "\n\n(I was cut off before I finished: {why}.)"
+INTERRUPTED_NOTE = ("Waggle restarted while you were answering this message before. Before you repeat any action "
+                    "(writing or changing files, commands, commits, messages, background_task), check what was "
+                    "already done (files, git log, background_status) and only do what is still missing. Say "
+                    "briefly what you found already done.")
+INTERRUPTED_LINE = "\n\n(A restart interrupted my first try at this, so I checked what was already done first.)"
+
+TYPING_EVERY_S = 4.0  # Telegram shows "typing..." for about 5 s per call
 
 _pool = None
 _pool_lock = threading.Lock()
@@ -263,23 +270,27 @@ def local_answer(chat, text, context, settings):
 
 
 def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=None, note="", context=None,
-             settings=None, session=None, local=None, stream=True, record=True, address=None, turn_id=None):
-    """Answer one user message into `delivery`. Never raises; returns a TurnRecord (also written to traces)."""
+             settings=None, session=None, local=None, stream=True, record=True, address=None, turn_id=None,
+             typing=None, attempt=1):
+    """Answer one user message into `delivery`. Never raises; returns a TurnRecord (also written to traces).
+
+    typing: a running delivery.Typing (else one is started here); it stops when the first words are posted.
+    attempt >= 2: the core restarted while this message was being answered. The model is told to check what was
+    already done before repeating any action, and the reply tells the user a restart interrupted the work."""
     s = settings or Settings.load()
     t0 = t0 or time.time()
     rec = TurnRecord(chat=chat, text=text, origin=origin or origin_for(platform), platform=platform or "")
     if turn_id:
         rec.turn_id = turn_id
+    keeper = typing or Typing(delivery, every=TYPING_EVERY_S).start()
     prev_user = 0.0
     try:
         prev_user = chat_store.touch_chat(chat, platform, address=address, user=True)
     except Exception as e:
         events.log("engine_error", stage="touch_chat", error=str(e)[:200])
-    try:
-        delivery.typing()
-    except Exception:
-        pass
-    writer = StreamWriter(delivery, interval=s.edit_interval_s, stream=stream)
+    writer = StreamWriter(delivery, interval=s.edit_interval_s, stream=stream, on_first_shown=keeper.stop)
+    if attempt and attempt >= 2:
+        note = (note + " " if note else "") + INTERRUPTED_NOTE
     reply, why = "", ""
     try:
         ctx = context if context is not None else build_context(chat, text, voice, s, since=prev_user)
@@ -291,7 +302,7 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
     if ok:
         try:
             sess = session or pool(s).get(chat)
-            res = sess.turn(message, on_text=writer.update)
+            res = sess.turn(message, on_text=writer.update, origin=rec.origin)
         except Exception as e:  # a bug in the session layer is a failed turn, never a silent one
             res = None
             why = f"error: {type(e).__name__}: {e}"
@@ -299,7 +310,7 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
             rec.steps, rec.usage, rec.model = res.steps, res.usage, res.model
             rec.session = {"restarted": res.restarted, "resumed": res.resumed, "retried": res.retried,
                            "fresh": res.fresh_session, "claude_session": res.session_id, "kind": res.kind,
-                           "error": res.error[:300], "api_ttft_ms": res.api_ttft_ms}
+                           "error": res.error[:300], "api_ttft_ms": res.api_ttft_ms, "attempt": attempt}
             try:
                 quota.record(res.model or chat_model(s), res.usage, "chat", headless=True, ok=res.ok,
                              error_kind=res.kind or None)
@@ -327,8 +338,11 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
             reply, rec.answered_by, rec.model = answer + "\n\n" + LOCAL_LABEL.format(why=_why_short(why)), "local", s.local_model
         else:
             reply, rec.answered_by, rec.failure_notice = FAILED.format(why=_why_short(why)), "none", True
+    if attempt and attempt >= 2 and not rec.failure_notice:
+        reply += INTERRUPTED_LINE
     rec.reply = reply
     out = writer.finish(reply)
+    keeper.stop()
     rec.delivered = bool(out["delivered"])
     rec.message_ids = list(out.get("message_ids") or [])
     rec.delivery = getattr(delivery, "name", "delivery") if rec.delivered else "outbox"
@@ -386,7 +400,7 @@ def record_turn(rec, voice=False, note="", route="chat"):
 
 
 def record_direct(chat, text, reply, *, platform="", origin=None, t0=None, route="direct", delivered=True,
-                  delivery="block", message_ids=None, failure_notice=False, address=None):
+                  delivery="block", message_ids=None, failure_notice=False, address=None, turn_id=None):
     """A reply Waggle gave without a model (approval answers, feedback acks): still one full turn record.
     An undelivered one is queued in the core outbox first."""
     t0 = t0 or time.time()
@@ -395,6 +409,8 @@ def record_direct(chat, text, reply, *, platform="", origin=None, t0=None, route
                      answered_by="none", delivered=delivered, delivery=delivery, total_s=took,
                      ttfw_s=took if delivered else None, message_ids=list(message_ids or []),
                      failure_notice=failure_notice)
+    if turn_id:
+        rec.turn_id = turn_id
     if not delivered:
         rec.outbox_id = queue_reply(rec, address=address)
         rec.delivery = "outbox" if rec.outbox_id is not None else "none"
@@ -451,19 +467,36 @@ NO_TEXT = ("I got your message but couldn't read anything in it{what}. Could you
 
 
 def handle_inbound(chat, text, *, kind="text", media=None, platform="telegram", origin="user", delivery=None,
-                   settings=None, session=None, t0=None, local=None):
-    """One inbound message, end to end: approvals first, then the chat's Claude session, streamed into the
-    chat's delivery, the reply queued in the core outbox if delivery fails, and the full turn record.
+                   settings=None, session=None, t0=None, local=None, turn_id=None, attempt=1, address=None):
+    """One inbound message, end to end: the typing indicator at once, approvals first, then the chat's Claude
+    session, streamed into the chat's delivery, the reply queued in the core outbox if delivery fails, and the
+    full turn record.
 
     kind: "text" | "voice" (text is the transcript; the reply is written to be spoken) | anything else with
     `media` (paths, or dicts with path/kind) the brain is told about. origin: "user" only for the owner's own
-    channel. Never raises for turn failures; returns the TurnRecord."""
+    channel. attempt 2: a restart interrupted the first run (see run_turn); a turn already delivered under the
+    same turn_id is not answered again. Never raises for turn failures; returns the TurnRecord."""
     if origin not in ORIGINS:
         raise ValueError(f"origin must be one of {ORIGINS}, not {origin!r}")
     s = settings or Settings.load()
     t0 = t0 or time.time()
-    address = address_for(chat, platform)
+    address = str(address or address_for(chat, platform))
     d = delivery or delivery_for(chat, platform, address)
+    keeper = Typing(d, every=TYPING_EVERY_S).start()  # something visible at once
+    try:  # the sender resolves the chat key through this row: it exists before anything is queued for the chat
+        chat_store.touch_chat(chat, platform, address=address)
+    except Exception as e:
+        events.log("engine_error", stage="touch_chat", error=str(e)[:200])
+    if turn_id and attempt and attempt >= 2:
+        done = traces.by_turn_id(turn_id)
+        if done and done.get("delivered") == 1:
+            keeper.stop()
+            rec = TurnRecord(chat=chat, text=text, turn_id=turn_id, origin=origin, platform=platform,
+                             reply=done.get("reply") or "", answered_by=done.get("answered_by") or "none",
+                             delivered=True, delivery="already", outcome=done.get("turn_outcome") or "ok",
+                             trace_id=done.get("id"))
+            events.log("engine_turn_already_done", turn_id=turn_id, trace_id=done.get("id"))
+            return rec
     voice = kind == "voice"
     body = (text or "").strip()
     extra = media_note(media) if media else ""
@@ -472,11 +505,14 @@ def handle_inbound(chat, text, *, kind="text", media=None, platform="telegram", 
     prev = (chat_store.get_chat(chat) or {}).get("last_user") or 0.0
 
     def direct(reply, route, failure_notice=False):
+        keeper.stop()
         chat_store.touch_chat(chat, platform, address=address, user=True)
         out = StreamWriter(d, stream=False).finish(reply)
-        return record_direct(chat, body, reply, platform=platform, origin=origin, t0=t0, route=route,
-                             delivered=out["delivered"], delivery=getattr(d, "name", "delivery"),
-                             message_ids=out.get("message_ids"), failure_notice=failure_notice, address=address)
+        rec = record_direct(chat, body, reply, platform=platform, origin=origin, t0=t0, route=route,
+                            delivered=out["delivered"], delivery=getattr(d, "name", "delivery"),
+                            message_ids=out.get("message_ids"), failure_notice=failure_notice, address=address,
+                            turn_id=turn_id)
+        return rec
 
     if not body:
         what = " (the voice note could not be transcribed)" if voice else ""
@@ -489,10 +525,85 @@ def handle_inbound(chat, text, *, kind="text", media=None, platform="telegram", 
     if pre and pre[0] == "reply":
         return direct(pre[1], "approval")
     return run_turn(chat, body, d, platform=platform, origin=origin, voice=voice, t0=t0,
-                    note=pre[1] if pre else "", settings=s, session=session, local=local, address=address)
+                    note=pre[1] if pre else "", settings=s, session=session, local=local, address=address,
+                    turn_id=turn_id, typing=keeper, attempt=attempt)
+
+
+def on_inbound(msg):
+    """The core's inbound handler (waggle.core.inbound.register): one message dict from the core, answered in
+    the chat through Waggle's own Bot API. Returns a short summary for the core's record."""
+    platform = msg.get("platform") or "telegram"
+    origin = msg.get("origin") or "user"
+    if origin not in ORIGINS:
+        origin = "test"  # an unknown origin never counts as the user's own words
+    address = str(msg.get("address") or "")
+    chat = msg.get("chat") or (f"{platform}:{address}" if address else "")
+    if not chat:
+        raise ValueError("inbound message without chat or address")
+    address = address or address_for(chat, platform)
+    rec = handle_inbound(chat, msg.get("text") or "", kind=msg.get("kind") or "text", media=msg.get("media"),
+                         platform=platform, origin=origin, delivery=delivery_for(chat, platform, address),
+                         t0=msg.get("received_ts"), turn_id=msg.get("turn_id"), attempt=int(msg.get("attempt") or 1),
+                         address=address)
+    return {"turn_id": rec.turn_id, "outcome": rec.outcome, "delivered": rec.delivered, "trace_id": rec.trace_id,
+            "outbox": rec.outbox_id}
+
+
+# ---- which chats the engine serves -----------------------------------------------------------------------
+
+def engine_chats(settings=None):
+    """Telegram chat ids (strings) whose typed messages the gateway hands to the core (settings.engine_chats)."""
+    s = settings or Settings.load()
+    return {str(c).strip() for c in (getattr(s, "engine_chats", None) or []) if str(c).strip()}
+
+
+def set_engine_chat(chat_id, on=True):
+    """Switch the engine on or off for one Telegram chat id (config.json engine_chats). Returns the new set."""
+    s = Settings.load()
+    chats = [str(c) for c in (s.engine_chats or []) if str(c) != str(chat_id)]
+    if on:
+        chats.append(str(chat_id))
+    s.engine_chats = chats
+    s.save()
+    return set(chats)
+
+
+def prewarm(now=None, within_s=86400, limit=3, settings=None):
+    """Start the Claude process of every engine chat the user wrote in within `within_s` (resuming its
+    session), so the first message of the day does not pay the cold start. Returns {chat: result}."""
+    s = settings or Settings.load()
+    now = time.time() if now is None else now
+    wanted = engine_chats(s)
+    rows = [r for r in chat_store.chats_with_address()
+            if r.get("address") in wanted and (r.get("last_user") or 0) >= now - within_s]
+    rows.sort(key=lambda r: -(r.get("last_user") or 0))
+    out = {}
+    for r in rows[:limit]:
+        out[r["chat"]] = pool(s).get(r["chat"]).warm()
+    events.log("engine_prewarm", chats=list(out), results=out)
+    return out
+
+
+def main(argv=None):
+    """python -m waggle.chat_engine engine on|off|status [<telegram chat id>]"""
+    import sys
+    args = sys.argv[1:] if argv is None else argv
+    if len(args) >= 2 and args[0] == "engine" and args[1] in ("on", "off") and len(args) == 3:
+        chats = set_engine_chat(args[2], on=args[1] == "on")
+        print(f"engine {'on' if args[1] == 'on' else 'off'} for {args[2]}; engine chats now: {sorted(chats) or 'none'}")
+        return 0
+    if args[:2] == ["engine", "status"]:
+        print(f"engine chats: {sorted(engine_chats()) or 'none'}")
+        return 0
+    print("usage: python -m waggle.chat_engine engine on|off <telegram chat id> | engine status")
+    return 64
 
 
 def register_core():
     """Register the engine's job kinds with the core (waggle.core.jobs). Returns their names."""
     from . import chat_jobs
     return chat_jobs.register_core()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
