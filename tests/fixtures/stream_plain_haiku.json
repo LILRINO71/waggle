@@ -1,0 +1,145 @@
+{
+"about": "Text deltas of one real Haiku answer (claude 2.1.326, --input-format stream-json --include-partial-messages): offset in seconds from the first delta, text. The whole 160-word answer took 0.7 s.",
+"deltas": [
+[
+0.0,
+"Rainbows form when"
+],
+[
+0.017,
+" sunlight strikes water"
+],
+[
+0.038,
+" droplets in the air, us"
+],
+[
+0.058,
+"ually after rain with the sun"
+],
+[
+0.078,
+" behind you. Each dropl"
+],
+[
+0.099,
+"et works like a tiny pr"
+],
+[
+0.12,
+"ism. Light slows and b"
+],
+[
+0.139,
+"ends as it enters the dropl"
+],
+[
+0.16,
+"et, reflects off the in"
+],
+[
+0.181,
+"ner back surface, then bends"
+],
+[
+0.201,
+" again as it leaves. White"
+],
+[
+0.221,
+" sunlight is a mix"
+],
+[
+0.243,
+" of colors, and each color b"
+],
+[
+0.265,
+"ends by a slightly different am"
+],
+[
+0.283,
+"ount. Red bends the least"
+],
+[
+0.308,
+" and violet the most, so the"
+],
+[
+0.325,
+" colors fan apart."
+],
+[
+0.345,
+"\n\nLight leaves the dropl"
+],
+[
+0.365,
+"ets at roughly 42 "
+],
+[
+0.387,
+"degrees for red and 40"
+],
+[
+0.409,
+" for"
+],
+[
+0.426,
+" violet, measured from the line"
+],
+[
+0.446,
+" pointing back toward the s"
+],
+[
+0.467,
+"un. Millions of dropl"
+],
+[
+0.487,
+"ets send these colors toward your"
+],
+[
+0.507,
+" eyes at those angles,"
+],
+[
+0.528,
+" so you see a curved arc"
+],
+[
+0.549,
+" with red on the outside and viol"
+],
+[
+0.568,
+"et on the inside. The ar"
+],
+[
+0.59,
+"c is centered on the shad"
+],
+[
+0.611,
+"ow of your head, which is why"
+],
+[
+0.629,
+" you can never walk up to one"
+],
+[
+0.651,
+". The full bow is a circ"
+],
+[
+0.67,
+"le, but the ground usually"
+],
+[
+0.692,
+" hides its lower half."
+]
+]
+}

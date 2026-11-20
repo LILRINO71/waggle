@@ -162,3 +162,58 @@ def test_reap_stops_only_idle_free_sessions(settings):
     assert res.ok and res.resumed
     pool.stop_all()
     assert not busy.alive()
+
+
+def test_a_prewarmed_session_that_never_got_a_message_is_not_resumed(settings):
+    # Claude writes a session down only once it has a message: resuming a warm-up's id fails with "No conversation found"
+    fake = FakeClaude()
+    s = session(fake, settings)
+    assert s.warm()["started"]
+    first_id = fake.procs[0].session_id
+    s.stop()  # the core restarts, or an origin change restarts the process, before any message
+    assert s.warm() == {"started": True, "resumed": False}
+    assert "--resume" not in fake.procs[1].cmd and fake.procs[1].session_id != "" and first_id
+    assert s.turn("hi").ok
+
+
+def test_a_session_that_timed_out_on_its_first_message_is_resumed(settings):
+    answers = iter([None, "back"])
+
+    def script(proc, text):
+        a = next(answers)
+        if a:
+            proc.answer(a)
+    fake = FakeClaude(script)
+    s = session(fake, settings)
+    assert s.turn("hang", timeout=0.3).kind == "timeout"  # Claude had the message: the session exists now
+    res = s.turn("again")
+    assert res.ok and res.resumed and chat_store.get_chat("telegram:1")["session_turns"] == 2
+
+
+def test_no_conversation_found_in_a_result_starts_a_fresh_session_and_answers(settings):
+    def script(proc, text):
+        if proc.resume == "ghost":
+            proc.emit(ev_result(proc.session_id, "", is_error=True, subtype="error_during_execution",
+                                errors=["No conversation found with session ID: ghost"]))
+        else:
+            proc.answer("fresh answer")
+    fake = FakeClaude(script)
+    fake.known_sessions.add("ghost")
+    chat_store.set_session("telegram:1", "ghost", turns=3)
+    s = session(fake, settings, transcript=lambda chat: "User: x\nWaggle: y")
+    res = s.turn("hello")
+    assert res.ok and res.text == "fresh answer" and res.retried and res.fresh_session
+    assert "--resume" not in fake.procs[-1].cmd and "<earlier_conversation>" in fake.procs[-1].inputs[0]
+    assert chat_store.get_chat("telegram:1")["claude_session"] != "ghost"
+
+
+def test_thinking_is_off_for_chat_replies_unless_asked(settings):
+    import json
+    fake = FakeClaude()
+    session(fake, settings).turn("hi")
+    cfg = json.loads(fake.procs[0].arg("--settings"))
+    assert cfg["alwaysThinkingEnabled"] is False and "PreToolUse" in cfg["hooks"]
+    settings.chat_thinking = True
+    fake2 = FakeClaude()
+    session(fake2, settings, chat="telegram:2").turn("hi")
+    assert "alwaysThinkingEnabled" not in json.loads(fake2.procs[0].arg("--settings"))

@@ -155,21 +155,33 @@ def test_register_core_without_inbound_or_core_still_registers_jobs(settings):
     assert jobs.list(kind="chat.prewarm") == []
 
 
-def test_prewarm_starts_only_recent_engine_chats(settings):
+def test_prewarm_starts_every_engine_chat_and_the_chats_seen_in_the_last_day(settings):
+    api, fake = use_fakes(settings)
+    now = time.time()
+    chat_store.touch_chat("telegram:42", "telegram", address="42", user=True, now=now - 3600)
+    chat_store.touch_chat("telegram:43", "telegram", address="43", user=True, now=now - 60)  # not an engine chat
+    chat_store.touch_chat("telegram:45", "telegram", address="45", user=True, now=now - 3 * 86400)
+    settings.engine_chats = ["42", "44"]  # 44 has no row at all: the owner who has not written yet
+    settings.save()
+    out = chat_engine.prewarm(now=now)
+    started = {"started": True, "resumed": False}
+    assert out == {"telegram:42": started, "telegram:44": started, "telegram:43": started}
+    assert len(fake.procs) == 3 and all(p.inputs == [] for p in fake.procs)  # nothing was sent: just warm
+    assert chat_store.get_chat("telegram:44")["address"] == "44"  # the row the sender resolves the chat through
+    chat_engine.on_inbound(msg(turn_id="t-8"))
+    assert len(fake.procs) == 3 and any(p.inputs for p in fake.procs) and traces.by_turn_id("t-8")["turn_outcome"] == "ok"
+
+
+def test_prewarm_of_an_owner_without_a_row_and_nobody_else(settings):
     api, fake = use_fakes(settings)
     settings.engine_chats = ["42"]
     settings.save()
-    now = time.time()
-    chat_store.touch_chat("telegram:42", "telegram", address="42", user=True, now=now - 3600)
-    chat_store.touch_chat("telegram:43", "telegram", address="43", user=True, now=now - 60)  # engine off there
-    chat_store.touch_chat("telegram:44", "telegram", address="44", user=True, now=now - 3 * 86400)
-    settings.engine_chats = ["42", "44"]
-    settings.save()
-    out = chat_engine.prewarm(now=now)
+    assert chat_store.get_chat("telegram:42") is None
+    out = chat_engine.prewarm(now=time.time())
     assert out == {"telegram:42": {"started": True, "resumed": False}} and len(fake.procs) == 1
-    assert fake.procs[0].inputs == []  # nothing was sent: the process is just warm
-    chat_engine.on_inbound(msg(turn_id="t-8"))
-    assert len(fake.procs) == 1 and fake.procs[0].inputs and traces.by_turn_id("t-8")["turn_outcome"] == "ok"
+    # the core's pre-warm job does the same, and the reaper keeps that chat warm although it has no row yet
+    assert chat_jobs.prewarm()["warmed"] == {"telegram:42": {"started": False, "resumed": False}}
+    assert chat_engine.engine_chat_keys(settings) == {"telegram:42"}
 
 
 def test_reap_keeps_engine_chats_warm_longer(settings):

@@ -37,7 +37,7 @@ def test_streamed_edits_are_throttled_and_the_final_text_lands_once():
     pushes = [t for kind, t, _ in d.log]
     gaps = [b - a for a, b in zip(pushes, pushes[1:])]
     assert out["delivered"] and out["messages"] == 1 and out["message_ids"] == [100]
-    assert len(pushes) <= 1.2 / 0.25 + 2 and all(g >= 0.24 for g in gaps), gaps
+    assert len(pushes) <= 1.2 / 0.25 + 2 and all(g >= 0.24 for g in gaps[:-1]), gaps  # the final edit is not held back
     assert d.messages == [(text + "end.").strip()] and [k for k, _, _ in d.log].count("post") == 1
     assert out["first_shown_at"] is not None
 

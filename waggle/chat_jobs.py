@@ -82,11 +82,13 @@ def reap(payload=None):
     from waggle import chat_engine, chat_store
     wanted = chat_engine.engine_chats()
     keep = {r["chat"] for r in chat_store.chats_with_address() if r.get("address") in wanted}
+    keep |= chat_engine.engine_chat_keys()  # also an engine chat that has no row yet
     return {"stopped": chat_engine.pool().reap(keep=keep)}
 
 
 def prewarm(payload=None):
-    """Start the processes of the engine chats the user wrote in during the last 24 hours."""
+    """Start the processes of every engine chat (the owner's, with or without a row yet) and of the chats the user
+    wrote in during the last 24 hours."""
     from waggle import chat_engine
     return {"warmed": chat_engine.prewarm()}
 
