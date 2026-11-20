@@ -1,12 +1,13 @@
 """Job kinds and a fake transport that the core process tests load into a real core through
 WAGGLE_CORE_PLUGINS. Every effect is appended to a file in the (temporary) Waggle home so the tests can count
 how often something ran. No tests live here."""
+import json
 import os
 import time
 from pathlib import Path
 
 import waggle.config as config
-from waggle.core import jobs, sender
+from waggle.core import inbound, jobs, sender
 
 
 def _log(name, line):
@@ -58,6 +59,21 @@ def transport(row):
     return f"fake-{row['id']}"
 
 
+def turn(msg):
+    """Inbound handler. Text drives it: "sleep:<s> ..." sleeps, "die-once" hangs on attempt 1 (the test kills the
+    core there), "die-always" hangs on every attempt, "raise" fails."""
+    text = msg["text"]
+    record = {"chat": msg["chat"], "text": text, "attempt": msg["attempt"], "turn_id": msg["turn_id"]}
+    _log("turns.log", json.dumps({**record, "event": "start", "t": time.time()}))
+    if text.startswith("sleep:"):
+        time.sleep(float(text.split()[0].split(":")[1]))
+    if text == "die-always" or (text == "die-once" and msg["attempt"] == 1):
+        time.sleep(300)
+    if text == "raise":
+        raise RuntimeError("handler broke on purpose")
+    _log("turns.log", json.dumps({**record, "event": "end", "t": time.time()}))
+
+
 def register_core():
     jobs.register("t.echo", echo)
     jobs.register("t.slow", slow_first, with_job=True, lease_s=5)
@@ -65,3 +81,4 @@ def register_core():
     jobs.register("t.hang", hang, timeout_s=1)
     jobs.register("t.dhang", hang, detached=True, timeout_s=2, max_attempts=1)
     sender.register("text", transport)
+    inbound.register(turn)

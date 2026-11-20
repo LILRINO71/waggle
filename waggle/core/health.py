@@ -12,6 +12,7 @@ import json
 import logging
 import secrets
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -24,18 +25,28 @@ TURN_FIELDS = {"chat": (str, int), "address": (str, int), "text": (str,), "kind"
                "origin": (str,), "dedupe_key": (str, int)}
 
 
-def token():
-    """The bearer token, generated on first use into the Waggle home."""
+def token(create=True):
+    """The bearer token in the Waggle home. Only the core creates it (atomically, so two starters never end up
+    with different tokens); clients pass create=False and get None before any core has run."""
     p = settings.path("core.token")
-    try:
-        existing = p.read_text(encoding="ascii").strip()
-    except OSError:
-        existing = ""
-    if existing:
-        return existing
-    value = secrets.token_urlsafe(32)
-    p.write_text(value, encoding="ascii")
-    return value
+    for _ in range(50):
+        try:
+            existing = p.read_text(encoding="ascii").strip()
+        except FileNotFoundError:
+            existing = None
+        if existing:
+            return existing
+        if existing is None:
+            if not create:
+                return None
+            try:
+                with open(p, "x", encoding="ascii") as f:
+                    f.write(secrets.token_urlsafe(32))
+            except FileExistsError:
+                pass
+            continue
+        time.sleep(0.01)  # another process has created the file and is writing it
+    raise RuntimeError("core.token exists but stays empty")
 
 
 def _json_meta(key):
@@ -233,8 +244,9 @@ def fetch(path="/health", port=None, timeout=3.0, auth=True, body=None):
     data = None if body is None else json.dumps(body).encode("utf-8")
     req = urllib.request.Request(f"http://127.0.0.1:{port or settings.port()}{path}", data=data,
                                  headers={"Content-Type": "application/json"} if data else {})
-    if auth:
-        req.add_header("Authorization", f"Bearer {token()}")
+    secret = token(create=False) if auth else None
+    if secret:
+        req.add_header("Authorization", f"Bearer {secret}")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, json.loads(r.read().decode("utf-8"))
