@@ -5,10 +5,12 @@ when you ask ("call me in ten minutes", "call me at 7 tomorrow"). The message is
 webhook or public server is needed: the script travels inline with the call.
 
 Honest status: provisioned() asks Twilio (read-only) whether a call can really be placed: the account answers, it
-owns the From number, and on a trial account your own number is a verified caller ID. The answer is cached.
-configured() is that answer, so "four strings in a file" never reads as ready. Whether calls have actually worked
-end to end comes from the evidence record in notify (a call Twilio reports as completed). When a call is wanted
-but impossible, notify sends an urgent push plus a voice note instead.
+owns the From number, and on a trial account your own number is a verified caller ID. The answer is cached in
+runtime.db and recorded in the capability ledger as "call.provisioned", a weaker fact than "call". configured() is
+that answer, so "four strings in a file" never reads as ready. Whether calls have actually worked end to end is the
+ledger entry "call", recorded only when Twilio reports a placed call as completed (check_pending). Calls are placed
+by call_sender, the core sender's transport for outbox rows of kind "call"; when a call is wanted but impossible it
+queues an urgent push plus a text instead, and a call that would ring too late becomes a text that says so.
 
 Credentials live in ~/.waggle/twilio.env, which you fill in yourself (Setup Calls.bat walks you through it):
     TWILIO_ACCOUNT_SID=AC...
@@ -68,19 +70,18 @@ def _get(c, path, opener=None):
         return json.loads(r.read())
 
 
-def _status_file():
-    return data_path("call_status.json")
+STATUS_META = "outreach.call_status"  # the provider-check cache and the placed calls still to look up
 
 
 def _load_status():
-    try:
-        return json.loads(_status_file().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
+    from waggle.core import store
+    st = store.loads(store.get_meta(STATUS_META))
+    return st if isinstance(st, dict) else {}
 
 
 def _save_status(st):
-    _status_file().write_text(json.dumps(st, indent=1), encoding="utf-8")
+    from waggle.core import store
+    store.set_meta(STATUS_META, store.dumps(st))
 
 
 def check_twilio(c, opener=None):
@@ -130,14 +131,20 @@ def provisioned(refresh=False, opener=None, now=None):
             now - cached.get("checked", 0) < (CACHE_OK_S if cached.get("ready") else CACHE_BAD_S):
         return cached
     res = {**check_twilio(c, opener), "checked": now, "key": key}
+    st = _load_status()
     st["provisioned"] = res
     _save_status(st)
     events.log("call_status", ready=res["ready"], missing=res["missing"][:160])
+    if not res.get("transient"):
+        from . import notify  # a weaker fact than "call": it never makes calls ready
+        notify.record_evidence("call.provisioned", res["ready"], "Twilio read-only account check",
+                               ref=res["missing"][:120], ttl_s=CACHE_OK_S, now=now)
     return res
 
 
 def configured():
-    """True only when Twilio says a call can be placed (cached). See provisioned() for the missing step."""
+    """True only when Twilio says a call can be placed (cached): the provider fact "call.provisioned". It decides
+    whether to try a call at all; whether calls work is notify.readiness("call"), from completed calls only."""
     try:
         return bool(provisioned()["ready"])
     except Exception:  # noqa: BLE001

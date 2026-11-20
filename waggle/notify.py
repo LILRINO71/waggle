@@ -183,65 +183,75 @@ def push_sender(row, *, settings=None, post=None):
     return mid
 
 
-# ---- evidence ----------------------------------------------------------------------------------------
+# ---- evidence (waggle.core.ledger) ---------------------------------------------------------------------
 
-def _evidence_path():
-    return data_path("channel_evidence.json")
-
-
-def _load_evidence():
-    try:
-        return json.loads(_evidence_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
+# How long one end-to-end success keeps a channel ready (the ledger's ttl).
+CHANNEL_TTL_S = {"telegram_text": 2 * 86400, "telegram_voice": 7 * 86400, "telegram_file": 7 * 86400,
+                 "ntfy": 30 * 86400, "call": 30 * 86400}
+NAMES = {"telegram_text": "Telegram text", "telegram_voice": "Telegram voice note", "ntfy": "Urgent push (ntfy)",
+         "call": "Phone call"}
 
 
-def record_evidence(channel, ok, how, ref="", level="delivered", now=None):
-    """level: delivered (the provider confirmed delivery to the user's own chat/phone) or confirmed (the user
-    answered or said they got it)."""
-    ev = _load_evidence()
-    row = ev.setdefault(channel, {})
-    stamp = {"time": now or time.time(), "how": str(how)[:200], "ref": str(ref)[:80]}
-    if ok:
-        row["last_success"] = {**stamp, "level": level}
-        if level == "confirmed":
-            row["last_confirmed"] = stamp
-    else:
-        row["last_failure"] = stamp
-    _evidence_path().write_text(json.dumps(ev, indent=1), encoding="utf-8")
-    return row
+def ledger_name(channel, ok=True, level="delivered"):
+    """The ledger entry a record goes to. A delivery-level success on a channel that needs the user's confirmation
+    is only the weaker fact "<channel>.accepted"; it never makes the channel itself ready."""
+    if ok and level != "confirmed" and channel in NEEDS_CONFIRMATION:
+        return f"{channel}.accepted"
+    return channel
+
+
+def record_evidence(channel, ok, how, ref="", level="delivered", now=None, ttl_s=None):
+    """Record one check of a channel in the capability ledger. level: delivered (the provider confirmed delivery
+    to the user's own chat/phone, with its message id) or confirmed (the user answered or said they got it).
+    Returns the ledger name it was recorded under."""
+    from waggle.core import ledger
+    name = ledger_name(channel, ok, level)
+    how = " ".join(str(how or "").split())[:200] or ("ok" if ok else "failed")
+    ledger.record(name, bool(ok), method=how, evidence_ref=str(ref or "")[:200], detail=how, now=now,
+                  ttl_s=ttl_s if ttl_s is not None else CHANNEL_TTL_S.get(channel))
+    return name
 
 
 def confirm_channel(channel, how="the user said they received it", now=None):
     return record_evidence(channel, True, how, level="confirmed", now=now)
 
 
+def _when(ts):
+    return time.strftime("%m-%d %H:%M", time.localtime(ts))
+
+
+def _ledger_row(name, now=None):
+    from waggle.core import ledger
+    return next((r for r in ledger.status(now) if r["name"] == name), None)
+
+
 def readiness(channel, now=None):
-    """{"state": verified | failing | not verified, "line": ..., "last_success": ..., "last_failure": ...}."""
-    row = _load_evidence().get(channel, {})
-    ok, bad, conf = row.get("last_success"), row.get("last_failure"), row.get("last_confirmed")
-    proof = conf if channel in NEEDS_CONFIRMATION else ok
-    when = lambda r: time.strftime("%m-%d %H:%M", time.localtime(r["time"]))  # noqa: E731
-    if proof and (not bad or proof["time"] >= bad["time"]):
-        state, line = "verified", f"verified {when(proof)}: {proof['how']}"
-    elif bad and (not proof or bad["time"] > proof["time"]):
-        state, line = "failing", f"failing since {when(bad)}: {bad['how']}"
-    elif ok and channel in NEEDS_CONFIRMATION:
-        state, line = "not verified", f"sent {when(ok)} but nobody has confirmed it arrived on the phone"
+    """{"channel", "state": verified | failing | not verified, "ready", "line"}, from the ledger only: verified
+    means a recorded end-to-end success within its time limit and no failure after it."""
+    row = _ledger_row(channel, now)
+    ok_at = row and row["verified_at"]
+    bad_at = row and row["last_failure_at"]
+    if row and row["ready"]:
+        state, line = "verified", f"verified {_when(ok_at)}: {row['method']}"
+    elif bad_at and (not ok_at or bad_at >= ok_at):
+        state, line = "failing", f"failing since {_when(bad_at)}: {row['last_failure']}"
+    elif ok_at:
+        state, line = "not verified", f"last verified {_when(ok_at)}, longer ago than its time limit"
     else:
         state, line = "not verified", "never delivered end to end"
-    return {"channel": channel, "state": state, "line": line, "last_success": ok, "last_failure": bad,
-            "last_confirmed": conf}
+        weak = _ledger_row(ledger_name(channel, True, "delivered"), now) if channel in NEEDS_CONFIRMATION else None
+        if weak and weak["verified_at"]:
+            line = f"sent {_when(weak['verified_at'])} but nobody has confirmed it arrived on the phone"
+    return {"channel": channel, "state": state, "ready": state == "verified", "line": line}
 
 
 def readiness_lines():
-    """One line per channel for `waggle doctor` and the HQ note."""
-    names = {"telegram_text": "Telegram text", "telegram_voice": "Telegram voice note", "ntfy": "Urgent push (ntfy)",
-             "call": "Phone call"}
+    """One line per channel for `waggle doctor` and the HQ note. For calls, the provider check is a separate,
+    weaker fact: it can say a call is impossible, never that calls work."""
     out = []
     for ch in CHANNELS:
         r = readiness(ch)
-        line = f"{names[ch]}: {r['state']} ({r['line']})"
+        line = f"{NAMES[ch]}: {r['state']} ({r['line']})"
         if ch == "call":
             try:
                 from . import call

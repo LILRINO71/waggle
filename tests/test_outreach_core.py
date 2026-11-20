@@ -173,3 +173,42 @@ def test_late_call_becomes_a_text_that_says_so(s, twilio):
     assert e.value.permanent and twilio["posts"] == 0
     late = rows()[1]
     assert late["kind"] == "text" and "late: the PC was off" in late["body"] and "07:00" in late["body"]
+
+
+# ---- readiness only from evidence ----------------------------------------------------------------------------
+
+def test_readiness_is_the_ledger(s):
+    from waggle.core import ledger
+    assert notify.readiness("telegram_text") == {"channel": "telegram_text", "state": "not verified", "ready": False,
+                                                 "line": "never delivered end to end"}
+    notify.record_evidence("telegram_text", True, "message id 42 in the user's chat", ref="tg:42", now=at(10))
+    assert ledger.ready("telegram_text", now=at(11)) and notify.readiness("telegram_text", now=at(11))["ready"]
+    assert not notify.readiness("telegram_text", now=at(10) + 3 * 86400)["ready"]  # older than its time limit
+    notify.record_evidence("telegram_text", False, "HTTP 502", now=at(12))
+    assert notify.readiness("telegram_text", now=at(13))["state"] == "failing"
+    assert notify.ledger_name("ntfy") == "ntfy.accepted"  # a post the server took is the weaker fact
+
+
+def test_a_provisioned_twilio_account_never_makes_calls_ready(s, tmp_path, monkeypatch):
+    from waggle.core import ledger
+    env = tmp_path / "t.env"
+    env.write_text("TWILIO_ACCOUNT_SID=AC1\nTWILIO_AUTH_TOKEN=x\nTWILIO_FROM=+15550001111\nTWILIO_TO=+15552223333\n")
+    monkeypatch.setattr(call, "env_path", lambda: env)
+
+    def opener(req, timeout):
+        url = req.full_url
+        if "IncomingPhoneNumbers" in url:
+            return Resp(json.dumps({"incoming_phone_numbers": [{"sid": "PN1"}]}).encode())
+        if "OutgoingCallerIds" in url:
+            return Resp(json.dumps({"outgoing_caller_ids": [{"sid": "CI1"}]}).encode())
+        if "/Calls/" in url:
+            return Resp(json.dumps({"status": "completed", "duration": "14"}).encode())
+        return Resp(json.dumps({"status": "active", "type": "Trial"}).encode())
+    assert call.provisioned(refresh=True, opener=opener)["ready"] and call.configured()
+    assert ledger.ready("call.provisioned") and not ledger.ready("call")
+    assert notify.readiness("call")["state"] == "not verified"
+    st = call._load_status()
+    st["pending"] = [{"sid": "CA9", "time": at(12)}]
+    call._save_status(st)
+    assert call.check_pending(opener=opener) == [("CA9", "completed")]
+    assert notify.readiness("call")["state"] == "verified" and "completed" in notify.readiness("call")["line"]
