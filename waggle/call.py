@@ -199,7 +199,8 @@ def place(message, reason="manual", settings=None, opener=None):
                 detail = json.loads(e.read()).get("message", "")
             except Exception:  # noqa: BLE001
                 detail = ""
-            out = {"ok": False, "why": f"Twilio error {e.code}: {detail}"[:200]}
+            out = {"ok": False, "why": f"Twilio error {e.code}: {detail}"[:200], "code": e.code,
+                   "permanent": 400 <= e.code < 500 and e.code != 429}
         except Exception as e:  # noqa: BLE001
             out = {"ok": False, "why": f"call failed: {e}"[:200]}
     with open(data_path("calls.jsonl"), "a", encoding="utf-8") as f:
@@ -226,6 +227,57 @@ def call(message, reason="manual", settings=None, force=False, opener=None):
     ok = row["status"] == "queued"
     return {"ok": ok, "why": "queued: the core places the call" if ok else f"call not queued ({row['status']})",
             "outbox": row["id"]}
+
+
+CALL_MAX_LATE_S = 15 * 60  # a call that could not ring within this long becomes a text: the moment has passed
+CALL_MAX_ATTEMPTS = 3
+
+
+def _fallback(row, why, *, late=False):
+    """A call was wanted but cannot ring. Late (the PC was off): a text that says so. Otherwise: an urgent push
+    plus a text. Idempotent per outbox row, so a retried sender never doubles them."""
+    from . import notify
+    text = row.get("body") or ""
+    meta = row.get("meta") or {}
+    origin, chat, rid = row.get("origin") or "call", row.get("chat") or "", row.get("id")
+    kw = dict(origin=origin, chat=chat, topic=meta.get("topic", ""), decision_id=meta.get("decision_id"))
+    if late:
+        at = dt.datetime.fromtimestamp(meta.get("scheduled_ts") or row.get("created") or time.time())
+        return [notify.deliver("text", f"📞 late: the PC was off, so I didn't call at {at:%H:%M}. {text}".strip(),
+                               asked=True, ref=f"callfb:{rid}:late", **kw)]
+    return [notify.deliver("push", text, title="Waggle tried to call you", urgent=True, ref=f"callfb:{rid}:push",
+                           **kw),
+            notify.deliver("text", f"📞 Call not possible ({why[:120]}). {text}".strip(), urgent=True,
+                           ref=f"callfb:{rid}:text", **kw)]
+
+
+def call_sender(row, *, opener=None, now=None):
+    """The core sender's transport for kind "call": returns Twilio's call sid or raises notify.SendError.
+
+    Too late (more than CALL_MAX_LATE_S after it was due) -> a text saying so, no ring. Not provisioned -> an
+    urgent push + text instead. A refused request, or the last attempt failing -> the same fallback. A placed call
+    is only the fact "call.placed"; "call" becomes ready when Twilio later reports the call completed
+    (check_pending)."""
+    from . import notify
+    now = time.time() if now is None else float(now)
+    meta = row.get("meta") or {}
+    due = meta.get("scheduled_ts") or row.get("created") or now
+    if now - due > CALL_MAX_LATE_S:
+        _fallback(row, "too late", late=True)
+        raise notify.SendError(f"call {int((now - due) / 60)} min late: sent as a text instead", permanent=True)
+    p = provisioned(opener=opener, now=now)
+    if not p["ready"]:
+        _fallback(row, p["missing"])
+        raise notify.SendError(f"calls not possible: {p['missing']}"[:300], permanent=True)
+    res = place(row.get("body") or "", reason=row.get("origin") or "call", opener=opener)
+    if res["ok"] and res.get("sid"):
+        notify.record_evidence("call.placed", True, "Twilio accepted the call request", ref=res["sid"], now=now)
+        return res["sid"]
+    notify.record_evidence("call", False, res["why"], ref=f"outbox:{row.get('id')}", now=now)
+    if res.get("permanent") or (row.get("attempts") or 1) >= CALL_MAX_ATTEMPTS:
+        _fallback(row, res["why"])
+        raise notify.SendError(res["why"], permanent=True)
+    raise notify.SendError(res["why"], retry_after=30)
 
 
 def check_pending(opener=None, now=None):

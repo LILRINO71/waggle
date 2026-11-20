@@ -212,6 +212,24 @@ def tick(now=None, settings=None, *, asker=None, gh=None, steps=None, compose_br
     return report
 
 
+def register_core(now=None):
+    """Called once by the core process at start: registers this module's transports with the core sender.
+    Safe to call at every start. Returns what was registered."""
+    import importlib
+    from . import call, notify
+    report = {"senders": []}
+    try:
+        sender = importlib.import_module("waggle.core.sender")
+    except ImportError as e:
+        report["sender_error"] = f"waggle.core.sender not available: {e}"
+        events.log("outreach_register", error=report["sender_error"])
+    else:
+        sender.register("push", notify.push_sender)
+        sender.register("call", call.call_sender)
+        report["senders"] = ["push", "call"]
+    return report
+
+
 def main(argv=None):
     """Cron entry point (thin): runs one tick, prints nothing (everything goes out through the outbox)."""
     from . import budget

@@ -136,6 +136,53 @@ def to_ntfy(text, title="Waggle", priority=5, tags=("bee",), settings=None, post
         return False
 
 
+def ntfy_publish(text, *, title="Waggle", priority=3, tags=("bee",), settings=None, post=None):
+    """One ntfy post; returns ntfy's message id. Raises SendError: permanent for a refused request (4xx other than
+    429), with retry_after for 429, retryable for anything else. post(url, body) -> response dict, for tests."""
+    import urllib.error
+    import urllib.request
+    s = settings or Settings.load()
+    body = {"topic": ntfy_topic(s), "title": (title or "Waggle")[:120], "message": (text or "")[:3500],
+            "priority": int(priority), "tags": list(tags)}
+    try:
+        if post:
+            res = post(s.ntfy_server, body)
+        else:
+            req = urllib.request.Request(s.ntfy_server, data=json.dumps(body).encode("utf-8"),
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                res = json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            raise SendError("ntfy rate limit (HTTP 429)", retry_after=float(e.headers.get("Retry-After") or 60)) from e
+        raise SendError(f"ntfy refused the post (HTTP {e.code})", permanent=400 <= e.code < 500) from e
+    except SendError:
+        raise
+    except Exception as e:  # noqa: BLE001  (network down, timeout, bad JSON)
+        raise SendError(f"ntfy post failed: {type(e).__name__}: {e}"[:200]) from e
+    mid = (res or {}).get("id") if isinstance(res, dict) else None
+    if not mid:
+        raise SendError("ntfy answered without a message id")
+    return str(mid)
+
+
+def push_sender(row, *, settings=None, post=None):
+    """The core sender's transport for kind "push": returns ntfy's message id or raises SendError. A post ntfy
+    accepted is recorded as the weaker fact "ntfy.accepted" (the phone may not be subscribed); only the user's
+    confirmation makes the "ntfy" channel ready."""
+    meta = row.get("meta") or {}
+    urgent = bool(meta.get("urgent"))
+    ref = f"outbox:{row.get('id')}"
+    try:
+        mid = ntfy_publish(row.get("body") or "", title=meta.get("title") or "Waggle", priority=5 if urgent else 3,
+                           tags=("rotating_light",) if urgent else ("bee",), settings=settings, post=post)
+    except SendError as e:
+        record_evidence("ntfy", False, f"push failed: {e}", ref=ref)
+        raise
+    record_evidence("ntfy", True, "the ntfy server accepted the post", ref=f"{ref} ntfy:{mid}")
+    return mid
+
+
 # ---- evidence ----------------------------------------------------------------------------------------
 
 def _evidence_path():
