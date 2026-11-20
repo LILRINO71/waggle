@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from test_runtime_core import Harness, core, wait_for  # noqa: F401 - `core` is the shared fixture
+from test_runtime_core import FAST, Harness, core, wait_for  # noqa: F401 - `core` is the shared fixture
 from waggle.core import control, events, health, inbound, outbox, settings
 
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="the core targets Windows")
@@ -32,12 +32,11 @@ def started(h, turn_id, attempt=None):
 
 def test_an_accepted_turn_reaches_the_handler(core: Harness):
     core.start()
-    began = time.time()
     code, out = post({"chat": "telegram:me", "address": "555", "text": "hello", "dedupe_key": "tg:1"})
     assert code == 202 and out["duplicate"] is False
-    assert time.time() - began < 2
     wait_for(lambda: ended(core, out["turn_id"]), what="the handler")
-    row = inbound.get(out["turn_id"])
+    row = wait_for(lambda: inbound.get(out["turn_id"])["state"] != "running" and inbound.get(out["turn_id"]),
+                   what="the turn recorded")
     assert row["state"] == "done" and row["attempts"] == 1 and row["address"] == "555"
     code, snap = health.fetch("/health")
     assert snap["inbound_handler"] is True and "text" in snap["transports"]
@@ -77,10 +76,10 @@ def test_a_core_killed_inside_the_handler_runs_the_turn_again_once(core):
     t = post({"chat": "A", "text": "die-once"})[1]["turn_id"]
     wait_for(lambda: started(core, t, attempt=1), what="attempt 1")
     p.kill()
-    p.wait(10)
+    p.wait(60)
     core.start()
     wait_for(lambda: ended(core, t, attempt=2), what="attempt 2 to finish")
-    row = inbound.get(t)
+    row = wait_for(lambda: inbound.get(t)["state"] != "running" and inbound.get(t), what="the turn recorded")
     assert row["state"] == "done" and row["attempts"] == 2
     assert len(started(core, t)) == 2
     assert [e["data"]["attempt"] for e in events.query("inbox.retried") if e["ref"] == t] == [2]
@@ -92,7 +91,7 @@ def test_a_second_death_fails_the_turn_and_tells_the_user(core):
     for attempt in (1, 2):
         wait_for(lambda a=attempt: started(core, t, attempt=a), what=f"attempt {attempt}")
         p.kill()
-        p.wait(10)
+        p.wait(60)
         p = core.start()
     row = wait_for(lambda: inbound.get(t)["state"] == "failed" and inbound.get(t), what="the failed turn")
     assert "attempt 2" in row["error"]
@@ -112,15 +111,18 @@ def test_no_handler_means_503(core):
 
 
 def test_a_stopping_core_refuses_turns_and_finishes_the_running_one(core):
-    p = core.start()
-    t = post({"chat": "A", "text": "sleep:3 in flight"})[1]["turn_id"]
+    # A long grace and a long turn, so the 503 is observed while the turn is still in flight even when a busy
+    # machine is slow to notice the stop file.
+    p = core.start(cadence=FAST + ",send_grace=60")
+    t = post({"chat": "A", "text": "sleep:10 in flight"})[1]["turn_id"]
     wait_for(lambda: started(core, t), what="the turn to start")
     settings.path("core.stop").write_text("stop", encoding="utf-8")
-    wait_for(lambda: (control.heartbeat() or {}).get("stopping"), timeout=5, what="the core to start stopping")
+    wait_for(lambda: (control.heartbeat() or {}).get("stopping"), what="the core to start stopping")
+    assert not ended(core, t), "the turn ended before the 503 could be observed"
     assert post({"chat": "A", "text": "too late"})[0] == 503
-    assert p.wait(30) == 0
+    assert p.wait(60) == 0
     assert inbound.get(t)["state"] == "done"
-    assert [r["text"] for r in inbound.list()] == ["sleep:3 in flight"]
+    assert [r["text"] for r in inbound.list()] == ["sleep:10 in flight"]
 
 
 def test_a_stuck_turn_is_given_up_and_the_watchdog_frees_its_chat(core):

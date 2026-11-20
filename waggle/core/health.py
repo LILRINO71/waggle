@@ -104,7 +104,9 @@ def snapshot(loops=None, now=None):
     loop_out = {}
     for name, info in loop_table.items():
         age = now - info["last"] if info.get("last") else None
-        limit = max(3 * info.get("cadence", cadence.poll), 30.0)
+        # A pass may legitimately wait out SQLite's 15 s busy timeout on a loaded machine; 60 s still flags a
+        # stalled loop well within the watchdog's 2 minutes.
+        limit = max(3 * info.get("cadence", cadence.poll), 60.0)
         loop_out[name] = {"age_s": age, "cadence_s": info.get("cadence"),
                           "busy": bool(info.get("busy")),
                           "alive": bool(info.get("alive", True)) and (bool(info.get("busy")) or
