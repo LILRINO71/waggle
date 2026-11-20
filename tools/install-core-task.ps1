@@ -6,7 +6,7 @@
   "Waggle Core"           at logon of the current user: pythonw -m waggle.core run
                           restart on failure every 1 minute, 999 times; never a second instance; no time limit.
   "Waggle Core Watchdog"  every minute (and at logon): pythonw -m waggle.core watch
-                          starts the core when it is down, restarts it when its heartbeat is over 75 s old or it
+                          starts the core when it is down, restarts it when its heartbeat is over 50 s old or it
                           asked for a restart.
   Both run in the checkout this script lives in. -WhatIf prints what would be registered and changes nothing.
 

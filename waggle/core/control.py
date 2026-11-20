@@ -19,7 +19,7 @@ from waggle.core.settings import REPO
 TASK_NAME = "Waggle Core"
 STOP_TIMEOUT_S = 20.0
 START_TIMEOUT_S = 20.0
-WATCH_STALE_S = 75.0  # five missed 15 s heartbeats; with a 1-minute watchdog a hang is restarted in ~2 min
+WATCH_STALE_S = 50.0  # three missed 15 s heartbeats; with a 1-minute watchdog a hang is replaced within 2 min
 STALE_STOP_S = 5.0  # a core whose heartbeat stopped rarely sees the stop file; kill it soon
 
 

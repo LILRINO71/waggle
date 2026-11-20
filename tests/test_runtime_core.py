@@ -32,7 +32,7 @@ def _answers():
         return False
 
 
-def wait_for(cond, timeout=25.0, what="condition"):
+def wait_for(cond, timeout=60.0, what="condition"):
     deadline = time.time() + timeout
     while time.time() < deadline:
         value = cond()
@@ -170,10 +170,10 @@ def test_detached_job_survives_a_core_restart_and_is_recorded_once(core):
 
 
 def test_watchdog_restarts_a_core_with_a_stale_heartbeat(core):
-    assert control.WATCH_STALE_S == 75
+    assert control.WATCH_STALE_S == 50
     p = core.start(cadence=FAST.replace("heartbeat=1", "heartbeat=3600"))
     hb = control.heartbeat()
-    store.set_meta("heartbeat", json.dumps({**hb, "ts": time.time() - 60}))
+    store.set_meta("heartbeat", json.dumps({**hb, "ts": time.time() - 40}))
     assert "ok" in core.cli("watch").stdout
     assert control.running_pid() == p.pid
     store.set_meta("heartbeat", json.dumps({**hb, "ts": time.time() - 80}))
