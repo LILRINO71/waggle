@@ -36,7 +36,7 @@ def fingerprint(f):
 
 def _git(repo, *args):
     r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=20,
-                       encoding="utf-8", errors="replace")
+                       encoding="utf-8", errors="replace", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     return r.stdout.strip() if r.returncode == 0 else None
 
 

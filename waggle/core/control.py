@@ -1,15 +1,24 @@
 """Controlling the core from outside: start, stop, restart, status and the watchdog.
 
-The watchdog runs every minute, so its routine pass stays cheap: it reads core.pid, checks the process and
-reads the heartbeat from runtime.db; no git call, no plug-ins, no HTTP request.
+The watchdog is one long-lived process (`python -m waggle.core watch --loop`, started at logon) that passes every
+10 s and otherwise sleeps, so nothing starts every minute: a process start is a chance for the user to see or feel
+something (a window, the busy cursor, a focus change). Its routine pass stays cheap: it reads core.pid, checks the
+process and reads the heartbeat from runtime.db; no git call, no plug-ins, no HTTP request. It holds
+watchdog.lock (never two watchdogs), writes watchdog.json after every pass, stops when watchdog.stop appears, and
+exits non-zero if one pass takes over 2 minutes so Task Scheduler restarts it (the task also repeats every 15
+minutes as a backstop; a second instance is ignored by the task and refused by the lock). `watch` alone is one
+pass, as before.
 
 The core is identified by core.pid (pid plus process creation time) and its single-instance lock; it is asked
 to stop by creating core.stop in the Waggle home, which works for a windowless pythonw process. Starting
 goes through the "Waggle Core" scheduled task when it is installed and the default home is in use, so Task
 Scheduler keeps supervising it; otherwise the core is started as a detached process."""
 import json
+import logging
+import logging.handlers
 import os
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -21,6 +30,11 @@ STOP_TIMEOUT_S = 20.0
 START_TIMEOUT_S = 20.0
 WATCH_STALE_S = 50.0  # three missed 15 s heartbeats; with a 1-minute watchdog a hang is replaced within 2 min
 STALE_STOP_S = 5.0  # a core whose heartbeat stopped rarely sees the stop file; kill it soon
+WATCH_EVERY_S = 10.0  # the long-lived watchdog's pass interval: a hang is replaced about 60-85 s after it starts
+WATCHDOG_STALL_S = 120.0  # a watchdog pass that takes longer ends the watchdog (Task Scheduler restarts it)
+EXIT_ALREADY_RUNNING = 3
+
+log = logging.getLogger("waggle.core.watchdog")
 
 
 def core_info():
@@ -114,9 +128,20 @@ def restart():
 
 
 def watch(stale_s=WATCH_STALE_S, now=None):
-    """The watchdog pass, safe to run every minute forever: start the core when it is not running, restart it
-    when its heartbeat is stale or it asked for a restart. Never starts a second core (start() checks the
-    running core and the core's own lock refuses a second instance). Returns what it did."""
+    """One watchdog pass: start the core when it is not running, restart it when its heartbeat is stale or it
+    asked for a restart. Never starts a second core (start() checks the running core and the core's own lock
+    refuses a second instance), and two passes never overlap (watch.lock; the second returns "busy").
+    Returns what it did."""
+    gate = procs.InstanceLock(settings.path("watch.lock"))
+    if not gate.acquire():
+        return "busy"
+    try:
+        return _watch_pass(stale_s, now)
+    finally:
+        gate.release()
+
+
+def _watch_pass(stale_s, now):
     now = store.now_or(now)
     info = core_info() or {}
     pid = running_pid()
@@ -146,6 +171,127 @@ def watch(stale_s=WATCH_STALE_S, now=None):
     events.emit("core.restarted_by_watchdog", source="watchdog",
                 data={"reason": reason, "old_pid": pid, "new_pid": new})
     return "restarted"
+
+
+# ---- the long-lived watchdog ------------------------------------------------------------------------------
+
+def watchdog_info():
+    try:
+        return json.loads(settings.path("watchdog.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def watchdog_running():
+    """The pid of the running long-lived watchdog, or None (it holds watchdog.lock and records itself)."""
+    info = watchdog_info()
+    if info and procs.same_process(info.get("pid"), info.get("ctime")) and procs.lock_held(
+            settings.path("watchdog.lock")):
+        return int(info["pid"])
+    return None
+
+
+def _write_beat(started, last):
+    path = settings.path("watchdog.json")
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"pid": os.getpid(), "ctime": procs.own_ctime(), "started": started,
+                               "ts": time.time(), "last": last, "interval_s": WATCH_EVERY_S}), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _log_to_file():
+    if any(getattr(h, "_waggle_watchdog", False) for h in log.handlers):
+        return
+    handler = logging.handlers.RotatingFileHandler(settings.path("watchdog.log"), maxBytes=200_000, backupCount=2,
+                                                   encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(process)d %(levelname)s %(message)s"))
+    handler._waggle_watchdog = True
+    log.addHandler(handler)
+    log.setLevel(logging.INFO)
+
+
+def watch_loop(interval_s=WATCH_EVERY_S, stale_s=WATCH_STALE_S, stall_s=WATCHDOG_STALL_S, sleep=time.sleep,
+               max_passes=None, exit_fn=os._exit):
+    """Run watch() every `interval_s` until watchdog.stop appears. Returns 0, or EXIT_ALREADY_RUNNING when
+    another watchdog holds the lock. `exit_fn(1)` ends the process when a pass (or the sleep) stalls for
+    `stall_s`; it is a parameter for tests."""
+    _log_to_file()
+    lock = procs.InstanceLock(settings.path("watchdog.lock"))
+    if not lock.acquire():
+        return EXIT_ALREADY_RUNNING
+    stop_file = settings.path("watchdog.stop")
+    try:
+        stop_file.unlink()
+    except FileNotFoundError:
+        pass
+    started = time.time()
+    progress = {"at": time.monotonic(), "done": False}
+
+    def stall_guard():
+        while not progress["done"]:
+            time.sleep(min(5.0, max(0.05, stall_s / 4)))
+            if not progress["done"] and time.monotonic() - progress["at"] > stall_s:
+                log.error("a watchdog pass stalled for over %s s; exiting so the task restarts it", stall_s)
+                exit_fn(1)
+                return
+
+    threading.Thread(target=stall_guard, name="watchdog-stall", daemon=True).start()
+    log.info("watchdog started (pid %s), pass every %s s", os.getpid(), interval_s)
+    passes = 0
+    try:
+        while not stop_file.exists():
+            progress["at"] = time.monotonic()
+            try:
+                result = watch(stale_s=stale_s)
+            except Exception as e:  # one bad pass must not end the watchdog
+                result = f"error: {type(e).__name__}: {e}"
+                log.exception("watch pass failed")
+            if result not in ("ok", "busy"):
+                log.info("pass: %s", result)
+            try:
+                _write_beat(started, result)
+            except OSError:
+                log.exception("could not write watchdog.json")
+            passes += 1
+            if max_passes is not None and passes >= max_passes:
+                break
+            waited = 0.0
+            while waited < interval_s and not stop_file.exists():
+                step = min(0.5, interval_s - waited)
+                sleep(step)
+                waited += step
+                progress["at"] = time.monotonic()
+    finally:
+        progress["done"] = True
+        for name in ("watchdog.stop", "watchdog.json"):
+            try:
+                settings.path(name).unlink()
+            except FileNotFoundError:
+                pass
+        lock.release()
+        log.info("watchdog stopped")
+    return 0
+
+
+def stop_watchdog(timeout_s=15.0):
+    """Ask the long-lived watchdog to stop (watchdog.stop); True when none runs afterwards."""
+    pid = watchdog_running()
+    if pid is None and not procs.lock_held(settings.path("watchdog.lock")):
+        return True
+    settings.path("watchdog.stop").write_text(str(time.time()), encoding="utf-8")
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if not procs.lock_held(settings.path("watchdog.lock")):
+            return True
+        time.sleep(0.2)
+    info = watchdog_info() or {}
+    if pid is not None and procs.kill_tree(pid, info.get("ctime")):
+        time.sleep(0.5)
+    try:
+        settings.path("watchdog.stop").unlink()
+    except FileNotFoundError:
+        pass
+    return not procs.lock_held(settings.path("watchdog.lock"))
 
 
 def status_text(snap):
@@ -199,4 +345,8 @@ def status():
         print(f"Waggle core: health endpoint answered {code}")
         return 1
     print(status_text(snap))
+    wd = watchdog_info()
+    wpid = watchdog_running()
+    print("watchdog: " + (f"running (pid {wpid}), last pass {time.time() - wd['ts']:.0f} s ago" if wpid and wd
+                          else "not running (one-shot passes only)"))
     return 0 if snap["healthy"] else 1

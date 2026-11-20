@@ -207,8 +207,8 @@ def test_install_script_whatif_registers_nothing_and_shows_the_plan():
     assert out.returncode == 0, out.stderr
     text = out.stdout
     for needle in ("Task:              Waggle Core\n", "Task:              Waggle Core Watchdog", "-m waggle.core run",
-                   "-m waggle.core watch", "RestartCount 999, RestartInterval 1 minute, MultipleInstances IgnoreNew",
-                   "interval PT1M, duration indefinite", str(script.parents[1]),
+                   "-m waggle.core watch --loop", "RestartCount 999, RestartInterval 1 minute, MultipleInstances IgnoreNew",
+                   "interval PT15M, duration indefinite", "no execution time limit", str(script.parents[1]),
                    'What if: Performing the operation "Register scheduled task" on target "Waggle Core".'):
         assert needle in text, needle
     assert "Registered:" not in text and "Started:" not in text

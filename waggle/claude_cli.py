@@ -97,7 +97,7 @@ def mcp_servers(claude=None, refresh=False):
     claude = claude or find_claude()
     try:
         out = subprocess.run([claude, "mcp", "list"], capture_output=True, text=True, timeout=90, env=clean_env(),
-                             encoding="utf-8", errors="replace").stdout
+                             encoding="utf-8", errors="replace", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
     except Exception:
         return []
     names = []
@@ -161,7 +161,8 @@ def ask(prompt, model="sonnet", system=None, schema=None, effort="medium", purpo
     try:
         with tempfile.TemporaryDirectory() as tmp:
             proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True, env=clean_env(),
-                                  encoding="utf-8", errors="replace", timeout=timeout, cwd=tmp)
+                                  encoding="utf-8", errors="replace", timeout=timeout, cwd=tmp,
+                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         out, err = (proc.stdout or "").strip(), (proc.stderr or "").strip()
         if "Not logged in" in out or "Not logged in" in err:
             kind = "auth"
@@ -399,7 +400,8 @@ def stream(prompt, model="sonnet", system=None, effort="low", purpose="stream", 
         with tempfile.TemporaryDirectory() as tmp:
             proc = (popen or subprocess.Popen)(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                                stderr=subprocess.PIPE, text=True, env=clean_env(), cwd=tmp,
-                                               encoding="utf-8", errors="replace")
+                                               encoding="utf-8", errors="replace",
+                                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             proc.stdin.write(prompt)
             proc.stdin.close()
             deadline = t0 + timeout
