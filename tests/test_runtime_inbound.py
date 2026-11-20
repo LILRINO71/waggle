@@ -294,3 +294,26 @@ def test_submit_directly_is_runnable_at_once_and_a_dead_accepter_cancels():
     assert inbound.recover()["cancelled"] == 1
     assert inbound.get(orphan)["state"] == "cancelled"
     assert inbound.confirm(orphan) is False and inbound.cancel(direct, "x") is False
+
+
+# ---- turn timeout --------------------------------------------------------------------------------------------------
+
+def test_give_up_fails_the_turn_and_tells_the_chat():
+    t = inbound.submit("telegram:me", "plan the whole season", address="555")["turn_id"]
+    inbound.claim_next("telegram:me")
+    assert inbound.give_up(t, 1250.0) is True
+    row = inbound.get(t)
+    assert row["state"] == "failed" and "1250" in row["error"]
+    reply = outbox.get_by_key(f"inbox-timeout:{t}")
+    assert reply["chat"] == "555" and "21 minutes" in reply["body"] and "plan the whole season" in reply["body"]
+    assert events.query("inbox.timed_out")[0]["data"]["outbox_id"] == reply["id"]
+    assert inbound.give_up(t, 1300.0) is False
+    inbound.finish(t)  # the stuck handler returning later changes nothing
+    assert inbound.get(t)["state"] == "failed"
+    assert inbound.recover()["retried"] == 0
+
+
+def test_timeout_text_wording():
+    assert "20 minutes" in inbound.timeout_text("x", 1200)
+    assert "1 minute " in inbound.timeout_text("x", 61)
+    assert "5 seconds" in inbound.timeout_text("", 5)

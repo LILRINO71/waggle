@@ -17,6 +17,10 @@ A row still `running` when its core died is run again once (attempt 2). If that 
 `failed`, an `inbox.lost` event is recorded and one honest text message is queued for that chat asking the
 user to send it again.
 
+A turn running longer than the turn timeout (settings.turn_timeout_s, 20 minutes) is given up: the row is
+`failed`, an `inbox.timed_out` event is recorded and one honest text tells the chat; the core then asks the
+watchdog for a restart, which frees the chat. A turn is never run more than twice.
+
 States: pending -> waiting | cancelled;  waiting -> running -> done | failed.
 """
 import os
@@ -27,6 +31,8 @@ from waggle.core import procs, store
 MAX_ATTEMPTS = 2
 LOST_TEXT = ("Sorry, I lost your message{quote} in a restart before I could answer it. "
              "Please send it again.")
+TIMEOUT_TEXT = ("Sorry, I got stuck on your message{quote} and stopped after {minutes} without an answer. "
+                "Please send it again if you still need it.")
 
 _handler = None
 _wake = threading.Event()
@@ -215,12 +221,41 @@ def recover(now=None):
     return counts
 
 
-def lost_text(text):
+def _quote(text):
     text = " ".join((text or "").split())
     if not text:
-        return LOST_TEXT.format(quote="")
-    quote = text if len(text) <= 60 else text[:57].rstrip() + "..."
-    return LOST_TEXT.format(quote=f' ("{quote}")')
+        return ""
+    return ' ("' + (text if len(text) <= 60 else text[:57].rstrip() + "...") + '")'
+
+
+def lost_text(text):
+    return LOST_TEXT.format(quote=_quote(text))
+
+
+def timeout_text(text, seconds):
+    minutes = round(seconds / 60)
+    span = f"{minutes} minute{'s' if minutes != 1 else ''}" if minutes >= 1 else f"{round(seconds)} seconds"
+    return TIMEOUT_TEXT.format(quote=_quote(text), minutes=span)
+
+
+def give_up(turn_id, running_s, now=None):
+    """End a turn that ran too long: `failed`, an event and one honest text to its chat. False if it is no
+    longer running."""
+    from waggle.core import outbox
+    now = store.now_or(now)
+    with store.transaction() as con:
+        row = con.execute("SELECT * FROM inbox WHERE turn_id=? AND state='running'", (turn_id,)).fetchone()
+        if row is None:
+            return False
+        error = f"no answer after {running_s:.0f} s; gave up"
+        con.execute("UPDATE inbox SET state='failed', error=?, finished=?, updated=? WHERE id=?",
+                    (error, now, now, row["id"]))
+        reply_id = outbox.enqueue("text", timeout_text(row["text"], running_s), chat=row["address"] or row["chat"],
+                                  idem_key=f"inbox-timeout:{turn_id}", priority=5, origin="inbound",
+                                  meta={"turn_id": turn_id, "chat_key": row["chat"]}, now=now)
+        store.insert_event(con, "inbox.timed_out", source="inbound", chat=row["chat"], ref=turn_id, now=now,
+                           data={"attempt": row["attempts"], "running_s": round(running_s, 1), "outbox_id": reply_id})
+        return True
 
 
 def get(turn_id):
