@@ -82,7 +82,7 @@ def test_upgrades_a_version_1_database(tmp_path):
     assert job["kind"] == "old" and job["detached"] == 0 and job["lease_s"] is None
     assert con.execute("SELECT body FROM outbox WHERE idem_key='o1'").fetchone()[0] == "hi"
     migrated = con.execute("SELECT data FROM events WHERE kind='schema.migrated'").fetchone()
-    assert store.loads(migrated[0]) == {"from": 1, "to": 2}
+    assert store.loads(migrated[0]) == {"from": 1, "to": store.SCHEMA_VERSION}
     with pytest.raises(sqlite3.DatabaseError):
         con.execute("UPDATE events SET kind='changed' WHERE id='e1'")
 
