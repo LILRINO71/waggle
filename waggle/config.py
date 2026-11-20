@@ -40,8 +40,8 @@ class Settings:
     # Share of the Pro limit Waggle may use, and the point where it stops escalating at all.
     waggle_share: float = 0.30
     stop_at: float = 0.85
-    # Starting guess for one 5-hour Pro window, in millions of weighted tokens (see quota.py).
-    # Only a guess: it is recalibrated every time the real limit is hit.
+    # The user's estimate of one 5-hour Pro window, in millions of weighted tokens (see quota.py). Waggle never
+    # writes it: what it learns from real limit hits lives in budget.db, kept within quota.ESTIMATE_BOUNDS of this.
     window_units_estimate: float = 6.0
     window_hours: float = 5.0
     # Background budget (waggle/budget.py): objectives, routines, proactive checks, brief, learning.
@@ -111,11 +111,28 @@ class Settings:
         if CONFIG_FILE.exists():
             data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
         known = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
-        return cls(**known)
+        s = cls(**known)
+        s._loaded = asdict(s)
+        return s
 
     def save(self):
+        """Write the settings this object changed (since it was loaded, or from the defaults when it was built in
+        code) into config.json as the file is now. Settings nobody changed, keys the file leaves out and keys this
+        version does not know stay exactly as they are: the tamper guard hashes the budget/limit keys, so a save that
+        only sets ntfy_topic must not rewrite them. A missing file is written in full, as a template to edit. The
+        write is atomic, so a reader never sees half a file."""
         HOME.mkdir(parents=True, exist_ok=True)
-        CONFIG_FILE.write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
+        now = asdict(self)
+        if CONFIG_FILE.exists():
+            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            base = getattr(self, "_loaded", None) or asdict(type(self)())
+            data.update({k: v for k, v in now.items() if k not in base or base[k] != v})
+        else:
+            data = now
+        tmp = CONFIG_FILE.with_name(f"{CONFIG_FILE.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        os.replace(tmp, CONFIG_FILE)
+        self._loaded = now
 
 
 def data_path(name):

@@ -93,6 +93,7 @@ def _db():
         purpose TEXT, model TEXT, units REAL, pid INTEGER);
     CREATE TABLE IF NOT EXISTS decisions (time REAL, objective TEXT, step INTEGER, action TEXT, model TEXT,
         reason TEXT);
+    CREATE TABLE IF NOT EXISTS learned (key TEXT PRIMARY KEY, value REAL, time REAL);
     """)
     return con
 
@@ -217,7 +218,7 @@ def check(model, purpose="", settings=None, now=None, window_used=None, con=None
             return False, "Claude limit reached", st["blocked_until"]
         if window_used is None:
             window_used = quota.window_usage(s.window_hours, now)
-        cap = s.window_units_estimate or 1
+        cap = quota.window_estimate(s, con)
         if window_used + cost > s.background_stop_at * cap:
             return (False, f"5-hour window at {window_used / cap:.0%}; background stops at "
                            f"{s.background_stop_at:.0%} so chat keeps the rest", now + 1800)

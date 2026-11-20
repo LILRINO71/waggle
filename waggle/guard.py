@@ -86,7 +86,10 @@ HOLDOUT_DIR, HOLDOUT_PREFIX = "eval", "holdout"
 # Under the user's home. install.py copies the Hermes plugin here, so this copy is the one that runs.
 USER_HOME_PATHS = ((".waggle-guard", "dir"), (".hermes/plugins/waggle/__init__.py", "file"))
 # Hashed but only some of these settings count: the budget/limit keys, plus the settings that decide where agents
-# may write without asking and whose mail needs no approval (policy.write_roots, policy._only_to_self).
+# may write without asking and whose mail needs no approval (policy.write_roots, policy._only_to_self). Only keys the
+# user sets belong here: Waggle's own code never writes any of them (Settings.save writes only what a caller changed;
+# the window size Waggle learns lives in budget.db, bounded by quota.py). tests/test_guard.py runs every code path
+# that writes config.json and checks the manifest stays clean.
 CONFIG_KEYS = (
     "waggle_share", "stop_at", "window_units_estimate", "window_hours",
     "background_daily_units", "background_stop_at", "background_max_workers", "background_reset_hour",
@@ -1003,16 +1006,40 @@ def _sha_file(path):
         return None
 
 
-def config_keys_hash(home=None):
-    """SHA-256 of the canonical JSON of only the protected keys, so unrelated settings may change freely.
-    A key that is absent counts as absent (adding "stop_at": 1.0 is a change)."""
+def _config_picked(home=None):
+    """The protected keys present in config.json, or None when it cannot be read as a JSON object."""
     p = Path(home or config.HOME) / "config.json"
     try:
         data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
-        picked = {k: data[k] for k in CONFIG_KEYS if k in data}
+        return {k: data[k] for k in CONFIG_KEYS if k in data}
     except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
+def _canon(v):
+    return json.dumps(v, sort_keys=True, separators=(",", ":"))
+
+
+def config_keys_hash(home=None):
+    """SHA-256 of the canonical JSON of only the protected keys, so unrelated settings may change freely.
+    A key that is absent counts as absent (adding "stop_at": 1.0 is a change)."""
+    picked = _config_picked(home)
+    if picked is None:
         return "unparseable"
-    return hashlib.sha256(json.dumps(picked, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return hashlib.sha256(_canon(picked).encode()).hexdigest()
+
+
+def config_key_hashes(home=None):
+    """{key: sha256} per protected key present, kept in the manifest only to say WHICH key changed."""
+    picked = _config_picked(home)
+    return None if picked is None else {k: hashlib.sha256(_canon(v).encode()).hexdigest() for k, v in picked.items()}
+
+
+def changed_config_keys(old, new):
+    """Names of the protected keys that differ between two config_key_hashes results (added, removed, changed)."""
+    if not isinstance(old, dict) or not isinstance(new, dict):
+        return ["config.json (could not be read)"] if new is None else []
+    return sorted(k for k in set(old) | set(new) if old.get(k) != new.get(k))
 
 
 def _holdout_files(home):
@@ -1122,7 +1149,11 @@ def verify():
     out += [{"path": e["file"], "kind": "environment", "expected": e["expected"], "actual": e["actual"]}
             for e in environment_failures(m)]
     out += [{"path": name, "kind": "shadow", "expected": None, "actual": "present"} for name in shadows()]
-    return out + _diff(m["files"], snapshot())
+    for v in _diff(m["files"], snapshot()):
+        if v["path"] == CONFIG_KEY:
+            v["keys"] = changed_config_keys(m.get("config_keys"), config_key_hashes())
+        out.append(v)
+    return out
 
 
 # ---- the hook's verdict, for long-running processes ---------------------------------------------
@@ -1184,7 +1215,8 @@ def write_manifest(snap=None):
     folder = checkout_dir()
     folder.mkdir(parents=True, exist_ok=True)
     body = {"version": MANIFEST_VERSION, "created": time.time(), "root": resolved_root(),
-            "waggle_home": str(config.HOME), "hashing": "sha256, CRLF->LF for text files", "files": snap}
+            "waggle_home": str(config.HOME), "hashing": "sha256, CRLF->LF for text files", "files": snap,
+            "config_keys": config_key_hashes()}
     tmp = folder / f"{MANIFEST_NAME}.{os.getpid()}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(body, f, indent=1, sort_keys=True)
@@ -1202,7 +1234,9 @@ def write_manifest(snap=None):
 # ---- command line ------------------------------------------------------------------------------
 
 def _fmt(v):
-    return f"{v['kind']:<11} {v['path']}  expected={(v['expected'] or '-')[:12]} actual={(v['actual'] or '-')[:12]}"
+    keys = f"  keys: {', '.join(v['keys'])}" if v.get("keys") else ""
+    return (f"{v['kind']:<11} {v['path']}  expected={(v['expected'] or '-')[:12]} actual={(v['actual'] or '-')[:12]}"
+            + keys)
 
 
 def status(out=print):

@@ -1597,3 +1597,159 @@ def test_the_plugin_sends_every_hermes_tool_call_through_check_tool_call():
     first = [n for n in fn.body if not isinstance(n, ast.Expr)][1]  # after `args = args or {}`
     assert "security.check_tool_call(tool_name, args)" in ast.unparse(first)
     assert 'ctx.register_hook("pre_tool_call", on_pre_tool_call)' in src
+
+
+# ---- Waggle's own config writes never trip the guard; the learned window size is bounded state ------------------
+# Found live: the hourly check reported home:config.json#keys changed because quota.py rewrote
+# window_units_estimate (81.244 -> 21.388) by itself. Learned values now live in budget.db, clamped in quota.py.
+
+CONFIG_WRITERS = {("install.py", "main"), ("waggle/budget.py", "set_limit"), ("waggle/chat_engine.py", "set_engine_chat"),
+                  ("waggle/cli.py", "main"), ("waggle/live.py", "remember_city"), ("waggle/live.py", "weather"),
+                  ("waggle/notify.py", "ntfy_topic")}
+
+
+def test_every_code_path_that_writes_config_json_is_known():
+    """Settings.save() is the only writer of config.json; this lists its callers so a new one is seen (and added to
+    test_waggles_own_config_writes_keep_the_manifest_clean)."""
+    import ast
+    found = set()
+    files = [REAL_ROOT / "install.py", *(REAL_ROOT / "waggle").rglob("*.py"), *(REAL_ROOT / "hermes_plugin").rglob("*.py")]
+    for f in files:
+        src = f.read_text(encoding="utf-8")
+        rel = f.relative_to(REAL_ROOT).as_posix()
+        if rel != "waggle/config.py":
+            assert "CONFIG_FILE.write" not in src and "CONFIG_FILE, \"w" not in src, rel
+        for fn in ast.walk(ast.parse(src)):
+            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for n in ast.walk(fn):
+                    if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "save":
+                        found.add((rel, fn.name))
+    assert found == CONFIG_WRITERS
+
+
+def _limit_hit(monkeypatch, used):
+    from waggle import quota
+    monkeypatch.setattr(quota, "window_usage", lambda *a, **k: used)
+    quota.note_limit_hit(reset_in_hours=0.0001, now=time.time() - 3600)  # blocked_until is already over
+
+
+def test_waggles_own_config_writes_keep_the_manifest_clean(world, monkeypatch):
+    import waggle.learn as learn
+    from waggle import budget, chat_engine, cli, live, notify, quota
+    from waggle.config import Settings
+    approve()
+    user_value = Settings.load().window_units_estimate
+    # the real recalibration: usage past the estimate raises it, a limit hit sets it to the samples' mean
+    monkeypatch.setattr(quota, "window_usage", lambda *a, **k: 15.0)
+    quota.can_escalate("sonnet")
+    assert quota.window_estimate(Settings.load()) == pytest.approx(15.0 / 0.7, rel=1e-3)
+    quota.status()
+    _limit_hit(monkeypatch, 21.388)
+    _limit_hit(monkeypatch, 4.0)
+    assert quota.window_estimate(Settings.load()) == pytest.approx((21.388 + 4.0) / 2, rel=1e-3)
+    assert Settings.load().window_units_estimate == user_value  # learned, never written into config.json
+    with budget.background("objective"):
+        quota.can_escalate("haiku")
+    # every other code path that saves settings
+    monkeypatch.setattr(live, "geocode", lambda *a, **k: None)
+    monkeypatch.setattr(learn, "set_about", lambda *a, **k: None)
+    chat_engine.set_engine_chat("123", True)
+    chat_engine.set_engine_chat("123", False)
+    live.remember_city("Springfield")
+    s = Settings.load()
+    s.home_location = ""
+    s.save()
+    live.weather("Springfield", fetch=lambda url: {})
+    notify.ntfy_topic()
+    assert cli.main(["init"]) in (None, 0)
+    s = Settings.load()  # what install.py does
+    s.router_model, s.ollama_url, s.claude_bin = "haiku", "http://127.0.0.1:11434", "claude.exe"
+    s.save()
+    assert guard.verify() == []
+
+
+def test_a_hand_written_config_and_a_stale_settings_object_keep_the_manifest_clean(world):
+    """A config.json without most keys stays that way when Waggle saves one unrelated setting, and a Settings object
+    loaded before the user changed a limit (and approved it) does not write the old limit back."""
+    from waggle import notify
+    from waggle.config import Settings
+    write_config(world, stop_at=0.8, background_daily_units=2.0)
+    old = Settings.load()
+    write_config(world, stop_at=0.7, background_daily_units=2.0)
+    approve()
+    notify.ntfy_topic(old)
+    data = json.loads((world.cfg / "config.json").read_text(encoding="utf-8"))
+    assert data["stop_at"] == 0.7 and data["ntfy_topic"] and "waggle_share" not in data
+    assert guard.verify() == []
+
+
+def test_a_user_limit_change_is_still_a_violation_and_names_the_key(world):
+    from waggle import budget
+    approve()
+    budget.set_limit(40)
+    v = guard.verify()
+    assert [(x["path"], x["kind"], x["keys"]) for x in v] == [(guard.CONFIG_KEY, "changed", ["background_daily_units"])]
+    assert "window_units_estimate" in guard.CONFIG_KEYS  # the user's own window estimate stays protected
+
+
+def _write_learned(value):
+    from waggle import budget
+    con = budget._db()
+    con.execute("INSERT OR REPLACE INTO learned VALUES ('window_estimate', ?, 0)", (value,))
+    con.close()
+
+
+@pytest.mark.parametrize("planted", [1e9, 25.0, float("inf"), float("nan"), -5.0, 0.0, "1e9", "lots", None])
+def test_an_agent_cannot_raise_its_budget_by_editing_the_learned_state(world, monkeypatch, planted):
+    """Even written straight into budget.db (a script, bypassing the path check), a learned window size never counts
+    for more than 4x the user's own window_units_estimate: Waggle's share and both stop lines stay bounded."""
+    from waggle import budget, quota
+    from waggle.config import Settings
+    s = Settings.load()
+    user = s.window_units_estimate
+    ceiling = quota.ESTIMATE_BOUNDS[1] * user
+    _write_learned(planted)
+    cap = quota.window_estimate(s)
+    assert quota.ESTIMATE_BOUNDS[0] * user <= cap <= ceiling
+    # Waggle's own share: once it has used its share of the largest window allowed, it stops, whatever was planted
+    monkeypatch.setattr(quota, "waggle_usage", lambda *a, **k: s.waggle_share * ceiling)
+    ok, why = quota.can_escalate("haiku", s, used=0.0)
+    assert not ok and "share" in why
+    # the chat stop line and the background stop line use the same bounded size
+    _limit_hit(monkeypatch, user)
+    _write_learned(planted)
+    ok, why = quota.can_escalate("haiku", s, used=s.stop_at * ceiling)
+    assert not ok
+    ok, why, _ = budget.check("haiku", "routine", s, window_used=s.background_stop_at * ceiling)
+    assert not ok and "chat keeps the rest" in why
+
+
+def test_the_learned_state_is_path_protected_and_the_old_state_cannot_lift_the_limits(world, monkeypatch):
+    from waggle import quota
+    from waggle.config import Settings
+    db = world.cfg / "budget.db"
+    for tool, args in (("Write", {"file_path": str(db), "content": "x"}),
+                       ("Bash", {"command": f'sqlite3 "{db}" "UPDATE learned SET value=1e9"'}),
+                       ("Bash", {"command": "python -c \"import sqlite3; sqlite3.connect(r'" + str(db) + "')"
+                                            ".execute('UPDATE learned SET value=1e9')\""}),
+                       ("PowerShell", {"command": f"Remove-Item '{db}'"})):
+        assert decide(tool, args, cwd=world.user / "Claude").action == policy.ASK, (tool, args)
+    s = Settings.load()
+    _limit_hit(monkeypatch, s.window_units_estimate)  # calibrated by a real limit hit
+    learned = quota.window_estimate(s)
+    # quota_state.json is not protected: planting an estimate there or deleting the samples changes nothing
+    quota._save_state({"window_estimate": 1e9, "samples": []})
+    assert quota.window_estimate(s) == learned and quota.calibrated()
+    ok, why = quota.can_escalate("haiku", s, used=s.stop_at * learned)
+    assert not ok and "keeping the rest" in why
+
+
+def test_past_the_ceiling_waggle_stops_and_says_which_setting_to_raise(world, monkeypatch):
+    from waggle import quota
+    from waggle.config import Settings
+    s = Settings.load()
+    big = 10 * s.window_units_estimate
+    monkeypatch.setattr(quota, "window_usage", lambda *a, **k: big)
+    ok, why = quota.can_escalate("haiku", s)
+    assert quota.window_estimate(s) == quota.ESTIMATE_BOUNDS[1] * s.window_units_estimate
+    assert not ok and "window_units_estimate" in why
