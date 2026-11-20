@@ -10,6 +10,7 @@ from pathlib import Path
 
 import waggle.config as config
 
+REPO = Path(__file__).resolve().parents[2]
 DEFAULT_PORT = 8896
 DEFAULT_WORKERS = 4
 

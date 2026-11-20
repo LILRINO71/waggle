@@ -1,5 +1,8 @@
 """Controlling the core from outside: start, stop, restart, status and the watchdog.
 
+The watchdog runs every minute, so its routine pass stays cheap: it reads core.pid, checks the process and
+reads the heartbeat from runtime.db; no git call, no plug-ins, no HTTP request.
+
 The core is identified by core.pid (pid plus process creation time) and its single-instance lock; it is asked
 to stop by creating core.stop in the Waggle home, which works for a windowless pythonw process. Starting
 goes through the "Waggle Core" scheduled task when it is installed and the default home is in use, so Task
@@ -10,13 +13,14 @@ import subprocess
 import time
 from pathlib import Path
 
-from waggle.core import events, health, procs, settings, store
-from waggle.core.runtime import REPO
+from waggle.core import events, procs, settings, store
+from waggle.core.settings import REPO
 
 TASK_NAME = "Waggle Core"
 STOP_TIMEOUT_S = 20.0
 START_TIMEOUT_S = 20.0
-WATCH_STALE_S = 120.0
+WATCH_STALE_S = 75.0  # five missed 15 s heartbeats; with a 1-minute watchdog a hang is restarted in ~2 min
+STALE_STOP_S = 5.0  # a core whose heartbeat stopped rarely sees the stop file; kill it soon
 
 
 def core_info():
@@ -110,8 +114,9 @@ def restart():
 
 
 def watch(stale_s=WATCH_STALE_S, now=None):
-    """The watchdog pass, safe to run every few minutes: start the core when it is not running, restart it
-    when its heartbeat is stale or it asked for a restart. Returns what it did."""
+    """The watchdog pass, safe to run every minute forever: start the core when it is not running, restart it
+    when its heartbeat is stale or it asked for a restart. Never starts a second core (start() checks the
+    running core and the core's own lock refuses a second instance). Returns what it did."""
     now = store.now_or(now)
     info = core_info() or {}
     pid = running_pid()
@@ -123,7 +128,7 @@ def watch(stale_s=WATCH_STALE_S, now=None):
                     data={"reason": "not running", "old_pid": info.get("pid"), "new_pid": new})
         return "started"
     hb = heartbeat() or {}
-    reason = None
+    reason, grace = None, STALE_STOP_S
     if hb.get("pid") != pid or not hb.get("ts"):
         if now - float(info.get("started", now)) > stale_s:
             reason = "no heartbeat from the running core"
@@ -133,10 +138,10 @@ def watch(stale_s=WATCH_STALE_S, now=None):
         flag = store.get_meta("core.unhealthy")
         flag = json.loads(flag) if flag else None
         if flag and flag.get("restart"):
-            reason = "unhealthy: " + "; ".join(flag.get("reasons", []))
+            reason, grace = "unhealthy: " + "; ".join(flag.get("reasons", [])), STOP_TIMEOUT_S
     if reason is None:
         return "ok"
-    stop()
+    stop(timeout_s=grace)
     new = start()
     events.emit("core.restarted_by_watchdog", source="watchdog",
                 data={"reason": reason, "old_pid": pid, "new_pid": new})
@@ -180,6 +185,7 @@ def status():
         if hb and hb.get("ts"):
             print(f"last heartbeat {time.time() - hb['ts']:.0f} s ago (pid {hb.get('pid')})")
         return 2
+    from waggle.core import health
     try:
         code, snap = health.fetch("/health")
     except OSError as e:

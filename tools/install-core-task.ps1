@@ -5,9 +5,9 @@
 .DESCRIPTION
   "Waggle Core"           at logon of the current user: pythonw -m waggle.core run
                           restart on failure every 1 minute, 999 times; never a second instance; no time limit.
-  "Waggle Core Watchdog"  every 5 minutes (and at logon): pythonw -m waggle.core watch
-                          starts the core when it is down, restarts it when its heartbeat is stale or it asked
-                          for a restart.
+  "Waggle Core Watchdog"  every minute (and at logon): pythonw -m waggle.core watch
+                          starts the core when it is down, restarts it when its heartbeat is over 75 s old or it
+                          asked for a restart.
   Both run in the checkout this script lives in. -WhatIf prints what would be registered and changes nothing.
 
 .EXAMPLE
@@ -73,12 +73,12 @@ $exe = Find-Pythonw
 $coreArgs = "-m waggle.core run"
 $watchArgs = "-m waggle.core watch"
 $coreSettings = "RestartCount 999, RestartInterval 1 minute, MultipleInstances IgnoreNew, no execution time limit, runs on battery"
-$watchSettings = "every 5 minutes indefinitely and at logon, MultipleInstances IgnoreNew, 2 minute time limit"
+$watchSettings = "every minute indefinitely and at logon, MultipleInstances IgnoreNew, 2 minute time limit"
 
 if ($WhatIfPreference) {
     Write-Output "WhatIf: nothing will be registered. Plan:"
     Show-Plan $CoreTask $exe $coreArgs "At logon of $User" $coreSettings
-    Show-Plan $WatchTask $exe $watchArgs "At logon of $User, then every 5 minutes" $watchSettings
+    Show-Plan $WatchTask $exe $watchArgs "At logon of $User, then every minute" $watchSettings
 }
 
 $principal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Limited
@@ -91,7 +91,7 @@ $coreSet = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-
 
 $watchAction = New-ScheduledTaskAction -Execute $exe -Argument $watchArgs -WorkingDirectory $Repo
 $watchLogon = New-ScheduledTaskTrigger -AtLogOn -User $User
-$watchRepeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5)
+$watchRepeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1)
 if ($WhatIfPreference) {
     $dur = $watchRepeat.Repetition.Duration
     if (-not $dur) { $dur = "indefinite" }

@@ -30,7 +30,7 @@ from pathlib import Path
 
 from waggle.core import events, health, jobs, ledger, metrics, outbox, plugins, procs, sender, settings, store, timers
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = settings.REPO
 RETENTION_S = 30 * 86400
 EXIT_ALREADY_RUNNING = 3
 LOCK_WAIT_S = 2.0  # a watchdog probing the lock holds it for an instant; do not refuse because of that
