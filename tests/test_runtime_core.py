@@ -162,9 +162,13 @@ def test_detached_job_survives_a_core_restart_and_is_recorded_once(core):
 
 
 def test_watchdog_restarts_a_core_with_a_stale_heartbeat(core):
+    assert control.WATCH_STALE_S == 75
     p = core.start(cadence=FAST.replace("heartbeat=1", "heartbeat=3600"))
     hb = control.heartbeat()
-    store.set_meta("heartbeat", json.dumps({**hb, "ts": time.time() - 500}))
+    store.set_meta("heartbeat", json.dumps({**hb, "ts": time.time() - 60}))
+    assert "ok" in core.cli("watch").stdout
+    assert control.running_pid() == p.pid
+    store.set_meta("heartbeat", json.dumps({**hb, "ts": time.time() - 80}))
     out = core.cli("watch")
     assert out.returncode == 0 and "restarted" in out.stdout, out.stdout + out.stderr
     assert p.wait(30) == 0
@@ -179,6 +183,35 @@ def test_watchdog_restarts_a_core_with_a_stale_heartbeat(core):
     assert "started" in core.cli("watch").stdout
     assert control.running_pid() not in (None, new)
 
+
+
+def _suspend(pid):
+    """Freeze every thread of a process, like a hang the core cannot notice itself."""
+    import ctypes
+    k32, ntdll = ctypes.WinDLL("kernel32"), ctypes.WinDLL("ntdll")
+    k32.OpenProcess.restype = ctypes.c_void_p
+    k32.OpenProcess.argtypes = (ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong)
+    ntdll.NtSuspendProcess.argtypes = (ctypes.c_void_p,)
+    k32.CloseHandle.argtypes = (ctypes.c_void_p,)
+    h = k32.OpenProcess(0x0800, False, pid)  # PROCESS_SUSPEND_RESUME
+    assert h
+    ntdll.NtSuspendProcess(h)
+    k32.CloseHandle(h)
+
+
+def test_watchdog_kills_and_replaces_a_hung_core(core):
+    p = core.start()
+    _suspend(p.pid)
+    time.sleep(3)
+    began = time.time()
+    out = core.cli("watch", "--stale-s", "2")
+    took = time.time() - began
+    assert "restarted" in out.stdout, out.stdout + out.stderr
+    assert p.wait(10) != 0  # killed, not stopped: a frozen process never sees the stop file
+    new = control.running_pid()
+    assert new and new != p.pid
+    assert events.query("core.restarted_by_watchdog")[-1]["data"]["reason"].startswith("heartbeat")
+    assert took < control.STALE_STOP_S + 15
 
 # ---- work through a running core ------------------------------------------------------------------------------
 
