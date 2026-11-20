@@ -24,7 +24,7 @@ import time
 from . import events
 from .config import Settings, data_path
 
-STEPS = ("flush", "calls", "reminders", "followups", "watchers", "responses", "decide", "brief", "evening", "scout")
+STEPS = ("calls", "reminders", "followups", "watchers", "responses", "decide", "brief", "evening", "scout")
 LOCK_STALE_S = 15 * 60
 
 
@@ -136,7 +136,6 @@ def tick(now=None, settings=None, *, asker=None, gh=None, steps=None, compose_br
 
     try:
         from . import call, followups, initiative, notify, routines, watchers
-        step("flush", lambda: len(notify.flush(s, now)))
         step("calls", lambda: {"placed": len(call.run_due(s, now)), "ended": call.check_pending(now=now)})
         step("reminders", lambda: routines.run_due_reminders(s, now))
 
@@ -155,7 +154,7 @@ def tick(now=None, settings=None, *, asker=None, gh=None, steps=None, compose_br
                 sigs += watchers.upcoming_watch(s, now)
             return initiative.record(sigs, now)
         step("watchers", do_watchers)
-        step("responses", lambda: notify.track_responses(s, now))
+        step("responses", lambda: initiative.track_responses(s, now))
 
         def do_decide():
             if not initiative.due(s, now, st):
@@ -207,7 +206,6 @@ def tick(now=None, settings=None, *, asker=None, gh=None, steps=None, compose_br
             from . import scout
             return initiative.record(scout.daily(s, now), now)
         step("scout", do_scout)
-        step("flush", lambda: len(notify.flush(s, now)))
     finally:
         _save({**_state(), **st})
         _unlock()

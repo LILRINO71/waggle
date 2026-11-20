@@ -282,7 +282,7 @@ def _run_reminder(rid, s, now):
     else:
         row = notify.deliver("text", f"⏰ {r['task']}", asked=True, origin="reminder", topic=f"reminder:{rid}",
                              source=r.get("source"), settings=s, now=now)
-        status = "sent" if row["status"] == "sent" else f"queued ({row['status']})"
+        status = "sent" if row["status"] == "queued" else f"not queued ({row['status']})"
     data = _load()
     if rid in data:
         _finish_run(data[rid], now, status)

@@ -62,6 +62,7 @@ def _db():
     con.execute("""CREATE TABLE IF NOT EXISTS decisions (id TEXT PRIMARY KEY, time REAL, signal_key TEXT, kind TEXT,
         topic TEXT, model_action TEXT, action TEXT, message TEXT, reason TEXT, guard TEXT, decided_by TEXT,
         outbox_id TEXT, urgent INTEGER)""")
+    con.execute("CREATE TABLE IF NOT EXISTS responses (outbox_id INTEGER PRIMARY KEY, responded_at REAL)")
     return con
 
 
@@ -105,12 +106,50 @@ def decisions(since=0.0):
     """Every decision with whether the user answered (from the outbox), for evaluation."""
     con = _db()
     rows = [dict(r) for r in con.execute("SELECT * FROM decisions WHERE time>=? ORDER BY time", (since,))]
+    answered = {r[0] for r in con.execute("SELECT outbox_id FROM responses")}
     con.close()
     for r in rows:
-        ob = notify.get(r["outbox_id"]) if r.get("outbox_id") else None
+        oid = int(r["outbox_id"]) if str(r.get("outbox_id") or "").isdigit() else None
+        ob = notify.get(oid) if oid is not None else None
         r["delivered"] = bool(ob and ob["status"] == "sent")
-        r["responded"] = bool(ob and ob.get("responded_at"))
+        r["responded"] = oid in answered
     return rows
+
+
+def track_responses(settings=None, now=None, window_s=6 * 3600, turns=None):
+    """Mark sent outreach the user answered (one of the user's own turns within window_s after it) and record
+    that as confirmed evidence for the channel. turns = [(time, platform)] for tests; default: the user's own
+    turns from traces.db (origin.user_turns: tests, benches, the CLI and agents never count)."""
+    s = settings or Settings.load()
+    now = now or time.time()
+    sent = [r for r in notify.rows(since=now - 2 * 86400, status="sent") if r.get("sent_at")]
+    con = _db()
+    answered = {r[0] for r in con.execute("SELECT outbox_id FROM responses")}
+    con.close()
+    open_ = [r for r in sent if r["id"] not in answered]
+    if not open_:
+        return 0
+    if turns is None:
+        try:
+            from . import origin, traces
+            turns = [(r["time"], r.get("platform") or "") for r in
+                     origin.user_turns(traces.all_traces(since=now - 3 * 86400, limit=500), s)]
+        except Exception:  # noqa: BLE001
+            turns = []
+    user_times = sorted(t for t, p in turns if p in s.followup_platforms)
+    marked = 0
+    con = _db()
+    for r in open_:
+        hit = next((t for t in user_times if r["sent_at"] < t <= r["sent_at"] + window_s), None)
+        if hit:
+            con.execute("INSERT OR IGNORE INTO responses VALUES (?, ?)", (r["id"], hit))
+            marked += 1
+            if r["kind"] in ("text", "voice"):
+                notify.record_evidence(notify.CHANNEL[r["kind"]], True, "the user replied after it",
+                                       ref=f"outbox:{r['id']}", level="confirmed", now=hit)
+    con.commit()
+    con.close()
+    return marked
 
 
 # ---- guard rails -------------------------------------------------------------------------------------------
@@ -129,7 +168,7 @@ def recent_topics(now, hours):
     for t, ts in rows:
         out[_norm_topic(t)] = max(out.get(_norm_topic(t), 0), ts)
     for r in notify.rows(since=now - hours * 3600):
-        if r["topic"] and r["status"] in ("sent", "queued", "retry", "sending"):
+        if r["topic"] and r["status"] in ("sent", "queued", "sending"):
             out[_norm_topic(r["topic"])] = max(out.get(_norm_topic(r["topic"]), 0), r["created"])
     return out
 
@@ -138,8 +177,7 @@ def sent_today(now, settings):
     """Unprompted messages counted against the cap today (texts, voice notes, calls from initiative origins)."""
     start = dt.datetime.fromtimestamp(now).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
     return sum(1 for r in notify.rows(since=start, origin=notify.INITIATIVE_ORIGINS)
-               if r["kind"] in ("text", "voice", "call") and not r["urgent"] and not r["asked"]
-               and r["status"] not in ("suppressed",))
+               if r["kind"] in ("text", "voice", "call") and not r["urgent"] and not r["asked"])
 
 
 def guard(sig, action, settings, now, state):
@@ -211,7 +249,7 @@ def context(settings, now, activity=None):
                 f"waggle: {(r.get('reply') or '')[:120]}" for r in turns))
     except Exception:  # noqa: BLE001
         pass
-    told = [r for r in notify.rows(since=now - 2 * 86400) if r["status"] in ("sent", "queued", "retry")]
+    told = [r for r in notify.rows(since=now - 2 * 86400) if r["status"] in ("sent", "queued", "sending")]
     if told:
         parts.append("Already told them (last 2 days):\n" + "\n".join(
             f"[{dt.datetime.fromtimestamp(r['created']):%a %H:%M}] {r['text'][:140]}" for r in told[-15:]))

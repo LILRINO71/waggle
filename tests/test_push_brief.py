@@ -16,12 +16,12 @@ def test_to_ntfy_body():
     assert ok and url == "https://ntfy.sh" and body["priority"] == 5 and body["message"] == "Robot battery low"
 
 
-def test_urgent_send_pushes_and_normal_does_not(monkeypatch):
-    pushed = []
-    monkeypatch.setattr(notify, "to_ntfy", lambda text, **k: pushed.append((text, k["priority"])) or True)
+def test_urgent_send_queues_a_push_and_normal_does_not():
+    from waggle.core import outbox
     notify.send("meet starts in 1 hour", urgent=False)
     notify.send("intake motor overheating", urgent=True)
-    assert pushed == [("intake motor overheating", 5)]
+    pushes = [r for r in outbox.list() if r["kind"] == "push"]
+    assert [(r["body"], r["meta"]["urgent"]) for r in pushes] == [("intake motor overheating", True)]
 
 
 def test_morning_brief_facts_and_fallback(monkeypatch):

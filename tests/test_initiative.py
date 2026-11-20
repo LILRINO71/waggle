@@ -14,17 +14,6 @@ def at(h, m=0, day=19):
     return dt.datetime(2026, 11, day, h, m).timestamp()
 
 
-class FlakyTransport(notify.Transport):
-    def __init__(self):
-        self.up, self.sent = False, []
-
-    def send_text(self, text, settings):
-        if not self.up:
-            return False, "Telegram timed out"
-        self.sent.append(text)
-        return True, "ok"
-
-
 @pytest.fixture
 def s(settings):
     settings.quiet_hours = [23, 7]
@@ -33,31 +22,33 @@ def s(settings):
     return Settings.load()
 
 
-@pytest.fixture
-def flaky(monkeypatch):
-    t = FlakyTransport()
-    monkeypatch.setattr(notify, "_transport", t)
-    return t
+def _outbox():
+    from waggle.core import outbox
+    return sorted(outbox.list(limit=1000), key=lambda r: r["id"])
 
 
-def test_message_queued_while_down_is_delivered_later_exactly_once(s, flaky):
-    row = notify.deliver("text", "build finished", settings=s, now=at(10))
-    assert row["status"] == "retry" and flaky.sent == []
-    assert notify.flush(s, at(10, 0) + 30) == []  # backoff: not yet
-    flaky.up = True
-    notify.flush(s, at(10, 2))
-    notify.flush(s, at(10, 3))
-    assert flaky.sent == ["build finished"] and notify.get(row["id"])["status"] == "sent"
-    assert notify.readiness("telegram_text")["state"] == "verified"
+def test_deliver_writes_exactly_one_outbox_row_and_sends_nothing(s):
+    row = notify.deliver("text", "build finished", origin="initiative", decision_id="d1", topic="ci:x",
+                         settings=s, now=at(10))
+    again = notify.deliver("text", "build finished", origin="initiative", decision_id="d1", settings=s, now=at(10, 1))
+    rows = _outbox()
+    assert row["id"] == again["id"] and len(rows) == 1 and notify.PHONE_LOG.direct == []
+    r = rows[0]
+    assert r["state"] == "queued" and r["kind"] == "text" and r["origin"] == "initiative"
+    assert r["idem_key"] == "initiative:d1:text" and r["not_before"] is None
+    assert r["meta"]["topic"] == "ci:x" and r["meta"]["decision_id"] == "d1" and r["meta"]["urgent"] is False
+    assert r["expires"] == at(10) + s.outbox_max_age_h * 3600
 
 
-def test_quiet_hours_hold_until_morning_and_merge(s, flaky):
-    flaky.up = True
-    notify.deliver("text", "one", settings=s, now=at(23, 30))
-    notify.deliver("text", "two", settings=s, now=at(23, 40))
-    assert flaky.sent == []
-    notify.flush(s, at(7, 5, day=20))
-    assert len(flaky.sent) == 1 and "one" in flaky.sent[0] and "two" in flaky.sent[0]
+def test_quiet_hours_hold_non_urgent_rows_until_morning(s):
+    held = notify.deliver("text", "one", settings=s, now=at(23, 30))
+    urgent = notify.deliver("text", "two", urgent=True, settings=s, now=at(23, 40))
+    asked = notify.deliver("text", "three", asked=True, settings=s, now=at(23, 41))
+    push = notify.deliver("push", "four", settings=s, now=at(23, 42))
+    assert held["held"] and held["not_before"] == at(7, day=20)
+    assert held["expires"] == at(7, day=20) + s.outbox_max_age_h * 3600
+    assert [r["not_before"] for r in (urgent, asked, push)] == [None, None, None]
+    assert urgent["priority"] > asked["priority"] > held["priority"]
 
 
 def test_readiness_comes_from_evidence(s):
@@ -91,8 +82,7 @@ def _sig(key, urgent=False, kind="github_ci", topic=None):
             "urgent": urgent}
 
 
-def test_guard_rails_hold_whatever_the_model_says(s, flaky):
-    flaky.up = True
+def test_guard_rails_hold_whatever_the_model_says(s):
     s.daily_text_cap = 2
     s.save()
     initiative.record([_sig(f"ci{i}") for i in range(4)] + [_sig("same-topic", topic="ci0")]
@@ -111,15 +101,14 @@ def test_guard_rails_hold_whatever_the_model_says(s, flaky):
     assert night[0]["action"] == "evening"  # quiet hours
 
 
-def test_urgent_fact_goes_out_when_claude_is_down(s, flaky):
-    flaky.up = True
+def test_urgent_fact_goes_out_when_claude_is_down(s):
     initiative.record([_sig("soon", urgent=True, kind="upcoming"), _sig("later")], at(12))
 
     def down(*a, **k):
         raise RuntimeError("quota")
     out = initiative.decide(s, at(12), asker=down)
     assert [(d["signal"], d["action"]) for d in out] == [("soon", "text")]
-    assert "soon happened" in flaky.sent[0]
+    assert "soon happened" in _outbox()[0]["body"] and _outbox()[0]["origin"] == "initiative"
     assert [p["key"] for p in initiative.pending()] == ["later"]  # waits for the next run
 
 
@@ -139,13 +128,12 @@ def test_commitment_becomes_a_dated_checkin(s):
     assert len(due) == 1 and "test the shooter" in due[0]["title"]
 
 
-def test_one_shot_reminder_fires_once(s, flaky):
-    flaky.up = True
+def test_one_shot_reminder_fires_once(s):
     rid = routines.add_once("Charge the batteries", at(19, day=20))
     assert routines.run_due_reminders(s, at(18, day=20)) == []
     assert routines.run_due_reminders(s, at(19, 1, day=20)) == [(rid, "sent")]
     assert routines.run_due_reminders(s, at(19, 2, day=20)) == []
-    assert flaky.sent == ["⏰ Charge the batteries"] and not routines._load()[rid]["enabled"]
+    assert [r["body"] for r in _outbox()] == ["⏰ Charge the batteries"] and not routines._load()[rid]["enabled"]
     assert routines.normalize("once 2026-11-20 19:00")[0] == "once"
 
 

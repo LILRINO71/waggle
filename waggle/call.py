@@ -223,10 +223,9 @@ def call(message, reason="manual", settings=None, force=False, opener=None):
         return place(message, reason, s, opener)
     from . import notify
     row = notify.deliver("call", message, urgent=True, asked=force, origin=reason, settings=s)
-    ok = row["status"] == "sent"
-    detail = row.get("detail") or ""
-    sid = detail.split("sid=", 1)[1].strip() if "sid=" in detail else ""
-    return {"ok": ok, "why": "calling" if ok else (detail or "call not placed"), "sid": sid}
+    ok = row["status"] == "queued"
+    return {"ok": ok, "why": "queued: the core places the call" if ok else f"call not queued ({row['status']})",
+            "outbox": row["id"]}
 
 
 def check_pending(opener=None, now=None):

@@ -60,9 +60,13 @@ def test_call_posts_and_respects_daily_cap(twilio_env):
     assert call.call("asked", settings=s, opener=opener, force=True)["ok"] is True
 
 
-def test_not_configured(tmp_path, monkeypatch):
+def test_call_only_queues_one_outbox_row(tmp_path, monkeypatch):
+    from waggle.core import outbox
     monkeypatch.setattr(call, "env_path", lambda: tmp_path / "none.env")
-    assert "not set up" in call.call("x")["why"]
+    res = call.call("x", reason="asked", force=True)
+    rows = outbox.list()
+    assert res["ok"] and len(rows) == 1 and rows[0]["kind"] == "call" and rows[0]["origin"] == "asked"
+    assert "not set up" in call.place("x")["why"]  # the raw request still says why it can't happen
 
 
 def test_schedule_and_run_due():

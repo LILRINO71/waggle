@@ -1,28 +1,28 @@
-"""Everything Waggle sends goes through here: one outbox, one delivery function, one evidence record per channel.
+"""Everything Waggle sends goes through here: one decision, one outbox row, one evidence record per channel.
 
-deliver(kind, ...)   the single way out. kind = text | voice | file | push | call. The message is written to the
-                     outbox (~/.waggle/outbox.db) first, then sent through the transport; a failure is retried with
-                     backoff (1, 2, 5, 10, 30, 60 min) by flush(), which the minute tick runs, until it is sent or
-                     expires (outbox_max_age_h). Every attempt and its result is recorded, so nothing is lost
-                     silently. Non-urgent messages wait out quiet hours and go out together in the morning.
-Transport            the raw senders (send_text, send_voice, send_file, push, call). Today: `hermes send` for
-                     Telegram, ntfy.sh for push, Twilio for calls. set_transport() re-hosts delivery without
-                     touching the logic.
-Evidence             channel_evidence.json: per channel the last end-to-end success (when, how verified) and the
-                     last failure (when, why). readiness() derives "verified / failing / not verified" from it,
-                     never from configuration being present.
+deliver(kind, ...)   the single way out. kind = text | voice | file | push | call. It decides (developer/test
+                     activity is suppressed, non-urgent messages wait out quiet hours, rows expire after
+                     outbox_max_age_h, one idempotency key per decision or reminder) and writes exactly one row to the
+                     core outbox (waggle.core.outbox in runtime.db). It never sends: the core's sender loop sends due
+                     rows and retries failures, so nothing in this module calls a transport.
+push_sender(row)     the ntfy transport, registered with the core sender for kind "push" (tick.register_core);
+                     call.call_sender is the one for kind "call". Telegram text/voice/file senders live elsewhere.
+Evidence             thin wrappers over the capability ledger (waggle.core.ledger): a channel is ready only after a
+                     recorded end-to-end success within its time limit with no failure after it. Weaker facts
+                     (ntfy accepted a post, a Twilio account looks set up) are recorded under separate names and
+                     never make a channel ready.
 
 send(), to_phone(), to_ntfy(), voice() and unseen() keep working for the other modules.
 """
 import datetime as dt
 import json
 import os
-import sqlite3
 import subprocess
 import time
 import uuid
 from pathlib import Path
 
+from . import events
 from .config import Settings, data_path
 
 KINDS = ("text", "voice", "file", "push", "call")
@@ -31,8 +31,6 @@ CHANNELS = ("telegram_text", "telegram_voice", "ntfy", "call")
 # Delivery the provider confirmed for the user's own chat/phone counts as end-to-end for these channels. An ntfy
 # post only proves the server took it (the phone may not be subscribed), so ntfy needs the user's confirmation.
 NEEDS_CONFIRMATION = {"ntfy"}
-BACKOFF = (60, 120, 300, 600, 1800, 3600)
-LEASE_S = 300
 # Unprompted outreach: these origins count against the daily cap; replies, reminders the user asked for, reports
 # of work the user started and the scheduled notes do not.
 INITIATIVE_ORIGINS = ("initiative", "followup", "scout")
@@ -71,9 +69,6 @@ def is_dev_source(source, settings=None):
 
 # ---- raw senders (kept public: other modules and tests use them) ------------------------------------
 
-_last_error = {"text": ""}
-
-
 def _toast(text):
     if os.name != "nt":
         return
@@ -97,26 +92,19 @@ def hermes_exe():
 
 
 def to_phone(text, settings=None):
-    """Send to the phone through `hermes send` (works without the gateway running). True on success.
-    MEDIA:<path> lines attach files; with [[audio_as_voice]] an .ogg goes out as a voice bubble."""
+    """The raw `hermes send` call (works without the gateway running). True on success. Not used by deliver():
+    pushsetup keeps it for its one-off test message. MEDIA:<path> lines attach files."""
     s = settings or Settings.load()
     exe = hermes_exe()
     if not exe:
-        _last_error["text"] = "hermes not found"
         return False
     env = dict(os.environ, HERMES_HOME=str(exe.parent.parent))
     try:
         r = subprocess.run([str(exe), "send", "-q", "-t", s.phone_target, text[:3500]], capture_output=True,
-                           text=True, timeout=90, env=env, encoding="utf-8", errors="replace",
+                           text=True, timeout=60, env=env, encoding="utf-8", errors="replace",
                            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
-        _last_error["text"] = "" if r.returncode == 0 else (
-            f"hermes send exit {r.returncode}: " + " ".join(((r.stderr or "") + (r.stdout or "")).split())[-200:])
         return r.returncode == 0
-    except subprocess.TimeoutExpired:
-        _last_error["text"] = "hermes send timed out"
-        return False
-    except OSError as e:
-        _last_error["text"] = f"hermes send failed: {e}"[:200]
+    except (OSError, subprocess.TimeoutExpired):
         return False
 
 
@@ -146,57 +134,6 @@ def to_ntfy(text, title="Waggle", priority=5, tags=("bee",), settings=None, post
             return 200 <= r.status < 300
     except Exception:  # noqa: BLE001
         return False
-
-
-# ---- transport ---------------------------------------------------------------------------------------
-
-class Transport:
-    """The raw senders behind deliver(). Each returns (ok, detail). Swap it with set_transport() to re-host
-    delivery (an always-on process, another chat app) without touching the outbox or the decision logic."""
-
-    def send_text(self, text, settings):
-        ok = to_phone(text, settings)
-        return ok, "Telegram accepted it (hermes send)" if ok else (_last_error["text"] or "hermes send failed")
-
-    def send_voice(self, path, caption, settings):
-        if not path or not Path(path).exists():
-            return False, "voice file missing"
-        msg = f"[[audio_as_voice]]\nMEDIA:{path}" + (f"\n{caption}" if caption else "")
-        ok = to_phone(msg, settings)
-        return ok, "Telegram accepted the voice note (hermes send)" if ok else (_last_error["text"] or "send failed")
-
-    def send_file(self, path, caption, settings):
-        if not path or not Path(path).exists():
-            return False, "file missing"
-        ok = to_phone((caption + "\n" if caption else "") + f"MEDIA:{path}", settings)
-        return ok, "Telegram accepted the file (hermes send)" if ok else (_last_error["text"] or "send failed")
-
-    def push(self, text, title, priority, settings):
-        ok = to_ntfy(text, title=title, priority=priority, tags=("rotating_light",) if priority >= 5 else ("bee",),
-                     settings=settings)
-        return ok, "ntfy server accepted it" if ok else "ntfy post failed"
-
-    def call(self, text, settings):
-        from . import call
-        res = call.place(text, settings=settings)
-        return res["ok"], res.get("why", "") + (f" sid={res['sid']}" if res.get("sid") else "")
-
-
-_transport = None
-
-
-def get_transport():
-    global _transport
-    if _transport is None:
-        _transport = Transport()
-    return _transport
-
-
-def set_transport(t):
-    """Install another transport (None = the default). Returns the previous one."""
-    global _transport
-    prev, _transport = _transport, t
-    return prev
 
 
 # ---- evidence ----------------------------------------------------------------------------------------
@@ -270,190 +207,87 @@ def readiness_lines():
     return out
 
 
-# ---- outbox ------------------------------------------------------------------------------------------
+# ---- the outbox (waggle.core.outbox) ------------------------------------------------------------------
 
-def _db():
-    con = sqlite3.connect(data_path("outbox.db"), timeout=15)
-    con.row_factory = sqlite3.Row
-    con.execute("""CREATE TABLE IF NOT EXISTS outbox (
-        id TEXT PRIMARY KEY, created REAL, kind TEXT, text TEXT, path TEXT, title TEXT, urgent INTEGER,
-        asked INTEGER DEFAULT 0, origin TEXT, source TEXT, topic TEXT, decision_id TEXT, not_before REAL,
-        expires REAL, attempts INTEGER DEFAULT 0, next_try REAL, status TEXT, lease_until REAL, sent_at REAL,
-        detail TEXT, held INTEGER DEFAULT 0, responded_at REAL)""")
-    con.execute("CREATE INDEX IF NOT EXISTS outbox_status ON outbox(status, next_try)")
-    return con
+class SendError(Exception):
+    """Raised by a registered sender to fail one attempt. permanent=True stops retries; retry_after (seconds)
+    delays the next attempt."""
+
+    def __init__(self, message, *, permanent=False, retry_after=None):
+        super().__init__(message)
+        self.permanent = bool(permanent)
+        if retry_after is not None:
+            self.retry_after = float(retry_after)
+
+
+def _priority(urgent, asked):
+    return 10 if urgent else 5 if asked else 0
+
+
+def _view(row):
+    """An outbox row as callers here use it: the core row plus `status` (its state), `text`, `held` and the
+    delivery details from meta."""
+    if row is None:
+        return None
+    meta = row.get("meta") or {}
+    return {**row, "status": row["state"], "text": row.get("body", ""), "held": bool(meta.get("held")),
+            "topic": meta.get("topic", ""), "title": meta.get("title", ""), "urgent": bool(meta.get("urgent")),
+            "asked": bool(meta.get("asked")), "decision_id": meta.get("decision_id")}
 
 
 def deliver(kind, text="", *, path="", title="", urgent=False, asked=False, origin="manual", source=None, topic="",
-            decision_id=None, expires=None, settings=None, now=None, flush_now=True):
-    """Queue one outbound message and try to send it right away. Returns the outbox row (dict).
-    asked: the user asked for this (a reminder, "call me at 7"): it bypasses the daily cap like urgent items do."""
+            decision_id=None, expires=None, settings=None, now=None, chat="", ref=None):
+    """Decide whether and when a message may go out, then write exactly one outbox row. Returns that row (see
+    _view), or a row with status 'suppressed' (and id None) when developer/test activity caused it.
+
+    Nothing is sent here: the core's sender loop sends due rows and retries failures. Non-urgent messages wait
+    out quiet hours (not_before); urgent ones, things the user asked for and pushes do not. A row expires after
+    outbox_max_age_h unless `expires` says otherwise. The idempotency key is "<origin>:<ref>" (ref defaults to the
+    decision id plus the kind), so the same decision or reminder never queues two messages.
+    asked: the user asked for this (a reminder, "call me at 7"): it bypasses the daily cap like urgent items do.
+    """
+    from waggle.core import outbox, store
     if kind not in KINDS:
         raise ValueError(f"unknown kind {kind!r}")
     s = settings or Settings.load()
-    now = now or time.time()
-    oid = uuid.uuid4().hex[:12]
-    status, held, not_before = "queued", 0, now
+    now = store.now_or(now)
     if is_dev_source(source, s):
-        status = "suppressed"
-    elif not urgent and not asked and kind != "push" and in_quiet_hours(s, now):
-        held, not_before = 1, quiet_ends(s, now)
-    exp = expires or (max(not_before, now) + s.outbox_max_age_h * 3600)
-    con = _db()
-    con.execute("INSERT INTO outbox (id, created, kind, text, path, title, urgent, asked, origin, source, topic, "
-                "decision_id, not_before, expires, next_try, status, held, detail) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (oid, now, kind, text or "", str(path or ""), title or "", int(bool(urgent)), int(bool(asked)),
-                 origin, source or "", topic or "", decision_id, not_before, exp, not_before, status, held,
-                 "developer/test activity: not sent to the phone" if status == "suppressed" else ""))
-    con.commit()
-    con.close()
-    from . import events
-    events.log("outbox", id=oid, msg_kind=kind, origin=origin, status=status, urgent=bool(urgent), held=bool(held),
+        with store.transaction() as con:
+            store.insert_event(con, "outreach.suppressed", source="notify", now=now,
+                               data={"kind": kind, "origin": origin, "cause": source, "text": (text or "")[:120]})
+        events.log("outbox", msg_kind=kind, origin=origin, status="suppressed", cause=source, text=(text or "")[:120])
+        return {"id": None, "state": "suppressed", "status": "suppressed", "kind": kind, "body": text or "",
+                "text": text or "", "origin": origin, "held": False, "meta": {}}
+    held = not urgent and not asked and kind != "push" and in_quiet_hours(s, now)
+    not_before = quiet_ends(s, now) if held else None
+    exp = expires if expires is not None else (not_before or now) + s.outbox_max_age_h * 3600
+    if ref is None:
+        ref = f"{decision_id}:{kind}" if decision_id else uuid.uuid4().hex[:12]
+    meta = {"title": title or "", "topic": topic or "", "decision_id": decision_id, "urgent": bool(urgent),
+            "asked": bool(asked), "held": held}
+    if source:
+        meta["cause"] = str(source)
+    oid = outbox.enqueue(kind, text or "", chat=chat or "", file=str(path) if path else None,
+                         idem_key=f"{origin}:{ref}", priority=_priority(urgent, asked), origin=origin,
+                         not_before=not_before, expires=exp, meta=meta, now=now)
+    events.log("outbox", id=oid, msg_kind=kind, origin=origin, status="queued", urgent=bool(urgent), held=held,
                text=(text or "")[:120])
-    if flush_now and status == "queued" and not held:
-        flush(s, now, only=oid)
     return get(oid)
 
 
 def get(oid):
-    con = _db()
-    r = con.execute("SELECT * FROM outbox WHERE id=?", (oid,)).fetchone()
-    con.close()
-    return dict(r) if r else None
+    from waggle.core import outbox
+    return _view(outbox.get(oid)) if oid is not None else None
 
 
-def rows(since=0.0, status=None, origin=None):
-    con = _db()
-    q, args = "SELECT * FROM outbox WHERE created>=?", [since]
-    if status:
-        q += " AND status=?"
-        args.append(status)
-    if origin:
-        q += f" AND origin IN ({','.join('?' * len(origin))})"
-        args += list(origin)
-    out = [dict(r) for r in con.execute(q + " ORDER BY created", args)]
-    con.close()
-    return out
-
-
-def _claim(s, now, only=None):
-    """Atomically take the due rows (lease them) so two flushers never send the same message."""
-    con = _db()
-    try:
-        con.execute("BEGIN IMMEDIATE")
-        expired = [dict(r) for r in con.execute(
-            "SELECT * FROM outbox WHERE status IN ('queued','retry') AND expires<?", (now,))]
-        for r in expired:
-            con.execute("UPDATE outbox SET status='expired', detail=? WHERE id=?",
-                        ((r["detail"] or "not delivered before it expired")[:300], r["id"]))
-        q = ("SELECT * FROM outbox WHERE (status IN ('queued','retry') OR (status='sending' AND lease_until<?)) "
-             "AND next_try<=? AND not_before<=?")
-        args = [now, now, now]
-        if only:
-            q += " AND id=?"
-            args.append(only)
-        due = [dict(r) for r in con.execute(q + " ORDER BY urgent DESC, created", args)]
-        quiet = in_quiet_hours(s, now)
-        claimed = []
-        for r in due:
-            if quiet and not r["urgent"] and not r["asked"] and r["kind"] != "push":
-                ends = quiet_ends(s, now)  # a retry that drifted into the night waits for the morning
-                con.execute("UPDATE outbox SET not_before=?, next_try=?, held=1 WHERE id=?", (ends, ends, r["id"]))
-                continue
-            con.execute("UPDATE outbox SET status='sending', lease_until=? WHERE id=?", (now + LEASE_S, r["id"]))
-            claimed.append(r)
-        con.execute("COMMIT")
-    except Exception:
-        try:
-            con.execute("ROLLBACK")
-        except sqlite3.Error:
-            pass
-        raise
-    finally:
-        con.close()
-    if expired:
-        from . import events
-        for r in expired:
-            events.log("delivery", id=r["id"], msg_kind=r["kind"], origin=r["origin"], ok=False, status="expired",
-                       why=r["detail"] or "expired")
-    return claimed
-
-
-def _finish(r, ok, detail, now):
-    con = _db()
-    if ok:
-        con.execute("UPDATE outbox SET status='sent', sent_at=?, detail=?, attempts=attempts+1, lease_until=NULL "
-                    "WHERE id=?", (now, detail[:300], r["id"]))
-    else:
-        n = (r["attempts"] or 0) + 1
-        final = r["kind"] == "call"  # a call is not retried: the fallback (push + voice note) goes out instead
-        con.execute("UPDATE outbox SET status=?, attempts=?, next_try=?, detail=?, lease_until=NULL WHERE id=?",
-                    ("failed" if final else "retry", n, now + BACKOFF[min(n - 1, len(BACKOFF) - 1)], detail[:300],
-                     r["id"]))
-    con.commit()
-    con.close()
-    from . import events
-    events.log("delivery", id=r["id"], msg_kind=r["kind"], origin=r["origin"], ok=ok, why=detail[:200],
-               attempt=(r["attempts"] or 0) + 1)
-
-
-def _merge_held(rows_):
-    """Texts held over quiet hours go out as one morning message instead of a burst."""
-    held = [r for r in rows_ if r["held"] and r["kind"] == "text"]
-    if len(held) < 2:
-        return rows_, []
-    body = "While you were asleep:\n" + "\n".join("• " + r["text"].lstrip("🐝 ")[:600] for r in held)
-    lead = {**held[0], "text": body[:3500]}
-    rest = [r for r in rows_ if r not in held]
-    return [lead] + rest, held[1:]
-
-
-def flush(settings=None, now=None, only=None, transport=None):
-    """Send everything that is due. Returns [(id, ok, detail)]. Safe to run from several processes at once."""
-    s = settings or Settings.load()
-    now = now or time.time()
-    t = transport or get_transport()
-    claimed = _claim(s, now, only)
-    claimed, merged = _merge_held(claimed)
-    out = []
-    for r in claimed:
-        try:
-            if r["kind"] == "text":
-                ok, detail = t.send_text(r["text"], s)
-            elif r["kind"] == "voice":
-                ok, detail = t.send_voice(r["path"], r["text"], s)
-                if not ok and r["text"] and (r["attempts"] or 0) >= 2:  # voice keeps failing: send the words
-                    ok2, d2 = t.send_text(r["text"], s)
-                    ok, detail = ok2, f"voice failed ({detail}); sent as text: {d2}"
-            elif r["kind"] == "file":
-                ok, detail = t.send_file(r["path"], r["text"], s)
-            elif r["kind"] == "push":
-                ok, detail = t.push(r["text"], r["title"] or "Waggle", 5 if r["urgent"] else 3, s)
-            else:
-                ok, detail = t.call(r["text"], s)
-        except Exception as e:  # noqa: BLE001
-            ok, detail = False, f"{type(e).__name__}: {e}"[:200]
-        _finish(r, ok, detail, now)
-        if r["kind"] != "call":  # a call's evidence comes from Twilio's final status (call.check_pending)
-            record_evidence(CHANNEL[r["kind"]], ok, detail, ref=r["id"], now=now)
-        if r["kind"] == "call" and not ok:
-            _call_fallback(r, detail, s, now)
-        out.append((r["id"], ok, detail))
-    for m in merged:
-        lead_ok = out[0][1] if out else False
-        _finish(m, lead_ok, "sent inside the morning summary" if lead_ok else "morning summary failed", now)
-        out.append((m["id"], lead_ok, "merged"))
-    return out
-
-
-def _call_fallback(r, why, s, now):
-    """A call was wanted but can't happen: an urgent push plus a voice note (or text) instead."""
-    text = r["text"]
-    deliver("push", text, title="Waggle tried to call you", urgent=True, origin=r["origin"], topic=r["topic"],
-            decision_id=r["decision_id"], settings=s, now=now)
-    voice(f"I tried to call you. {text}", settings=s, urgent=True, origin=r["origin"], topic=r["topic"],
-          decision_id=r["decision_id"], caption=f"📞 Call not possible ({why[:120]}). {text}", now=now)
+def rows(since=0.0, status=None, origin=None, limit=1000):
+    """Outbox rows created at or after `since`, oldest first. status: a state or a tuple of states;
+    origin: a tuple of origins."""
+    from waggle.core import outbox
+    states = (status,) if isinstance(status, str) else status
+    out = [_view(r) for r in outbox.list(limit=limit) if (r.get("created") or 0) >= since]
+    out = [r for r in out if (not states or r["state"] in states) and (not origin or r["origin"] in origin)]
+    return sorted(out, key=lambda r: r["id"])
 
 
 # ---- voice notes ---------------------------------------------------------------------------------------
@@ -486,7 +320,7 @@ def _synth(text, out, settings=None):
 
 
 def voice(text, settings=None, urgent=False, asked=False, origin="manual", topic="", decision_id=None, caption=None,
-          now=None, synth=None, source=None):
+          now=None, synth=None, source=None, chat="", ref=None):
     """Say `text` as a Telegram voice note (with the words as text underneath). Falls back to a plain text message
     when synthesis fails, so the content is never lost."""
     s = settings or Settings.load()
@@ -501,7 +335,7 @@ def voice(text, settings=None, urgent=False, asked=False, origin="manual", topic
         except Exception:  # noqa: BLE001
             ok = False
     kw = dict(urgent=urgent, asked=asked, origin=origin, topic=topic, decision_id=decision_id, settings=s, now=now,
-              source=source)
+              source=source, chat=chat, ref=ref)
     if ok:
         return deliver("voice", caption if caption is not None else text, path=str(out), **kw)
     return deliver("text", "🐝 " + (caption or text), **kw)
@@ -521,17 +355,16 @@ def send(text, urgent=False, settings=None, phone=True, push=None, source=None, 
         _toast(text)
     if phone:
         r = deliver("text", f"🐝 {text}", urgent=urgent, origin=origin, source=source, settings=s)
-        row["phoned"] = r["status"] == "sent"
+        row["queued"] = r["status"] == "queued"
         row["outbox"] = r["id"]
         row["held"] = bool(r["held"])
     if (urgent if push is None else push) and not dev:
         r = deliver("push", text, title="🚨 Waggle needs you", urgent=True, origin=origin, settings=s)
-        row["pushed"] = r["status"] == "sent"
+        row["push_outbox"] = r["id"]
     with open(data_path("notifications.jsonl"), "a", encoding="utf-8") as f:
         f.write(json.dumps(row) + "\n")
-    from . import events
-    events.log("notify", text=text[:200], urgent=urgent, quiet=quiet, phoned=row.get("phoned", False),
-               pushed=row.get("pushed", False), dev=dev, origin=origin)
+    events.log("notify", text=text[:200], urgent=urgent, quiet=quiet, queued=row.get("queued", False),
+               pushed="push_outbox" in row, dev=dev, origin=origin)
     return row
 
 
@@ -548,41 +381,6 @@ def unseen(mark=True):
     return new
 
 
-# ---- did the user answer? -------------------------------------------------------------------------------
-
-def track_responses(settings=None, now=None, window_s=6 * 3600, turns=None):
-    """Mark sent outreach the user answered (a Telegram message within window_s after it) and record that as
-    confirmed evidence for the channel. turns = [(time, platform)] for tests; default from traces.db."""
-    s = settings or Settings.load()
-    now = now or time.time()
-    con = _db()
-    open_ = [dict(r) for r in con.execute(
-        "SELECT * FROM outbox WHERE status='sent' AND responded_at IS NULL AND sent_at>=?", (now - 2 * 86400,))]
-    con.close()
-    if not open_:
-        return 0
-    if turns is None:
-        try:
-            from . import traces
-            turns = [(r["time"], r.get("platform") or "") for r in traces.all_traces(since=now - 3 * 86400, limit=500)]
-        except Exception:  # noqa: BLE001
-            turns = []
-    user_times = sorted(t for t, p in turns if p in s.followup_platforms)
-    marked = 0
-    con = _db()
-    for r in open_:
-        hit = next((t for t in user_times if r["sent_at"] < t <= r["sent_at"] + window_s), None)
-        if hit:
-            con.execute("UPDATE outbox SET responded_at=? WHERE id=?", (hit, r["id"]))
-            marked += 1
-            if r["kind"] in ("text", "voice"):
-                record_evidence(CHANNEL[r["kind"]], True, "the user replied after it", ref=r["id"],
-                                level="confirmed", now=hit)
-    con.commit()
-    con.close()
-    return marked
-
-
 def main(argv=None):
     import sys
     args = sys.argv[1:] if argv is None else argv
@@ -592,8 +390,6 @@ def main(argv=None):
         pass
     if args[:1] == ["confirm"] and len(args) > 1:
         print(json.dumps(confirm_channel(args[1], " ".join(args[2:]) or "the user said they received it")))
-    elif args[:1] == ["flush"]:
-        print(json.dumps(flush()))
     else:
         print("\n".join(readiness_lines()))
     return 0
