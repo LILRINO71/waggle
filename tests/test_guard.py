@@ -1309,3 +1309,52 @@ def test_policy_check_fails_closed_in_process(world, monkeypatch):
 def test_gate_is_off_only_inside_pytest_unless_a_test_turns_it_on():
     assert guard.GATE_IN_TESTS is False and "_pytest" in sys.modules
     assert guard.gate() is None
+
+
+# ---- false alarms found by replaying real agent calls (shapes only, no real paths) ----------------
+
+READ_ONLY_SHAPES = [
+    # a listing kept in a variable, filtered with ?{...}, counted in a string, searched
+    "$r='@R@'; $f=Get-ChildItem $r -Recurse -Filter *.py -File | ? { $_.FullName -notmatch 'venv' }; "
+    "\"files: $($f.Count)\"; $f | Select-String -CaseSensitive -Pattern 'TODO'",
+    # a bash loop over project folders that only tests and prints
+    "cd @UF@; ls Claude; for d in Claude/*/; do [ -d \"$d/.git\" ] && echo \"GIT: $d $(git -C \"$d\" remote get-url "
+    "origin 2>/dev/null)\"; done; ls Claude/proj 2>/dev/null",
+    # git log in the checkout, then the biggest source files as a table
+    "cd @R@; git log --oneline -1; Get-ChildItem -Recurse -Include *.py,*.ps1,*.sh -File | ?{$_.FullName -notmatch "
+    "'venv'} | Sort-Object Length -desc | select -first 25 @{n='f';e={$_.FullName.Replace((pwd).Path,'')}},Length | ft",
+    # git status of every project folder, cut off mid-command the way the audit log stores it
+    "Get-ChildItem -Path '@U@\\Claude' -Directory | ForEach-Object { $d=$_.FullName; if (Test-Path (Join-Path $d "
+    "'.git')) { $s = git -C $d status --porcelain 2>$null; $dirty = ($s | Measure-Object).Count; $ahead = git -C $d "
+    "rev-list --count '@{u}..HEAD' 2>$null; $last",
+    "git status", "git log --oneline -5", "git diff HEAD~1 -- waggle/policy.py", "python -m pytest -q",
+    "rg -n decide waggle", "Get-Content waggle/policy.py | Select-String decide", "rm *.py", "Remove-Item *.log",
+    "$x = git rev-parse HEAD; echo $x", "if (Test-Path waggle/policy.py) { 'yes' }",
+    # a quoted regex full of | is not a pipeline
+    "$r='@R@'; $f=Get-ChildItem $r -Recurse -Filter *.py -File | ? { $_.FullName -notmatch "
+    "'\\\\(\\.git|venv|node_modules|__pycache__|build|dist)\\\\' }; $f | Select-String -Pattern '\\b(TODO|FIXME)\\b'",
+]
+
+
+@pytest.mark.parametrize("cmd", READ_ONLY_SHAPES)
+def test_read_only_work_is_decided_as_before(world, cmd):
+    """No new ask: the decision is exactly what the policy gave before the guard (rm *.py still asks as a delete)."""
+    for cwd in (world.user / "Claude", world.repo):
+        for tool in ("Bash", "PowerShell"):
+            d = decide(tool, {"command": sub(cmd, world)}, cwd=cwd)
+            assert (d.action, d.reason) == policy.classify_shell(sub(cmd, world)), (cmd, cwd, d.reason)
+
+
+STILL_ASK = [
+    "if (Test-Path x) { Remove-Item waggle/policy.py }", "gci waggle/policy.py | % { $_.Delete() }",
+    "$p = Get-Item waggle/policy.py; $p.Delete()", "[IO.File]::WriteAllText('waggle/policy.py', 'x')",
+    "Get-ChildItem waggle | Remove-Item", "\"rm\" -rf waggle", "ls waggle/*.py | xargs rm",
+    "$f = Get-ChildItem waggle/*.py; $f | Remove-Item", "rm -r w*", "Get-ChildItem waggle | ForEach-Object { "
+    "Set-Content $_.FullName x }", "for f in waggle/*.py; do echo x > \"$f\"; done",
+    "$s = git -C @R@ checkout -- .", "try { Remove-Item waggle/guard.py } finally { 'ok' }",
+]
+
+
+@pytest.mark.parametrize("cmd", STILL_ASK)
+def test_writers_hidden_in_blocks_and_pipelines_still_ask(world, cmd):
+    assert ask(cmd, world), cmd

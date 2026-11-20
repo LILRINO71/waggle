@@ -102,6 +102,8 @@ _ENV_RE = re.compile(r"%([A-Za-z_]\w*)%|!([A-Za-z_]\w*)!|\$\{(?:env:)?([A-Za-z_]
 
 
 def _env(name):
+    if name == "_":  # PowerShell's current pipeline item; Git Bash also exports "_" (last program run)
+        return None
     if name.upper() in ("USERPROFILE", "HOME"):  # Windows has no $HOME, agents use it anyway
         return str(USER_HOME)
     return os.environ.get(name)
@@ -217,13 +219,48 @@ def _ids(ents):
     return out
 
 
-def _hit(e, f, ancestors, wild):
+_GLOB_MEMO = {}
+
+
+def _glob(path, pattern, cross):
+    """Shell wildcard match. A `*` / `?` stays inside one folder (`rm *.py` in a parent folder does not reach
+    waggle/policy.py) unless cross=True (recursive deletes and moves, where asking too often is the safe side)."""
+    if cross:
+        return fnmatch.fnmatchcase(path, pattern)
+    rx = _GLOB_MEMO.get(pattern)
+    if rx is None:
+        out, i = [], 0
+        while i < len(pattern):
+            c = pattern[i]
+            if pattern.startswith("**", i):
+                out.append(".*")
+                i += 2
+                continue
+            if c == "*":
+                out.append("[^/]*")
+            elif c == "?":
+                out.append("[^/]")
+            elif c == "[" and "]" in pattern[i + 2:]:
+                j = pattern.index("]", i + 2)
+                body = pattern[i + 1:j]
+                neg = body[:1] in ("!", "^")
+                body = (body[1:] if neg else body).replace("\\", "\\\\").replace("[", "\\[")
+                out.append("[" + ("^" if neg else "") + body + "]")
+                i = j
+            else:
+                out.append(re.escape(c))
+            i += 1
+        rx = _GLOB_MEMO[pattern] = re.compile("".join(out) + r"\Z")
+    return bool(rx.match(path))
+
+
+def _hit(e, f, ancestors, wild, cross=False):
     if wild:
         d = f.rsplit("/", 1)[0]
         if e.kind in ("dir", "holdout"):
-            return any(d == p or d.startswith(p + "/") or fnmatch.fnmatchcase(p, d) or (ancestors and p.startswith(
+            return any(d == p or d.startswith(p + "/") or _glob(p, d, cross) or (ancestors and p.startswith(
                 d + "/")) for p in e.forms)
-        return any(fnmatch.fnmatchcase(p, f) for p in e.forms)
+        return any(_glob(p, f, cross) for p in e.forms)
     if e.kind == "file":
         return f in e.forms or (ancestors and any(p.startswith(f + "/") for p in e.forms))
     if e.kind == "prefix":
@@ -256,7 +293,7 @@ def _settings_glob(f):
                                                          ("settings.json", "settings.local.json"))
 
 
-def match(raw, cwd=None, ancestors=False, _entries=None, _idmap=None):
+def match(raw, cwd=None, ancestors=False, _entries=None, _idmap=None, _cross=None):
     """Label of the protected entry `raw` names (resolving ~, env vars, relative paths against cwd, '..', case,
     trailing dots, links, hard links), or None. With ancestors=True a folder that contains a protected file counts
     too."""
@@ -271,7 +308,7 @@ def match(raw, cwd=None, ancestors=False, _entries=None, _idmap=None):
     real = None
     for stage in (0, 1):
         for e in ents:
-            if any(_hit(e, f, ancestors, wild) for f in forms):
+            if any(_hit(e, f, ancestors, wild, ancestors if _cross is None else _cross) for f in forms):
                 return e.label
         if any(_settings_hit(f, ancestors) or (wild and _settings_glob(f)) for f in forms):
             return "Claude Code settings (.claude/settings.json)"
@@ -393,11 +430,17 @@ READ_VERBS = {
     "get-filehash", "file", "stat", "get-item", "gi", "get-itemproperty", "test-path", "resolve-path", "diff", "fc",
     "cmp", "compare-object", "echo", "write-output", "write-host", "printf", "pwd", "get-location", "where", "which",
     "get-command", "gcm", "basename", "dirname", "realpath", "readlink", "true", "pytest",
+    # PowerShell pipeline shaping and tests: they pass values along and print, never write a file.
+    "select-object", "select", "sort-object", "format-table", "ft", "format-list", "fl", "format-wide", "fw",
+    "measure-object", "measure", "group-object", "out-string", "out-host", "join-path", "split-path", "[", "[[",
+    "test", "get-date", "convertto-json", "convertfrom-json", "write-verbose", "write-debug", "write-information",
 }
 NAV_VERBS = {"cd", "chdir", "sl", "set-location", "pushd", "push-location", "popd", "pop-location"}
 BENIGN_GIT = {"diff", "log", "show", "status", "blame", "ls-files", "rev-parse", "rev-list", "grep", "describe",
               "shortlog", "cat-file", "ls-tree", "remote", "fetch", "add", "commit", "push", "tag", "config",
               "branch", "worktree", "reflog", "diff-tree", "show-ref", "for-each-ref"}
+# Deletes that only reach into sub-folders with a recursive flag (rm *.py in a parent folder stays in that folder).
+_FLAT_DELETES = {"rm", "remove-item", "ri", "rmdir", "rd", "unlink"}
 ANCESTOR_VERBS = {"rm", "del", "erase", "rmdir", "rd", "ri", "remove-item", "mv", "move", "move-item", "mi", "ren",
                   "rename", "rename-item", "rni", "robocopy", "xcopy"}
 COPY_VERBS = {"cp", "copy", "copy-item", "cpi"}
@@ -420,17 +463,20 @@ _MENTION = None
 
 def _split(cmd, aware):
     cmd = re.sub(r"(\d*>+)&(\d)", r"\1\2", cmd)
+    # A block brace ends a statement too (`if (x) { Remove-Item y }` runs Remove-Item); ${VAR}, @{...} and a/{b,c}
+    # braces are not blocks.
     if not aware:
-        return [p for p in re.split(r"[;|&\n\r]", cmd) if p.strip()]
+        return [p for p in re.split(r"[;|&\n\r]|(?:^|(?<=[\s)]))\{|\}(?=[\s;|&)]|$)", cmd) if p.strip()]
     out, cur, q = [], [], None
-    for c in cmd:
+    for i, c in enumerate(cmd):
         if q:
             cur.append(c)
             q = None if c == q else q
         elif c in "\"'":
             q = c
             cur.append(c)
-        elif c in ";|&\n\r":
+        elif c in ";|&\n\r" or (c == "{" and (i == 0 or cmd[i - 1] in " \t)")) or (
+                c == "}" and (i + 1 == len(cmd) or cmd[i + 1] in " \t\n\r;|&)")):
             out.append("".join(cur))
             cur = []
         else:
@@ -477,6 +523,45 @@ def _pieces(tok):
     return found
 
 
+# Words that only route control or values: what follows them is the real command (or nothing).
+_KEYWORDS = {"if", "elseif", "elif", "else", "while", "until", "do", "done", "then", "fi", "try", "finally", "{", "}",
+             "(", ")", "foreach-object", "%", "where-object", "?", "!", "time", "begin", "process", "end"}
+_METHOD_CALL = re.compile(r"\.\s*\w+\s*\(|::\s*\w+\s*\(")
+
+
+def _command_tokens(tokens, quoted_first=False):
+    """(tokens of the command this statement runs, read) where read is True for a statement that runs nothing
+    (a `for x in list` header, `$x = 'literal'`, a bare `$_.Name -match 'y'` filter, a lone "string"), False for an
+    expression that calls a method (`$f.Delete()`, `[IO.File]::WriteAllText(...)`), None for an ordinary command."""
+    toks = list(tokens)
+    if quoted_first and len(toks) == 1:  # PowerShell prints a lone string; bash would run "rm" -rf x (2+ tokens)
+        return toks, not _METHOD_CALL.search(toks[0])
+    for _ in range(20):
+        if not toks:
+            return [], True
+        t = toks[0].lower()
+        if t in ("for", "foreach") and len(toks) >= 3 and toks[2].lower() == "in":
+            return [], True
+        if t in _KEYWORDS:
+            toks = toks[1:]
+        elif len(t) > 1 and t[0] in "{(" and not t.startswith("$("):
+            toks[0] = toks[0][1:]
+        else:
+            break
+    if not toks:
+        return [], True
+    m = re.match(r"^\$[\w:.]+(=(.*))?$", toks[0])
+    if m and (m.group(1) is not None or toks[1:2] in (["="], ["+="], ["-="])):  # $x = <rhs>
+        rhs = ([m.group(2)] if m.group(2) else []) + toks[1:] if m.group(1) is not None else toks[2:]
+        if len(rhs) <= 1:  # a value; a one-word command could not name a file anyway
+            return rhs, not (rhs and _METHOD_CALL.search(rhs[0]))
+        return _command_tokens(rhs)
+    first = toks[0]
+    if first[:1] in "$@-" and not first.startswith("$("):  # an expression, not a command
+        return toks, not _METHOD_CALL.search(" ".join(toks))
+    return toks, None
+
+
 def _verb_info(tokens):
     i = 0
     while i < len(tokens) and (tokens[i] in ("&", ".", "call", "sudo", "time", "nohup", "command", "exec", "env")
@@ -485,7 +570,7 @@ def _verb_info(tokens):
     if i >= len(tokens):
         return "", []
     verb = os.path.basename(tokens[i].lstrip("({!@$").replace("\\", "/")).lower()
-    verb = re.sub(r"\.exe$", "", verb).rstrip(")")
+    verb = re.sub(r"\.exe$", "", re.split(r"[()]", verb)[0] or verb.strip("()"))
     rest = tokens[i + 1:]
     if verb in PYTHONS and "-m" in rest and rest[rest.index("-m") + 1:rest.index("-m") + 2] == ["pytest"]:
         verb = "pytest"
@@ -632,10 +717,10 @@ class _Ctx:
             self._ids = _ids(self.ents)
         return self._ids
 
-    def match(self, piece, cwd, ancestors=False):
-        key = (piece, cwd, ancestors)
+    def match(self, piece, cwd, ancestors=False, cross=None):
+        key = (piece, cwd, ancestors, cross)
         if key not in self.memo:
-            self.memo[key] = match(piece, cwd, ancestors, _entries=self.ents, _idmap=self.ids)
+            self.memo[key] = match(piece, cwd, ancestors, _entries=self.ents, _idmap=self.ids, _cross=cross)
         return self.memo[key]
 
 
@@ -644,12 +729,16 @@ def _analyze(stmts, cwd, ctx, depth=0):
     vcwd = str(cwd)
     for s in stmts:
         tokens = _tokens(s)
-        verb, rest = _verb_info(tokens)
+        ctoks, expr_read = _command_tokens(tokens, s.lstrip()[:1] in "\"'")
+        verb, rest = _verb_info(ctoks)
         for m in _REDIRECT.finditer(s):
             target = m.group(1)
             label = ctx.match(target, vcwd) if vcwd is not None else _loose_name(target)
             if label:
                 res.hit = res.hit or label
+            elif _unresolvable(expand(target.strip("\"'"))) and target.strip("\"'").lower() not in (
+                    "$null", "/dev/null", "nul", "-"):
+                res.nonread = True  # > "$f": a write to a file named elsewhere in the command
         if verb in NAV_VERBS:
             if verb in ("popd", "pop-location"):
                 vcwd = None
@@ -673,17 +762,22 @@ def _analyze(stmts, cwd, ctx, depth=0):
         is_git = verb == "git"
         if sub is not None:
             read = not sub.nonread
+        elif expr_read is not None:
+            read, is_git = expr_read, False
         elif is_git:
             read = _git_read(rest)
         else:
-            read = verb in READ_VERBS
+            read = verb in READ_VERBS or not verb
         if not read:
             res.nonread = True
         if sub is not None:
             res.merge(sub)
         extract = _extracts(verb, rest)
+        recursive = any(t.lower() in ("-recurse", "--recursive", "/s", "/e", "/mir") or (
+            re.match(r"^-[A-Za-z]{1,3}$", t) and "r" in t.lower()) for t in rest)
         ancestors = verb in ANCESTOR_VERBS or extract or (is_git and not read) or (verb in COPY_VERBS and any(
             re.match(r"^-(r|R|a|recurse)$|^/[es]$", t) for t in rest))
+        cross = ancestors and (recursive or verb not in _FLAT_DELETES)
         names = []
         for tok in tokens:
             unres = not read and any(c in expand(tok) for c in "$%`")
@@ -691,7 +785,7 @@ def _analyze(stmts, cwd, ctx, depth=0):
                 if len(piece) < 2 or (piece.startswith("-") and "/" not in piece and "\\" not in piece):
                     continue
                 if vcwd is not None:
-                    label = ctx.match(piece, vcwd, ancestors) or (_loose_name(piece) if unres else None)
+                    label = ctx.match(piece, vcwd, ancestors, cross) or (_loose_name(piece) if unres else None)
                 else:
                     label = None if read else _loose_name(piece)
                 if label:
@@ -707,7 +801,7 @@ def _analyze(stmts, cwd, ctx, depth=0):
             if any(_inside_package(_lex(expand(d), base, lower=False)) for d in dirs):
                 names.append("the Waggle checkout")
         if not read and vcwd is not None and verb:
-            script = _script_file(verb, tokens[len(tokens) - len(rest) - 1], rest, vcwd)
+            script = _script_file(verb, ctoks[len(ctoks) - len(rest) - 1], rest, vcwd)
             if script is not None:
                 try:
                     said = _mentions(script.read_text(encoding="utf-8", errors="replace"))
@@ -746,8 +840,9 @@ def _loose_name(piece):
 _B64 = re.compile(r"[A-Za-z0-9+/]{16,}={0,2}")
 _GIT_ENV = re.compile(r"\bGIT_(?:WORK_TREE|DIR)\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s;&|]+)", re.I)
 _LIT = r"(?:\"[^\"\n]*\"|'[^'\n]*')"
-_ASSIGN = re.compile(r"(?:^|[\s;&|(\"'])(?:set\s+|export\s+|\$)?([A-Za-z_]\w*)\s*=\s*(" + _LIT + r"(?:\s*\+\s*" + _LIT +
-                     r")*|[^\s;&|\"'()]+)", re.I)
+# $p = 'a' + 'b' (PowerShell / Python literals) and p=value / set P=value / export P=value (bash, cmd: no spaces).
+_ASSIGN_LIT = re.compile(r"(?:^|[\s;&|(\"'])\$?([A-Za-z_]\w*)\s*=\s*(" + _LIT + r"(?:\s*\+\s*" + _LIT + r")*)")
+_ASSIGN_SH = re.compile(r"(?:^|[\s;&|(])(?:set\s+|export\s+)?([A-Za-z_]\w*)=(" + _LIT + r"|[^\s;&|\"'()]+)", re.I)
 
 
 def _b64text(tok):
@@ -778,21 +873,64 @@ def _variants(text):
     by the literal assigned to it earlier in the same command, and base64 payloads decoded."""
     out = [text, _join_literals(text)]
     subs = {}
-    for name, val in _ASSIGN.findall(text):
+    for name, val in _ASSIGN_LIT.findall(text) + _ASSIGN_SH.findall(text):
         v = _join_literals(val).strip("\"'")
-        if v:
+        if v and not v.startswith("$"):
             subs[name] = v
     if subs:
         t = out[1]
         for name, v in sorted(subs.items(), key=lambda kv: -len(kv[0])):
-            t = re.sub(r"\$\{?" + re.escape(name) + r"\}?\b|%" + re.escape(name) + "%|!" + re.escape(name) + "!|"
-                       r"(?<![\w$.])" + re.escape(name) + r"(?![\w=])", lambda _m, v=v: v, t)
+            n = re.escape(name)
+            t = re.sub(r"\$\{?" + n + r"\}?(?![\w(])(?!\s*=[^=])|%" + n + "%|!" + n + "!|"
+                       r"(?<![\w$.-])" + n + r"(?![\w(])(?!\s*=[^=])", lambda _m, v=v: v, t)
         out.append(t)
     for m in list(_B64.finditer(text))[:10]:
         decoded = _b64text(m.group(0))
         if decoded:
             out.append(decoded)
     return list(dict.fromkeys(out))
+
+
+def _qsplit(text, seps):
+    """Split on any of seps outside quotes (a regex like 'a|b' inside quotes is not a pipe)."""
+    out, cur, q, i = [], [], None, 0
+    while i < len(text):
+        c = text[i]
+        if q:
+            q = None if c == q else q
+        elif c in "\"'":
+            q = c
+        else:
+            sep = next((s for s in seps if text.startswith(s, i)), None)
+            if sep:
+                out.append("".join(cur))
+                cur, i = [], i + len(sep)
+                continue
+        cur.append(c)
+        i += 1
+    out.append("".join(cur))
+    return out
+
+
+def _pipeline_hit(text, cwd, ctx):
+    """gci waggle | % { Set-Content $_.FullName x }: an earlier stage lists a folder that holds protected files and a
+    later stage of the same pipeline writes or deletes. Each `;` / `&&` chain is looked at on its own."""
+    for chain in _qsplit(text, ("&&", "||", ";", "\n", "\r")):
+        stages = [st for st in _qsplit(chain, ("|",)) if st.strip()]
+        if len(stages) < 2 or not any(_analyze(_split(st, True), cwd, ctx).nonread for st in stages[1:]):
+            continue
+        for st in stages[:-1]:
+            tokens = _tokens(st)
+            verb, rest = _verb_info(_command_tokens(tokens)[0])
+            if verb in NAV_VERBS:
+                continue
+            for tok in rest:
+                for piece in _pieces(tok):
+                    if len(piece) >= 2 and not piece.startswith("-"):
+                        label = ctx.match(piece, cwd, ancestors=True, cross=False)
+                        if label and not label.startswith("Claude Code settings"):
+                            return label
+    return None
 
 
 def shell_hit(command, cwd=None):
@@ -815,6 +953,7 @@ def shell_hit(command, cwd=None):
     for variant in variants:
         for aware in (True, False):
             res.merge(_analyze(_split(variant, aware), cwd, ctx))
+        res.hit = res.hit or _pipeline_hit(variant, cwd, ctx)
     if res.hit:
         return REASON.format(res.hit)
     if res.named and res.nonread:
