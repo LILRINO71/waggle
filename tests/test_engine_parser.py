@@ -147,7 +147,7 @@ def test_stream_one_shot_with_a_fake_process():
     shown = []
     out = claude_cli.stream("hi", model="haiku", on_text=shown.append, popen=OneShot)
     assert out["text"] == "Hello from Claude." and out["model_id"] == "claude-haiku-5-5" and shown
-    assert out["first_text_s"] is not None and "--include-partial-messages" in fake.procs[0].cmd
+    assert out["ttfw_s"] is not None and "--include-partial-messages" in fake.procs[0].cmd
 
 
 def test_real_tool_turn_recorded_from_claude_code_2_1():

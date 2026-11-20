@@ -28,7 +28,7 @@ def test_first_turn_starts_a_new_session_and_streams(settings):
     proc = fake.procs[0]
     assert res.ok and res.text == "Hello from Claude." and shown[-1] == "Hello from Claude."
     assert "--session-id" in proc.cmd and "--input-format" in proc.cmd and "--resume" not in proc.cmd
-    assert res.restarted and not res.resumed and res.fresh_session and res.first_text_s is not None
+    assert res.restarted and not res.resumed and res.fresh_session and res.ttfw_s is not None
     row = chat_store.get_chat("telegram:1")
     assert row["claude_session"] == proc.session_id and row["session_turns"] == 1
     assert row["model"] == "claude-haiku-5-5" and res.model == "claude-haiku-5-5"

@@ -73,7 +73,7 @@ class TurnResult:
     usage: dict = field(default_factory=dict)
     model: str = ""
     session_id: str = ""
-    first_text_s: float = None
+    ttfw_s: float = None
     total_s: float = 0.0
     restarted: bool = False  # a new process had to be started for this turn
     resumed: bool = False  # ...and it resumed the stored Claude session
@@ -281,7 +281,7 @@ class ChatSession:
         res.model = parser.main_model() or self.model
         res.session_id = parser.session_id
         res.api_ttft_ms = (parser.result or {}).get("ttft_ms")
-        res.first_text_s = round(parser.first_text_at - t0, 2) if parser.first_text_at else None
+        res.ttfw_s = round(parser.first_text_at - t0, 2) if parser.first_text_at else None
         res.total_s = round(self.clock() - t0, 2)
         if parser.result is not None and not res.kind:
             err = parser.error()

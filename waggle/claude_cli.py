@@ -384,7 +384,7 @@ class StreamParser:
 def stream(prompt, model="sonnet", system=None, effort="low", purpose="stream", timeout=300, on_text=None,
            popen=None):
     """One lean headless call that streams: on_text(full_text_so_far) fires as words arrive. Plain text, no
-    JSON schema. Returns {'text', 'usage', 'model_id', 'first_text_s', 'total_s'}; raises ClaudeError."""
+    JSON schema. Returns {'text', 'usage', 'model_id', 'ttfw_s', 'total_s'}; raises ClaudeError."""
     claude = find_claude() if popen is None else "claude"
     if not claude:
         raise ClaudeError("Claude Code CLI not found. Set CLAUDE_BIN.", "missing")
@@ -421,7 +421,7 @@ def stream(prompt, model="sonnet", system=None, effort="low", purpose="stream", 
         ok = True
         return {"text": parser.text, "usage": (parser.result or {}).get("usage") or {},
                 "model_id": parser.main_model() or wanted,
-                "first_text_s": round(parser.first_text_at - t0, 2) if parser.first_text_at else None,
+                "ttfw_s": round(parser.first_text_at - t0, 2) if parser.first_text_at else None,
                 "total_s": round(time.time() - t0, 2)}
     except ClaudeError as e:
         if e.kind == "limit":
