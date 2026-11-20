@@ -299,7 +299,7 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
             rec.steps, rec.usage, rec.model = res.steps, res.usage, res.model
             rec.session = {"restarted": res.restarted, "resumed": res.resumed, "retried": res.retried,
                            "fresh": res.fresh_session, "claude_session": res.session_id, "kind": res.kind,
-                           "error": res.error[:300]}
+                           "error": res.error[:300], "api_ttft_ms": res.api_ttft_ms}
             try:
                 quota.record(res.model or chat_model(s), res.usage, "chat", headless=True, ok=res.ok,
                              error_kind=res.kind or None)

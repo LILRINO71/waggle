@@ -14,6 +14,11 @@ or a restart of the host process the next message
 resumes the same session (`--resume`). If that fails, or the session has run settings.chat_session_max_turns
 turns, a fresh session starts and its first message carries the recent transcript (from traces.db).
 A process that dies is restarted on the next turn; one that dies mid-turn before any text is retried once.
+Stopping a process closes its stdin first and then kills the whole tree, so no MCP server is left orphaned.
+
+Measured against the real CLI (2026-11-19, Haiku, Claude Code 2.1.326, tests/real_engine_check.py): first words
+4.5 s cold (22 MCP servers start, ~85k tokens of tools) and 1.4 s warm; with --strict-mcp-config 2.5 s cold, but
+then the claude.ai connectors (Gmail, Drive, Calendar) are not loaded.
 """
 import json
 import os
@@ -74,6 +79,7 @@ class TurnResult:
     resumed: bool = False  # ...and it resumed the stored Claude session
     retried: bool = False  # the process died mid-turn and the turn was sent again
     fresh_session: bool = False  # a brand-new Claude session (seeded with the transcript)
+    api_ttft_ms: float = None  # Claude Code's own time to first token for this turn (from its result event)
 
 
 def safe_name(chat):
@@ -157,11 +163,27 @@ class _Proc:
         self.p.stdin.write(json.dumps(msg, ensure_ascii=False) + "\n")
         self.p.stdin.flush()
 
-    def kill(self):
+    def kill(self, grace=0.0):
+        """End the process. Closing stdin lets Claude Code exit on its own (and stop its MCP servers); after
+        `grace` seconds the whole process tree is killed, so no MCP server is left behind as an orphan."""
         try:
             self.p.stdin.close()
         except Exception:
             pass
+        if grace:
+            try:
+                self.p.wait(timeout=grace)
+            except Exception:
+                pass
+        if self.p.poll() is not None:
+            return
+        pid = getattr(self.p, "pid", None)
+        if os.name == "nt" and isinstance(pid, int):
+            try:
+                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=10,
+                               creationflags=subprocess.CREATE_NO_WINDOW)
+            except Exception:
+                pass
         try:
             self.p.kill()
         except Exception:
@@ -190,9 +212,10 @@ class ChatSession:
     def alive(self):
         return self.proc is not None and self.proc.alive()
 
-    def stop(self):
+    def stop(self, grace=0.0):
+        """Stop the process (the stored session resumes on the next turn). grace > 0: let it exit cleanly first."""
         if self.proc is not None:
-            self.proc.kill()
+            self.proc.kill(grace=grace)
         self.proc = None
 
     def _start(self, allow_resume=True):
@@ -257,6 +280,7 @@ class ChatSession:
         res.usage = (parser.result or {}).get("usage") or {}
         res.model = parser.main_model() or self.model
         res.session_id = parser.session_id
+        res.api_ttft_ms = (parser.result or {}).get("ttft_ms")
         res.first_text_s = round(parser.first_text_at - t0, 2) if parser.first_text_at else None
         res.total_s = round(self.clock() - t0, 2)
         if parser.result is not None and not res.kind:
@@ -334,12 +358,12 @@ class SessionPool:
         for chat, sess in items:
             if sess.alive() and now - sess.last_used > idle and sess.lock.acquire(blocking=False):
                 try:
-                    sess.stop()
+                    sess.stop(grace=3.0)
                     stopped.append(chat)
                 finally:
                     sess.lock.release()
         return stopped
 
-    def stop_all(self):
+    def stop_all(self, grace=3.0):
         for sess in list(self.sessions.values()):
-            sess.stop()
+            sess.stop(grace=grace)

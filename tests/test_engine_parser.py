@@ -148,3 +148,18 @@ def test_stream_one_shot_with_a_fake_process():
     out = claude_cli.stream("hi", model="haiku", on_text=shown.append, popen=OneShot)
     assert out["text"] == "Hello from Claude." and out["model_id"] == "claude-haiku-5-5" and shown
     assert out["first_text_s"] is not None and "--include-partial-messages" in fake.procs[0].cmd
+
+
+def test_real_tool_turn_recorded_from_claude_code_2_1():
+    """A tool turn captured from the real CLI (session id replaced, usage trimmed): the assistant event arrives
+    before content_block_stop and carries text that was already streamed."""
+    from pathlib import Path
+    seen = []
+    p = StreamParser(on_text=seen.append)
+    lines = (Path(__file__).parent / "fixtures" / "claude_stream_tool_turn.jsonl").read_text(encoding="utf-8")
+    done = [p.feed(line) for line in lines.splitlines()]
+    assert done[-1] is True and sum(done) == 1 and p.garbage == 0
+    assert p.text == "There are 3 .txt files in the current folder: alpha.txt, beta.txt, and gamma.txt."
+    assert p.steps == [{"tool": "Glob", "id": p.steps[0]["id"], "input": '{"pattern": "*.txt"}', "ok": True,
+                        "denied": False, "result": "alpha.txt\nbeta.txt\ngamma.txt"}]
+    assert p.error() is None and p.main_model() == "claude-haiku-5-5" and len(seen) == 5
