@@ -48,6 +48,11 @@ def accept_budget_s():
     return float(os.environ.get("WAGGLE_CORE_ACCEPT_BUDGET_S") or _config_value("core_accept_budget_s", 1.0))
 
 
+def turn_timeout_s():
+    """The longest a turn may run before the core gives up on it (default 20 minutes)."""
+    return float(os.environ.get("WAGGLE_CORE_TURN_TIMEOUT_S") or _config_value("core_turn_timeout_s", 1200.0))
+
+
 def inbound_chats():
     """How many chats may run turns at the same time."""
     return max(1, int(os.environ.get("WAGGLE_CORE_INBOUND_CHATS")

@@ -121,3 +121,23 @@ def test_a_stopping_core_refuses_turns_and_finishes_the_running_one(core):
     assert p.wait(30) == 0
     assert inbound.get(t)["state"] == "done"
     assert [r["text"] for r in inbound.list()] == ["sleep:3 in flight"]
+
+
+def test_a_stuck_turn_is_given_up_and_the_watchdog_frees_its_chat(core):
+    p = core.start(extra_env={"WAGGLE_CORE_TURN_TIMEOUT_S": "2"})
+    stuck = post({"chat": "A", "address": "555", "text": "die-always"})[1]["turn_id"]
+    wait_for(lambda: started(core, stuck), what="the stuck turn to start")
+    wait_for(lambda: inbound.get(stuck)["state"] == "failed", what="the turn to be given up")
+    assert [e["ref"] for e in events.query("inbox.timed_out")] == [stuck]
+    reply = outbox.get_by_key(f"inbox-timeout:{stuck}")
+    assert reply["chat"] == "555" and "send it again" in reply["body"]
+    wait_for(lambda: outbox.get(reply["id"])["state"] == "sent", what="the honest reply")
+    snap = health.fetch("/health")[1]
+    assert snap["healthy"] is False and any("blocked" in r for r in snap["reasons"]), snap["reasons"]
+    after = post({"chat": "A", "text": "after the stuck one"})[1]["turn_id"]
+    out = core.cli("watch")
+    assert "restarted" in out.stdout, out.stdout + out.stderr
+    p.wait(60)
+    wait_for(lambda: ended(core, after), what="the next message of that chat")
+    assert len(started(core, stuck)) == 1  # given up, never run again
+    assert inbound.get(stuck)["state"] == "failed"

@@ -154,6 +154,7 @@ class Core:
         self.threads = {}
         self.inflight = {}
         self.chat_threads = {}
+        self.turns = {}
         self.unhealthy = {}
         self.server = None
         self._state_lock = threading.Lock()
@@ -427,6 +428,7 @@ class Core:
                             data={"kind": info["kind"], "timeout_s": timeout, "running_s": running_s})
                 self._set_unhealthy(f"job:{job_id}", f"job {job_id} ({info['kind']}) is overdue: "
                                                      f"running {running_s} s, timeout {timeout} s")
+        self.check_turns(now)
         for row in store.connect().execute("SELECT * FROM jobs WHERE state='running' AND detached=1").fetchall():
             h = jobs.handler(row["kind"])
             if h is None or not h.timeout_s or row["started"] is None or now - row["started"] <= h.timeout_s:
@@ -435,6 +437,22 @@ class Core:
             state = jobs.fail(row["id"], row["lease_owner"], f"timed out after {h.timeout_s} s", now=now)
             events.emit("job.timeout", source="core", ref=row["id"], now=now,
                         data={"kind": row["kind"], "timeout_s": h.timeout_s, "killed": killed, "state": state})
+
+    def check_turns(self, now=None):
+        """Give up turns past the turn timeout and ask for a restart: the stuck handler thread cannot be stopped,
+        and its chat stays blocked until the process is replaced."""
+        now = store.now_or(now)
+        limit = settings.turn_timeout_s()
+        with self._state_lock:
+            running = list(self.turns.items())
+        for turn_id, info in running:
+            running_s = now - info["started"]
+            if info["overdue"] or running_s <= limit:
+                continue
+            info["overdue"] = True
+            inbound.give_up(turn_id, running_s, now=now)
+            self._set_unhealthy(f"turn:{turn_id}", f"turn {turn_id} in chat {info['chat']} ran {running_s:.0f} s "
+                                                   f"(limit {limit:.0f} s); its chat is blocked")
 
     def housekeeping(self):
         jobs.recover()
@@ -474,7 +492,15 @@ class Core:
                             self.chat_threads.pop(chat, None)
                             return
                     continue
-                inbound.run(row)
+                with self._state_lock:
+                    self.turns[row["turn_id"]] = {"chat": chat, "started": time.time(), "overdue": False}
+                try:
+                    inbound.run(row)
+                finally:
+                    with self._state_lock:
+                        info = self.turns.pop(row["turn_id"], None)
+                    if info and info["overdue"]:
+                        self._set_unhealthy(f"turn:{row['turn_id']}", None)
         except Exception as e:
             self._error("inbound", e)
         with self._state_lock:

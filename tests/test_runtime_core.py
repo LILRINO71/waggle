@@ -48,8 +48,8 @@ class Harness:
         self.home = Path(config.HOME)
         self.procs = []
 
-    def start(self, plugins="test_runtime_core_plugin", cadence=FAST):
-        env = dict(self.env, WAGGLE_CORE_PLUGINS=plugins, WAGGLE_CORE_CADENCE=cadence)
+    def start(self, plugins="test_runtime_core_plugin", cadence=FAST, extra_env=None):
+        env = dict(self.env, WAGGLE_CORE_PLUGINS=plugins, WAGGLE_CORE_CADENCE=cadence, **(extra_env or {}))
         out = open(self.home / f"core-{len(self.procs)}.out", "ab")
         p = subprocess.Popen([sys.executable, "-m", "waggle.core", "run"], cwd=str(REPO), env=env, stdout=out,
                              stderr=subprocess.STDOUT)
