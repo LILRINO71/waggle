@@ -1529,3 +1529,71 @@ def test_end_to_end_non_ascii_tool_input_in_isolated_mode(pkg):
         "file_path": str(pkg.root / "waggle" / "policy.py"), "content": "ü ☕"}})
     assert held["permissionDecision"] == "deny" and "NEEDS_APPROVAL" in held["permissionDecisionReason"]
     assert "safety files" in held["permissionDecisionReason"]  # the path was read as written, so it matched
+
+
+# ---- Hermes's own tools (pre_tool_call -> security.check_tool_call), not the Claude Code hook ------
+
+HERMES_HELD = [
+    ("write_file", {"path": "@R@\\waggle\\policy.py", "content": "x"}),
+    ("write_file", {"path": "~/.waggle-guard/x/manifest.json", "content": "{}"}),
+    ("patch", {"mode": "replace", "path": "@RF@/waggle/agent_hook.py", "old_string": "a", "new_string": "b"}),
+    ("patch", {"mode": "patch", "patch": "*** Begin Patch\n*** Update File: @RF@/waggle/guard.py\n*** End Patch"}),
+    ("terminal", {"command": "echo x > @R@\\waggle\\policy.py"}),
+    ("terminal", {"command": "Set-Content policy.py x", "workdir": "@R@\\waggle"}),
+    ("terminal", {"command": "python -m waggle.guard approve --yes"}),
+    ("process", {"action": "start", "command": "git -C @R@ checkout HEAD -- ."}),
+    ("execute_code", {"code": "open(r'@R@\\waggle\\policy.py', 'w').write('')"}),
+    ("execute_code", {"code": "import pathlib\npathlib.Path.home().joinpath('.waggle-guard').rename('x')"}),
+    ("write_file", {"path": "@U@\\Claude\\proj\\.claude\\settings.json", "content": "{}"}),
+]
+HERMES_FREE = [
+    ("write_file", {"path": "@U@\\Claude\\proj\\notes.md", "content": "x"}),
+    ("terminal", {"command": "git status"}), ("terminal", {"command": "cat @R@\\waggle\\policy.py"}),
+    ("execute_code", {"code": "print(sum(range(10)))"}), ("read_file", {"path": "@R@\\waggle\\policy.py"}),
+    ("web_search", {"query": "weather"}), ("browser_navigate", {"url": "https://example.com"}),
+]
+
+
+def hermes_args(args, w):
+    return {k: sub(v, w) if isinstance(v, str) else v for k, v in args.items()}
+
+
+@pytest.mark.parametrize("tool,args", HERMES_HELD)
+def test_hermes_tools_that_could_change_a_protected_file_need_a_yes(world, tool, args):
+    from waggle import security
+    d = security.check_tool_call(tool, hermes_args(args, world))
+    assert d and d["action"] == "approve" and ("safety files" in d["message"] or "guard command" in d["message"]), d
+
+
+@pytest.mark.parametrize("tool,args", HERMES_FREE)
+def test_hermes_tools_that_cannot_are_unchanged(world, tool, args):
+    from waggle import security
+    assert security.check_tool_call(tool, hermes_args(args, world)) is None
+
+
+def test_hermes_tools_are_blocked_while_the_safety_files_fail(world, monkeypatch):
+    from waggle import security
+    monkeypatch.setattr(guard, "GATE_IN_TESTS", True)
+    d = security.check_tool_call("web_search", {"query": "x"})  # no manifest yet
+    assert d["action"] == "block" and "guard approve" in d["message"]
+    approve()
+    assert security.check_tool_call("web_search", {"query": "x"}) is None
+    (world.repo / "waggle" / "policy.py").write_text("# tampered\n")
+    monkeypatch.setattr(guard, "_gate_memo", {"at": -1e9, "bad": None})
+    assert security.check_tool_call("read_file", {"path": "x"})["action"] == "block"
+
+
+def test_hermes_guard_errors_ask(world, monkeypatch):
+    from waggle import security
+    monkeypatch.setattr(guard, "entries", lambda: 1 / 0)
+    d = security.check_tool_call("write_file", {"path": str(world.repo / "notes.txt"), "content": "x"})
+    assert d["action"] == "approve" and "could not check" in d["message"]
+
+
+def test_the_plugin_sends_every_hermes_tool_call_through_check_tool_call():
+    import ast
+    src = (REAL_ROOT / "hermes_plugin" / "waggle" / "__init__.py").read_text(encoding="utf-8")
+    fn = next(n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.FunctionDef) and n.name == "on_pre_tool_call")
+    first = [n for n in fn.body if not isinstance(n, ast.Expr)][1]  # after `args = args or {}`
+    assert "security.check_tool_call(tool_name, args)" in ast.unparse(first)
+    assert 'ctx.register_hook("pre_tool_call", on_pre_tool_call)' in src

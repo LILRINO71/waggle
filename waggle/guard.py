@@ -935,6 +935,18 @@ def _pipeline_hit(text, cwd, ctx):
     return None
 
 
+def code_hit(code, cwd=None):
+    """Reason string when a Python snippet (Hermes execute_code) could change a protected file, else None: the shell
+    analysis of its statements (open('waggle/policy.py', 'w')...) plus any protected name it mentions."""
+    code = str(code or "")
+    if not code.strip():
+        return None
+    said = _mentions(code)
+    if said:
+        return REASON.format(f"code that names {said}")
+    return shell_hit(code, cwd)
+
+
 def shell_hit(command, cwd=None):
     """Reason string when a shell command could change a protected file, else None. Reading one (cat, Get-Content,
     git diff...) is fine: a command that names a protected file is only held when something in it is not a plain

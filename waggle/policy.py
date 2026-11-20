@@ -283,6 +283,8 @@ def _guard_hit(name, base, args, cwd):
         if name in SHELL_TOOLS or name in _OTHER_SHELL:
             return guard.shell_hit(args.get("command") or args.get("cmd") or "",
                                    args.get("cwd") or args.get("workdir") or cwd)
+        if name == "execute_code":  # Hermes runs this Python itself
+            return guard.code_hit(args.get("code") or "", args.get("cwd") or args.get("workdir") or cwd)
         if name.startswith("mcp__") and not name.startswith("mcp__waggle__") and (
                 _MUTATING_MCP.search(base) or not _LOOKING_MCP.search(base)):
             return guard.write_hit(args, cwd, deep=True)
