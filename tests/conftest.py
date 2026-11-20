@@ -15,6 +15,12 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setattr(quota, "TRANSCRIPTS", tmp_path / "transcripts")  # not the real Claude Code usage
     import waggle.claude_cli as claude_cli
     monkeypatch.setattr(claude_cli, "mcp_servers", lambda claude=None, refresh=False: [])  # no real `claude mcp list`
+    monkeypatch.setattr(claude_cli, "find_claude", lambda: None)  # never the real Claude CLI (tests opt in with fakes)
+    import waggle.ollama as ollama
+
+    def no_ollama(*a, **k):
+        raise ollama.OllamaError("no Ollama in tests")
+    monkeypatch.setattr(ollama, "_post", no_ollama)
     import waggle.skills as skills
 
     def no_embed(texts, kind):

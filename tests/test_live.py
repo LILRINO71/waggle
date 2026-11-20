@@ -97,6 +97,8 @@ def _plugin():
 
 
 def test_city_follow_up_is_used(settings, monkeypatch):
+    settings.engine_enabled = False  # the old router path (the engine's brain looks the weather up with tools)
+    settings.save()
     p = _plugin()
     monkeypatch.setattr(p.router, "decide", lambda *a, **k: {"route": "local", "by": "test", "reason": ""})
     monkeypatch.setattr(p.memory, "context_block", lambda *a, **k: "")
