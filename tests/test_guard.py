@@ -55,7 +55,8 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(agent_hook, "_ROOT", repo)
     monkeypatch.setattr(agent_hook, "_USER_HOME", user)
     monkeypatch.setattr(agent_hook, "_GUARD_DIR", gdir)
-    return SimpleNamespace(user=user, repo=repo, gdir=gdir, tmp=tmp_path, wag=user / ".waggle", cfg=config.HOME)
+    return SimpleNamespace(user=user, repo=repo, gdir=gdir, mdir=gdir / guard.checkout_key(repo), tmp=tmp_path,
+                           wag=user / ".waggle", cfg=config.HOME)
 
 
 def approve():
@@ -107,7 +108,7 @@ def protected_targets(w):
     return [w.repo / rel for rel in guard.REPO_FILES] + [
         w.cfg / "config.json", w.cfg / "approvals.db", w.cfg / "budget.db", w.cfg / "approvals.db-wal",
         w.wag / "config.json", w.wag / "approvals.db", w.wag / "budget.db",
-        w.gdir / "manifest.json", w.gdir / "violation.json", w.gdir / "anything" / "else.txt",
+        w.mdir / "manifest.json", w.gdir / "violation.json", w.gdir / "anything" / "else.txt",
         w.wag / "eval" / "math" / "holdout_set.json", w.wag / "eval" / "holdout" / "a.json",
         w.user / ".hermes" / "plugins" / "waggle" / "__init__.py",
     ]
@@ -404,9 +405,9 @@ def test_no_manifest_is_a_violation(world):
 def test_approve_then_verify_is_clean(world):
     approve()
     assert guard.verify() == []
-    m = json.loads((world.gdir / "manifest.json").read_text())
+    m = json.loads((world.mdir / "manifest.json").read_text())
     assert set(guard.REPO_FILES) <= set(m["files"])
-    assert not (world.gdir / "manifest.json.tmp").exists() and len(list(world.gdir.iterdir())) == 1
+    assert not (world.gdir / "manifest.json.tmp").exists() and len(list(world.mdir.iterdir())) == 1
 
 
 def test_changed_and_missing_files_are_reported_with_both_hashes(world):
@@ -494,7 +495,7 @@ def test_databases_are_path_protected_but_not_hashed(world):
     approve()
     (world.cfg / "approvals.db").write_bytes(b"2" * 100)
     assert guard.verify() == []
-    assert not any("approvals" in k for k in json.loads((world.gdir / "manifest.json").read_text())["files"])
+    assert not any("approvals" in k for k in json.loads((world.mdir / "manifest.json").read_text())["files"])
 
 
 def test_approve_without_yes_in_a_non_interactive_run_changes_nothing(world):
@@ -502,11 +503,11 @@ def test_approve_without_yes_in_a_non_interactive_run_changes_nothing(world):
     assert guard.approve(yes=False, out=out.append, interactive=False) == 2
     assert not world.gdir.exists()
     approve()
-    before = (world.gdir / "manifest.json").read_bytes()
+    before = (world.mdir / "manifest.json").read_bytes()
     (world.repo / "waggle" / "policy.py").write_text("# changed")
     out.clear()
     assert guard.approve(yes=False, out=out.append, interactive=False) == 2
-    assert (world.gdir / "manifest.json").read_bytes() == before
+    assert (world.mdir / "manifest.json").read_bytes() == before
     assert any("waggle/policy.py" in line for line in out)  # it shows what differs
 
 
@@ -522,9 +523,9 @@ def test_interactive_approve_needs_a_y(world):
 
 def test_approve_clears_the_violation_record(world):
     approve()
-    world.gdir.joinpath("violation.json").write_text("{}")
+    world.mdir.joinpath("violation.json").write_text("{}")
     approve()
-    assert not (world.gdir / "violation.json").exists()
+    assert not (world.mdir / "violation.json").exists()
 
 
 def test_command_line_exit_codes(world, capsys):
@@ -566,7 +567,7 @@ def test_hook_works_normally_when_the_manifest_matches(world, monkeypatch, capsy
     out = run_hook(monkeypatch, capsys, {"tool_name": "Write", "tool_input": {
         "file_path": str(world.repo / "waggle" / "policy.py"), "content": "x"}})
     assert out["permissionDecision"] == "deny" and "NEEDS_APPROVAL" in out["permissionDecisionReason"]
-    assert not (world.gdir / "violation.json").exists()
+    assert not (world.mdir / "violation.json").exists()
 
 
 def test_hook_passes_the_working_folder_to_the_policy(world, monkeypatch, capsys):
@@ -586,7 +587,7 @@ def test_a_tampered_policy_denies_everything_including_reads(world, monkeypatch,
         assert out["permissionDecision"] == "deny", event
         assert "python -m waggle.guard approve" in out["permissionDecisionReason"]
         assert "waggle/policy.py" in out["permissionDecisionReason"]
-    rec = json.loads((world.gdir / "violation.json").read_text())
+    rec = json.loads((world.mdir / "violation.json").read_text())
     f = rec["files"][0]
     assert f["file"] == "waggle/policy.py" and f["expected"] != f["actual"] and rec["time"] > 0
     rows = [r for r in audit_rows(world.wag / "audit.jsonl") if r["decision"] == "integrity_violation"]
@@ -620,17 +621,17 @@ def test_a_missing_manifest_denies_everything(world, monkeypatch, capsys):
     out = run_hook(monkeypatch, capsys, READ_EVENT)
     assert out["permissionDecision"] == "deny" and "manifest" in out["permissionDecisionReason"]
     assert "approve" in out["permissionDecisionReason"]
-    assert (world.gdir / "violation.json").exists()
+    assert (world.mdir / "violation.json").exists()
     approve()
     assert run_hook(monkeypatch, capsys, READ_EVENT)["permissionDecision"] == "allow"
-    (world.gdir / "manifest.json").unlink()
+    (world.mdir / "manifest.json").unlink()
     assert run_hook(monkeypatch, capsys, READ_EVENT)["permissionDecision"] == "deny"
 
 
 @pytest.mark.parametrize("junk", ["{ not json", "[]", '{"files": []}', '{"files": null}', "", '{"files": {}}'])
 def test_a_broken_manifest_denies(world, monkeypatch, capsys, junk):
-    world.gdir.mkdir(parents=True)
-    (world.gdir / "manifest.json").write_text(junk)
+    world.mdir.mkdir(parents=True)
+    (world.mdir / "manifest.json").write_text(junk)
     assert run_hook(monkeypatch, capsys, READ_EVENT)["permissionDecision"] == "deny"
 
 
@@ -709,7 +710,7 @@ def test_end_to_end_hook_in_a_copy_of_the_package(pkg):
     event = {"tool_name": "Read", "tool_input": {"file_path": "x"}, "cwd": str(pkg.root)}
     assert hook_subprocess(pkg, event)["permissionDecision"] == "deny"  # no manifest yet
     r = guard_subprocess(pkg, "approve")  # non-interactive, no --yes
-    assert r.returncode == 2 and not (pkg.home / ".waggle-guard" / "manifest.json").exists()
+    assert r.returncode == 2 and not (pkg.home / ".waggle-guard" / guard.checkout_key(pkg.root) / "manifest.json").exists()
     r = guard_subprocess(pkg, "approve", "--yes")
     assert r.returncode == 0, r.stdout + r.stderr
     assert guard_subprocess(pkg, "verify").returncode == 0
@@ -723,21 +724,21 @@ def test_end_to_end_hook_in_a_copy_of_the_package(pkg):
     for ev in (event, {"tool_name": "Bash", "tool_input": {"command": "ls"}}):
         out = hook_subprocess(pkg, ev)
         assert out["permissionDecision"] == "deny" and "guard approve" in out["permissionDecisionReason"]
-    assert json.loads((pkg.home / ".waggle-guard" / "violation.json").read_text())["files"][0]["file"] == \
+    assert json.loads((pkg.home / ".waggle-guard" / guard.checkout_key(pkg.root) / "violation.json").read_text())["files"][0]["file"] == \
         "waggle/policy.py"
     rows = audit_rows(pkg.home / ".waggle" / "audit.jsonl")
     assert any(r["decision"] == "integrity_violation" for r in rows)
     assert guard_subprocess(pkg, "verify").returncode == 1
     assert guard_subprocess(pkg, "approve", "--yes").returncode == 0  # the user accepts the change
     assert hook_subprocess(pkg, event)["permissionDecision"] == "allow"
-    assert not (pkg.home / ".waggle-guard" / "violation.json").exists()
+    assert not (pkg.home / ".waggle-guard" / guard.checkout_key(pkg.root) / "violation.json").exists()
 
 
 def test_end_to_end_an_approved_guard_that_no_longer_imports_still_locks_the_hook(pkg):
     assert guard_subprocess(pkg, "approve", "--yes").returncode == 0
     (pkg.root / "waggle" / "guard.py").write_text("def broken(:\n")
     # approve it, as an attacker with the user's terminal would: hashes now match, the module still cannot load
-    manifest = pkg.home / ".waggle-guard" / "manifest.json"
+    manifest = pkg.home / ".waggle-guard" / guard.checkout_key(pkg.root) / "manifest.json"
     m = json.loads(manifest.read_text())
     m["files"]["waggle/guard.py"] = guard._sha_file(pkg.root / "waggle" / "guard.py")
     manifest.write_text(json.dumps(m))
@@ -807,9 +808,9 @@ def test_end_to_end_flipped_line_endings_of_the_real_files(pkg):
 
 def test_a_version_1_manifest_asks_for_a_new_approval(world, monkeypatch, capsys):
     approve()
-    m = json.loads((world.gdir / "manifest.json").read_text())
+    m = json.loads((world.mdir / "manifest.json").read_text())
     m["version"] = 1
-    (world.gdir / "manifest.json").write_text(json.dumps(m))
+    (world.mdir / "manifest.json").write_text(json.dumps(m))
     out = run_hook(monkeypatch, capsys, READ_EVENT)
     assert out["permissionDecision"] == "deny" and "manifest.json" in out["permissionDecisionReason"]
     assert [v["kind"] for v in guard.verify()] == ["old_manifest"]
@@ -1267,8 +1268,8 @@ GATE_CASES = {
     "policy changed": lambda w: (w.repo / "waggle" / "policy.py").write_text("# x\n"),
     "agent.py changed": lambda w: (w.repo / "waggle" / "agent.py").write_text("# x\n"),
     "config.py missing": lambda w: (w.repo / "waggle" / "config.py").unlink(),
-    "manifest missing": lambda w: (w.gdir / "manifest.json").unlink(),
-    "manifest junk": lambda w: (w.gdir / "manifest.json").write_text("[]"),
+    "manifest missing": lambda w: (w.mdir / "manifest.json").unlink(),
+    "manifest junk": lambda w: (w.mdir / "manifest.json").write_text("[]"),
 }
 
 
@@ -1358,3 +1359,137 @@ STILL_ASK = [
 @pytest.mark.parametrize("cmd", STILL_ASK)
 def test_writers_hidden_in_blocks_and_pipelines_still_ask(world, cmd):
     assert ask(cmd, world), cmd
+
+
+# ---- one manifest per checkout -----------------------------------------------------------------
+
+def as_checkout(monkeypatch, root):
+    """Run the guard and the hook as if they had been started from `root`."""
+    monkeypatch.setattr(guard, "PACKAGE_ROOT", root)
+    monkeypatch.setattr(agent_hook, "_ROOT", root)
+
+
+def second_checkout(w, name="waggle-dev"):
+    other = w.user / "Claude" / name
+    for rel in guard.REPO_FILES:
+        (other / rel).parent.mkdir(parents=True, exist_ok=True)
+        (other / rel).write_bytes((w.repo / rel).read_bytes())
+    return other
+
+
+def verdict(monkeypatch, capsys):
+    return run_hook(monkeypatch, capsys, READ_EVENT)["permissionDecision"]
+
+
+def test_each_checkout_has_its_own_manifest_folder(world, monkeypatch, capsys):
+    dev = second_checkout(world)
+    assert guard.checkout_key(world.repo) != guard.checkout_key(dev)
+    as_checkout(monkeypatch, dev)
+    approve()  # a builder approves the worktree...
+    assert verdict(monkeypatch, capsys) == "allow"
+    as_checkout(monkeypatch, world.repo)
+    assert verdict(monkeypatch, capsys) == "deny"  # ...which does not unlock the live checkout
+    approve()
+    assert verdict(monkeypatch, capsys) == "allow"
+    as_checkout(monkeypatch, dev)
+    (dev / "waggle" / "policy.py").write_text("# dev change\n")
+    assert verdict(monkeypatch, capsys) == "deny"  # a changed worktree locks itself...
+    as_checkout(monkeypatch, world.repo)
+    assert verdict(monkeypatch, capsys) == "allow"  # ...and not the live checkout
+    as_checkout(monkeypatch, dev)
+    approve()
+    as_checkout(monkeypatch, world.repo)
+    (world.repo / "waggle" / "policy.py").write_text("# live tampered\n")
+    assert verdict(monkeypatch, capsys) == "deny"  # an approved worktree never vouches for the live checkout
+
+
+def test_a_manifest_moved_between_checkout_folders_is_refused(world, monkeypatch, capsys):
+    """A copied checkout, or a forged folder: a manifest only counts in the folder of the checkout it names."""
+    copy = second_checkout(world, "waggle-copy")
+    as_checkout(monkeypatch, copy)
+    approve()
+    copy_manifest = (world.gdir / guard.checkout_key(copy) / "manifest.json").read_text()
+    as_checkout(monkeypatch, world.repo)
+    approve()
+    (world.repo / "waggle" / "policy.py").write_text("# live tampered\n")
+    (copy / "waggle" / "policy.py").write_text("# live tampered\n")
+    as_checkout(monkeypatch, copy)
+    approve()  # the copy, tampered the same way, is approved...
+    forged = (world.gdir / guard.checkout_key(copy) / "manifest.json").read_text()
+    (world.mdir / "manifest.json").write_text(forged)  # ...and its manifest planted in the live folder
+    as_checkout(monkeypatch, world.repo)
+    out = run_hook(monkeypatch, capsys, READ_EVENT)
+    assert out["permissionDecision"] == "deny" and "manifest.json" in out["permissionDecisionReason"]
+    assert [v["kind"] for v in guard.verify()][:1] == ["other_checkout"]
+    (world.mdir / "manifest.json").write_text(copy_manifest)
+    assert verdict(monkeypatch, capsys) == "deny"
+    assert decide("Write", {"file_path": str(world.gdir / guard.checkout_key(world.repo) / "manifest.json"),
+                            "content": "{}"}).action == policy.ASK  # writing any manifest folder still asks
+    assert decide("Write", {"file_path": str(world.gdir / ("0" * 32) / "manifest.json"),
+                            "content": "{}"}).action == policy.ASK
+
+
+def test_a_folder_for_some_other_key_changes_nothing(world, monkeypatch, capsys):
+    approve()
+    junk = world.gdir / ("f" * 32)
+    junk.mkdir()
+    (junk / "manifest.json").write_text("{}")
+    assert verdict(monkeypatch, capsys) == "allow"
+    (world.repo / "waggle" / "policy.py").write_text("# tampered\n")
+    assert verdict(monkeypatch, capsys) == "deny"
+
+
+def test_a_manifest_without_its_data_folder_is_refused(world, monkeypatch, capsys):
+    approve()
+    m = json.loads((world.mdir / "manifest.json").read_text())
+    del m["waggle_home"]
+    (world.mdir / "manifest.json").write_text(json.dumps(m))
+    out = run_hook(monkeypatch, capsys, READ_EVENT)
+    assert out["permissionDecision"] == "deny" and "WAGGLE_HOME" in out["permissionDecisionReason"]
+
+
+def test_a_worktree_approved_for_a_temp_home_works_there_and_nowhere_else(world, monkeypatch, capsys):
+    dev = second_checkout(world)
+    temp_home = world.tmp / "temp-home"
+    temp_home.mkdir()
+    real_home = config.HOME
+    as_checkout(monkeypatch, world.repo)
+    approve()  # live: approved for the real data folder
+    as_checkout(monkeypatch, dev)
+    monkeypatch.setattr(config, "HOME", temp_home)
+    approve()  # dev: approved for the temp home
+    assert verdict(monkeypatch, capsys) == "allow"
+    monkeypatch.setattr(config, "HOME", real_home)
+    out = run_hook(monkeypatch, capsys, READ_EVENT)  # the worktree pointed at the real data folder
+    assert out["permissionDecision"] == "deny" and "WAGGLE_HOME" in out["permissionDecisionReason"]
+    as_checkout(monkeypatch, world.repo)
+    assert verdict(monkeypatch, capsys) == "allow"  # live is unaffected either way
+    monkeypatch.setattr(config, "HOME", temp_home)
+    assert verdict(monkeypatch, capsys) == "deny"  # and live is not usable with the worktree's home
+
+
+def test_end_to_end_a_junction_to_the_live_checkout_gets_the_live_verdict(pkg, tmp_path):
+    link = tmp_path / "alias"
+    if not _junction(link, pkg.root):
+        pytest.skip("this machine cannot create directory links")
+    assert guard.checkout_key(link) == guard.checkout_key(pkg.root)
+    event = {"tool_name": "Read", "tool_input": {"file_path": "x"}, "cwd": str(pkg.root)}
+    via_link = SimpleNamespace(root=link, home=pkg.home, env=pkg.env)
+    assert hook_subprocess(via_link, event)["permissionDecision"] == "deny"  # nothing approved
+    assert guard_subprocess(pkg, "approve", "--yes").returncode == 0
+    assert hook_subprocess(via_link, event)["permissionDecision"] == "allow"  # same checkout, same verdict
+    (pkg.root / "waggle" / "policy.py").write_text("# tampered\n")
+    assert hook_subprocess(via_link, event)["permissionDecision"] == "deny"
+    assert hook_subprocess(pkg, event)["permissionDecision"] == "deny"
+    folders = [p.name for p in (pkg.home / ".waggle-guard").iterdir()]
+    assert folders == [guard.checkout_key(pkg.root)]
+
+
+def test_end_to_end_a_copied_checkout_is_locked_until_approved_on_its_own(pkg, tmp_path):
+    assert guard_subprocess(pkg, "approve", "--yes").returncode == 0
+    copy = tmp_path / "copy"
+    shutil.copytree(pkg.root, copy)
+    other = SimpleNamespace(root=copy, home=pkg.home, env=pkg.env)
+    event = {"tool_name": "Read", "tool_input": {"file_path": "x"}, "cwd": str(copy)}
+    assert hook_subprocess(other, event)["permissionDecision"] == "deny"
+    assert hook_subprocess(pkg, dict(event, cwd=str(pkg.root)))["permissionDecision"] == "allow"

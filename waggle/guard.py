@@ -58,7 +58,9 @@ GUARD_DIR = USER_HOME / ".waggle-guard"
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 MANIFEST_NAME = "manifest.json"
 VIOLATION_NAME = "violation.json"
-MANIFEST_VERSION = 2  # 2 = line-ending-normalised hashes + the Waggle home it was approved for
+# 3 = one manifest per checkout (~/.waggle-guard/<checkout key>/manifest.json), line-ending-normalised hashes,
+# the checkout's resolved path and the Waggle data folder it was approved for.
+MANIFEST_VERSION = 3
 
 REPO_FILES = (
     "waggle/__init__.py",  # runs before policy on import, so it can patch policy
@@ -1025,8 +1027,35 @@ def snapshot():
     return snap
 
 
+def resolved_root(root=None):
+    """The checkout's final path (junctions, symlinks, subst drives and 8.3 names resolved), case-folded."""
+    return os.path.normcase(os.path.realpath(str(root or PACKAGE_ROOT)))
+
+
+def checkout_key(root=None):
+    """Which manifest folder belongs to a checkout: a hash of its resolved path. Each checkout is approved on its
+    own; approving (or forging) another checkout's folder never changes this one's verdict."""
+    return hashlib.sha256(resolved_root(root).encode("utf-8")).hexdigest()[:32]
+
+
+def checkout_dir():
+    return GUARD_DIR / checkout_key()
+
+
 def manifest_path():
-    return GUARD_DIR / MANIFEST_NAME
+    return checkout_dir() / MANIFEST_NAME
+
+
+def manifest_failures(m):
+    """What makes a parsed manifest unusable for this checkout, as [{file, expected, actual}] (empty = usable)."""
+    out = []
+    if m.get("version") != MANIFEST_VERSION:
+        out.append({"file": "manifest.json", "expected": f"version {MANIFEST_VERSION}",
+                    "actual": f"version {m.get('version')}"})
+    elif os.path.normcase(str(m.get("root"))) != resolved_root():
+        out.append({"file": "manifest.json", "expected": f"approved for {resolved_root()}",
+                    "actual": f"approved for {m.get('root')}"})
+    return out
 
 
 def load_manifest():
@@ -1065,7 +1094,7 @@ def environment_failures(m):
     if not _same(Path.home(), USER_HOME):
         out.append({"file": "USERPROFILE", "expected": str(USER_HOME), "actual": str(Path.home())})
     home = m.get("waggle_home") if isinstance(m, dict) else None
-    if home and not _same(config.HOME, home):
+    if not home or not _same(config.HOME, home):
         out.append({"file": "WAGGLE_HOME", "expected": str(home), "actual": str(config.HOME)})
     return out
 
@@ -1076,10 +1105,8 @@ def verify():
     m = load_manifest()
     if m is None:
         return [{"path": str(manifest_path()), "kind": "no_manifest", "expected": None, "actual": None}]
-    out = []
-    if m.get("version") != MANIFEST_VERSION:
-        out.append({"path": str(manifest_path()), "kind": "old_manifest", "expected": str(MANIFEST_VERSION),
-                    "actual": str(m.get("version"))})
+    out = [{"path": str(manifest_path()), "kind": "old_manifest" if "version" in f["expected"] else "other_checkout",
+            "expected": f["expected"], "actual": f["actual"]} for f in manifest_failures(m)]
     out += [{"path": e["file"], "kind": "environment", "expected": e["expected"], "actual": e["actual"]}
             for e in environment_failures(m)]
     out += [{"path": name, "kind": "shadow", "expected": None, "actual": "present"} for name in shadows()]
@@ -1104,10 +1131,7 @@ def hook_failure():
         files = m["files"]
         if not isinstance(files, dict):
             raise ValueError("files is not a table")
-        bad = []
-        if m.get("version") != MANIFEST_VERSION:
-            bad.append({"file": "manifest.json", "expected": f"version {MANIFEST_VERSION}",
-                        "actual": f"version {m.get('version')}"})
+        bad = manifest_failures(m)
         for rel in HOOK_CHECKED:
             actual = _sha_file(PACKAGE_ROOT / rel)
             if actual is None or files.get(rel) != actual:
@@ -1145,10 +1169,11 @@ def gate_passed():
 
 def write_manifest(snap=None):
     snap = snapshot() if snap is None else snap
-    GUARD_DIR.mkdir(parents=True, exist_ok=True)
-    body = {"version": MANIFEST_VERSION, "created": time.time(), "root": str(PACKAGE_ROOT),
+    folder = checkout_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    body = {"version": MANIFEST_VERSION, "created": time.time(), "root": resolved_root(),
             "waggle_home": str(config.HOME), "hashing": "sha256, CRLF->LF for text files", "files": snap}
-    tmp = GUARD_DIR / f"{MANIFEST_NAME}.{os.getpid()}.tmp"
+    tmp = folder / f"{MANIFEST_NAME}.{os.getpid()}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(body, f, indent=1, sort_keys=True)
         f.flush()
@@ -1156,7 +1181,7 @@ def write_manifest(snap=None):
     os.replace(tmp, manifest_path())
     _gate_memo.update(at=-1e9, bad=None)
     try:
-        (GUARD_DIR / VIOLATION_NAME).unlink()
+        (folder / VIOLATION_NAME).unlink()
     except OSError:
         pass
     return body
@@ -1179,7 +1204,8 @@ def status(out=print):
     out(f"manifest: present, written {age // 3600} h {age % 3600 // 60} min ago")
     out(f"entries: {len(m['files'])} ({hashed} hashed, {len(m['files']) - hashed} absent when approved)")
     out(f"violations: {len(bad)}" + (" (run: python -m waggle.guard verify)" if bad else ""))
-    out(f"violation record: {'present' if (GUARD_DIR / VIOLATION_NAME).exists() else 'none'}")
+    out(f"violation record: {'present' if (checkout_dir() / VIOLATION_NAME).exists() else 'none'}")
+    out(f"checkout: {resolved_root()}  data folder: {m.get('waggle_home')}")
     return 0
 
 

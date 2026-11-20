@@ -29,7 +29,7 @@ _CHECKED = ("waggle/__init__.py", "waggle/policy.py", "waggle/agent_hook.py", "w
             "waggle/security.py", "waggle/config.py", "waggle/budget.py", "waggle/quota.py", "waggle/agent.py",
             "waggle/claude_cli.py", "waggle/bridge.py", "hermes_plugin/waggle/__init__.py")
 _TRUSTED_FOR_AUDIT = {"waggle/agent_hook.py", "waggle/security.py"}
-_MANIFEST_VERSION = 2
+_MANIFEST_VERSION = 3
 _verified = {}  # rel -> the exact bytes that were hashed; the script-mode importer runs these, never a re-read
 
 
@@ -62,6 +62,16 @@ _GUARD_DIR = Path(_USER_HOME) / ".waggle-guard" if _USER_HOME else None
 
 def _sha(data):
     return hashlib.sha256(data if b"\0" in data else data.replace(b"\r\n", b"\n")).hexdigest()
+
+
+def _resolved_root():
+    return os.path.normcase(os.path.realpath(str(_ROOT)))
+
+
+def _manifest_dir():
+    """This checkout's own manifest folder (guard.checkout_dir): a hash of the resolved path the hook runs from, so
+    no other checkout's approval, copy or junction can speak for this one."""
+    return _GUARD_DIR / hashlib.sha256(_resolved_root().encode("utf-8")).hexdigest()[:32]
 
 
 def _same(a, b):
@@ -132,7 +142,7 @@ def integrity_failure(script=False):
         if _GUARD_DIR is None:
             return [{"file": "user profile", "expected": "the account's profile folder", "actual": "not found"}]
         try:
-            manifest = json.loads((_GUARD_DIR / "manifest.json").read_text(encoding="utf-8"))
+            manifest = json.loads((_manifest_dir() / "manifest.json").read_text(encoding="utf-8"))
         except FileNotFoundError:
             return [{"file": "manifest.json", "expected": "an approved manifest", "actual": "missing"}]
         expected = manifest["files"]
@@ -142,6 +152,9 @@ def integrity_failure(script=False):
         if manifest.get("version") != _MANIFEST_VERSION:
             bad.append({"file": "manifest.json", "expected": f"version {_MANIFEST_VERSION}",
                         "actual": f"version {manifest.get('version')}"})
+        elif os.path.normcase(str(manifest.get("root"))) != _resolved_root():
+            bad.append({"file": "manifest.json", "expected": f"approved for {_resolved_root()}",
+                        "actual": f"approved for {manifest.get('root')}"})
         for rel in _CHECKED:
             try:
                 data = (_ROOT / rel).read_bytes()
@@ -165,7 +178,7 @@ def integrity_failure(script=False):
                 return [{"file": "waggle/guard.py", "expected": "importable",
                          "actual": f"import failed ({type(e).__name__})"}]
             home = manifest.get("waggle_home")
-            if home and not _same(guard.config.HOME, home):  # approvals.db lives in the data folder
+            if not home or not _same(guard.config.HOME, home):  # approvals.db lives in the data folder
                 bad.append({"file": "WAGGLE_HOME", "expected": str(home), "actual": str(guard.config.HOME)})
             elif script:
                 guard.gate_passed()
@@ -178,10 +191,11 @@ def integrity_failure(script=False):
 def _record_violation(bad, tool, args):
     """violation.json for the rest of Waggle to read, plus an integrity_violation row in the audit log."""
     try:
-        _GUARD_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = _GUARD_DIR / f"violation.json.{os.getpid()}.tmp"
+        folder = _manifest_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        tmp = folder / f"violation.json.{os.getpid()}.tmp"
         tmp.write_text(json.dumps({"time": time.time(), "files": bad}, indent=1), encoding="utf-8")
-        os.replace(tmp, _GUARD_DIR / "violation.json")
+        os.replace(tmp, folder / "violation.json")
     except Exception:
         pass
     reason = "integrity_violation: " + ", ".join(b["file"] for b in bad)
