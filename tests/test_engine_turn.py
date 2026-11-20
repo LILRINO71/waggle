@@ -109,13 +109,14 @@ def test_tool_error_with_a_delivered_answer_is_degraded_and_the_tool_result_is_k
     assert len(step["result"]) == traces.STEP_RESULT_CAP and secret not in step["result"] and "not logged in" in step["result"]
 
 
-def test_denied_tool_is_not_an_error(settings, no_local):
+def test_refused_tool_degrades_the_turn_and_says_why(settings, no_local):
     def script(proc, msg):
         sid = proc.session_id
         proc.emit(ev_tool(sid, "Write", {"file_path": "x"}, "NEEDS_APPROVAL code ABCD", is_error=True))
         proc.answer("I need your OK first: reply yes.")
     rec, _, _ = turn(settings, script)
-    assert rec.outcome == "ok" and rec.steps[0]["denied"]
+    assert rec.outcome == "degraded" and rec.steps[0]["denied"]
+    assert any(w.startswith("needs approval: Write") for w in rec.outcome_why)
 
 
 def test_undelivered_reply_goes_to_the_outbox_once(settings, no_local):
@@ -202,7 +203,7 @@ def test_outcome_rule():
     assert o(answered_by="claude-x", delivered=False, queued=False)[0] == "failed"
     assert o(answered_by="claude-x", delivered=False, queued=True)[0] == "degraded"
     assert o(answered_by="claude-x", delivered=True, steps=[{"tool": "Read", "ok": None}])[0] == "degraded"
-    assert o(answered_by="claude-x", delivered=True, steps=[{"tool": "Read", "ok": False, "denied": True}])[0] == "ok"
+    assert o(answered_by="claude-x", delivered=True, steps=[{"tool": "Read", "ok": False, "denied": True}])[0] == "degraded"
     assert o(answered_by="local", delivered=True)[0] == "degraded"
     assert o(answered_by="claude-x", delivered=True, partial=True) == ("degraded", ["answer cut off"])
 

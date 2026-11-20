@@ -122,12 +122,48 @@ def _json_or_null(value):
 
 # ---- the truth helpers: outcome rule, claims, version stamp ------------------------------------------------
 
+_FAMILIES = {"bash": "shell", "powershell": "shell", "webfetch": "web", "websearch": "web", "read": "files",
+             "glob": "files", "grep": "files"}
+
+
+def tool_family(tool):
+    """The kind of work a tool does, so a retry with a sibling counts as the same attempt: Bash/PowerShell,
+    WebFetch/WebSearch, Read/Glob/Grep, and every tool of one MCP server."""
+    name = str(tool or "").lower()
+    if name.startswith("mcp__"):
+        return "mcp:" + name.split("__")[1]
+    return _FAMILIES.get(name, name)
+
+
+def step_status(step):
+    """ok | failed | refused | pending for one recorded tool call. refused: the safety hook turned it down (it
+    needs the user's approval, or is blocked); pending: no result ever came back."""
+    if step.get("denied"):
+        return "refused"
+    if step.get("ok") is None:
+        return "pending"
+    return "ok" if step.get("ok") else "failed"
+
+
+def _refusal_kind(step):
+    text = str(step.get("result") or "")
+    if "NEEDS_APPROVAL" in text or not text:
+        return "needs approval"
+    return "blocked by the safety policy"
+
+
 def turn_outcome(*, answered_by, delivered, queued=False, steps=(), partial=False, failure_notice=False):
     """(outcome, reasons) for one turn by a fixed rule, no model involved:
-    failed   - no real answer (only an honest failure notice), or the reply was neither delivered nor queued;
-    degraded - answered, but by the local model, or a tool errored or never returned, or the answer was cut off,
-               or it waits in the outbox instead of being shown;
-    ok       - otherwise. A denied tool (waiting for the user's approval) is not an error."""
+    failed    - no real answer (only an honest failure notice), or the reply was neither delivered nor queued;
+    degraded  - answered, but a tool failed or was refused (the safety hook: needs approval, or blocked) and the
+                answer went out without it, or the local model answered, or a tool never returned, or the answer
+                was cut off, or it waits in the outbox instead of being shown;
+    recovered - every tool that failed was followed by a later call of the same kind of work that succeeded
+                (Bash then PowerShell, a second WebFetch ...), nothing was refused, and the answer was delivered;
+    ok        - no tool failed.
+    A refused call is only recovered by the identical call succeeding later (an approval given in the same turn):
+    another command that happens to work is not the action the user has to approve. The reasons list every
+    failure, refusal and recovery, in order."""
     why = []
     if failure_notice:
         why.append("no answer: a failure notice was sent instead")
@@ -135,20 +171,35 @@ def turn_outcome(*, answered_by, delivered, queued=False, steps=(), partial=Fals
         why.append("reply neither delivered nor queued")
     if why:
         return "failed", why
+    bad, healed = [], []
     if answered_by == "local":
-        why.append("answered by the local model")
-    for st in steps or ():
-        if st.get("denied"):
-            continue
-        if st.get("ok") is False:
-            why.append(f"tool error: {st.get('tool') or '?'}")
-        elif st.get("ok") is None:
-            why.append(f"tool without a result: {st.get('tool') or '?'}")
+        bad.append("answered by the local model")
+    steps = list(steps or ())
+    for i, st in enumerate(steps):
+        status, name = step_status(st), st.get("tool") or "?"
+        later = steps[i + 1:]
+        if status == "refused":
+            if any(step_status(x) == "ok" and x.get("tool") == st.get("tool") and x.get("input") == st.get("input")
+                   for x in later):
+                healed.append(f"{_refusal_kind(st)}, then allowed: {name}")
+            else:
+                bad.append(f"{_refusal_kind(st)}: {name} (the answer went out without it)")
+        elif status == "failed":
+            fix = next((x for x in later if step_status(x) == "ok" and tool_family(x.get("tool")) == tool_family(name)),
+                       None)
+            if fix is not None:
+                healed.append(f"tool error: {name}, later {fix.get('tool') or name} succeeded")
+            else:
+                bad.append(f"tool error: {name}")
+        elif status == "pending":
+            bad.append(f"tool without a result: {name}")
     if partial:
-        why.append("answer cut off")
+        bad.append("answer cut off")
     if not delivered:
-        why.append("delivery deferred to the outbox")
-    return ("degraded" if why else "ok"), why
+        bad.append("delivery deferred to the outbox")
+    if bad:
+        return "degraded", bad + healed
+    return ("recovered" if healed else "ok"), healed
 
 
 _FILE_RE = re.compile(r"(?<![\w/:.\\])((?:[A-Za-z]:[\\/]|~[\\/]|\.{1,2}[\\/]|/)?(?:[\w.\-]+[\\/])+[\w.\-]+\.[A-Za-z0-9]{1,8})\b")

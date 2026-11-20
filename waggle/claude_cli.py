@@ -230,6 +230,19 @@ def _redact(text):
     return redact(text)
 
 
+_REFUSAL_MARKS = ("NEEDS_APPROVAL", "Blocked by Waggle's safety policy")
+
+
+def is_refusal(body, error=True):
+    """True when a tool result is the safety hook turning the call down (the safety hook's two messages: "NEEDS_
+    APPROVAL [code]: ..." and "Blocked by Waggle's safety policy: ..."). A successful result that merely mentions
+    those words (a file about the policy) is not a refusal: it must be an error result, or start with the mark."""
+    body = str(body or "")
+    if body.lstrip().startswith(_REFUSAL_MARKS):
+        return True
+    return bool(error) and any(m in body for m in _REFUSAL_MARKS) or (bool(error) and "safety policy" in body)
+
+
 class StreamParser:
     """Reads Claude Code `stream-json` output (with --include-partial-messages) one line at a time.
 
@@ -325,7 +338,7 @@ class StreamParser:
                     body = " ".join(str(b.get("text", "")) for b in body if isinstance(b, dict))
                 body = str(body or "")
                 step["ok"] = not block.get("is_error")
-                step["denied"] = "NEEDS_APPROVAL" in body or "safety policy" in body
+                step["denied"] = is_refusal(body, error=not step["ok"])
                 step["result"] = _redact(body)[:TOOL_RESULT_CAP]
         elif t == "rate_limit_event":
             self.rate_limit = ev.get("rate_limit_info")
@@ -368,7 +381,9 @@ class StreamParser:
         if r is None:
             return "error", "no result"
         if r.get("is_error") or r.get("subtype") not in (None, "success"):
-            msg = str(r.get("result") or r.get("terminal_reason") or r.get("subtype") or "unknown error")
+            errs = r.get("errors")
+            errs = "; ".join(str(e) for e in errs) if isinstance(errs, list) else ""
+            msg = str(r.get("result") or errs or r.get("terminal_reason") or r.get("subtype") or "unknown error")
             if r.get("api_error_status") == 429:
                 return "limit", msg[:300]
             return error_kind(msg), msg[:300]

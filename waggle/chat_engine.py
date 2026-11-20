@@ -16,9 +16,9 @@ and the engine does the rest, in whatever process it runs:
 4. Delivery failed: the reply goes to the core outbox (waggle.core.outbox, idem key "turn:<turn_id>") and the
    core's sender delivers it, never twice.
 5. The truth record (traces.db, waggle/traces.py): user text, reply, who really answered (model id, local or
-   none) and why, every tool call with its result, time to first words, total time, delivery result and
-   message ids, what the answer claims to have produced, the code version and the message's origin; outcome
-   ok / degraded / failed by traces.turn_outcome().
+   none) and why, every tool call with its name, success and result (redacted, 500 characters), time to first
+   words, total time, delivery result and message ids, what the answer claims to have produced, the code version
+   and the message's origin; outcome ok / recovered / degraded / failed by traces.turn_outcome().
 
 Origin (plan decision 10): only the owner's own channel is "user"; the command-line chat, tests, canaries,
 benches and other agents are marked so nothing learns from them (origin_for()).
@@ -101,7 +101,7 @@ class TurnRecord:
     answered_by: str = "none"  # the Claude model id | local | none
     model: str = ""
     fallback_reason: str = ""
-    outcome: str = "failed"  # ok | degraded | failed (traces.turn_outcome)
+    outcome: str = "failed"  # ok | recovered | degraded | failed (traces.turn_outcome)
     outcome_why: list = field(default_factory=list)
     ttfw_s: float = None
     total_s: float = 0.0
@@ -310,7 +310,8 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
             rec.steps, rec.usage, rec.model = res.steps, res.usage, res.model
             rec.session = {"restarted": res.restarted, "resumed": res.resumed, "retried": res.retried,
                            "fresh": res.fresh_session, "claude_session": res.session_id, "kind": res.kind,
-                           "error": res.error[:300], "api_ttft_ms": res.api_ttft_ms, "attempt": attempt}
+                           "error": res.error[:300], "api_ttft_ms": res.api_ttft_ms, "attempt": attempt,
+                           "model_first_text_s": res.ttfw_s}  # when Claude's first words arrived (ttfw_s: shown)
             try:
                 quota.record(res.model or chat_model(s), res.usage, "chat", headless=True, ok=res.ok,
                              error_kind=res.kind or None)
@@ -382,10 +383,22 @@ def _why_short(why):
             }.get(kind.strip(), (msg or kind).strip()[:120] or "an error")
 
 
+def tool_calls(steps, limit=40):
+    """Every tool call of a turn for the trace's extra: name, whether it worked, whether the safety hook refused
+    it, and its result or error, redacted and cut to traces.STEP_RESULT_CAP characters (the steps table holds the
+    same, row by row, plus the input)."""
+    out = []
+    for st in (steps or [])[:limit]:
+        out.append({"tool": st.get("tool") or "", "status": traces.step_status(st),
+                    "ok": st.get("ok"), "denied": bool(st.get("denied")),
+                    "result": traces.redact(str(st.get("result") or ""))[:traces.STEP_RESULT_CAP]})
+    return out
+
+
 def record_turn(rec, voice=False, note="", route="chat"):
     try:
         return traces.record(rec.text, session=rec.chat, platform=rec.platform, route=route, model=rec.model,
-                             latency_s=rec.total_s, ok=rec.outcome == "ok",
+                             latency_s=rec.total_s, ok=rec.outcome in ("ok", "recovered"),
                              error=rec.delivery_error or rec.fallback_reason, reply=rec.reply, tokens=rec.usage,
                              steps=rec.steps, turn_id=rec.turn_id, chat=rec.chat, origin=rec.origin,
                              answered_by=rec.answered_by, fallback_reason=rec.fallback_reason or None,
@@ -393,7 +406,7 @@ def record_turn(rec, voice=False, note="", route="chat"):
                              delivery_error=rec.delivery_error or None, message_ids=rec.message_ids,
                              turn_outcome=rec.outcome, outcome_why=rec.outcome_why, claims=rec.claims,
                              extra={"voice": voice, "note": bool(note), "outbox": rec.outbox_id,
-                                    "session": rec.session, "tools": [st.get("tool") for st in rec.steps][:30]})
+                                    "session": rec.session, "tools": tool_calls(rec.steps)})
     except Exception as e:
         events.log("engine_error", stage="trace", error=str(e)[:200])
         return None
@@ -568,16 +581,30 @@ def set_engine_chat(chat_id, on=True):
     return set(chats)
 
 
+def engine_chat_keys(settings=None, platform="telegram"):
+    """The chat keys of the engine chats ("telegram:<id>"): they exist before the user's first message, so they
+    do not need a row in the chats table."""
+    return {f"{platform}:{c}" for c in engine_chats(settings)}
+
+
 def prewarm(now=None, within_s=86400, limit=3, settings=None):
-    """Start the Claude process of every engine chat the user wrote in within `within_s` (resuming its
-    session), so the first message of the day does not pay the cold start. Returns {chat: result}."""
+    """Start the Claude process of every engine chat (settings.engine_chats: the owner's chat, even when it has
+    no row or has not written yet) and of the other chats the user wrote in within `within_s`, up to `limit`
+    of those (resuming their sessions), so the first message of the day does not pay the cold start.
+    Returns {chat: result}."""
     s = settings or Settings.load()
     now = time.time() if now is None else now
-    wanted = engine_chats(s)
-    rows = [r for r in chat_store.chats_with_address()
-            if r.get("address") in wanted and (r.get("last_user") or 0) >= now - within_s]
-    rows.sort(key=lambda r: -(r.get("last_user") or 0))
     out = {}
+    for c in sorted(engine_chats(s)):
+        chat = f"telegram:{c}"
+        try:
+            chat_store.touch_chat(chat, "telegram", address=c)  # the row the sender resolves the chat through
+        except Exception as e:
+            events.log("engine_error", stage="prewarm_touch", error=str(e)[:200])
+        out[chat] = pool(s).get(chat).warm()
+    rows = [r for r in chat_store.chats_with_address()
+            if r["chat"] not in out and (r.get("last_user") or 0) >= now - within_s]
+    rows.sort(key=lambda r: -(r.get("last_user") or 0))
     for r in rows[:limit]:
         out[r["chat"]] = pool(s).get(r["chat"]).warm()
     events.log("engine_prewarm", chats=list(out), results=out)
