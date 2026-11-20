@@ -1,7 +1,7 @@
 """Fact watchers: plain "this changed" signals from real sources. No model is involved.
 
-Each watcher compares what it sees now with what it saw last time (~/.waggle/watchers_state.json) and returns new
-signals only. A signal is a dict:
+Each watcher compares what it sees now with what it saw last time (runtime.db meta "outreach.watchers") and returns
+new signals only. A signal is a dict:
     key      stable id (the same fact never becomes two signals)
     kind     github_ci | github_pr | github_issue | objective | build | routine | cron | upcoming | mail | unpushed
     title    one line, detail: a little more
@@ -26,22 +26,24 @@ import subprocess
 import time
 from pathlib import Path
 
-from .config import Settings, data_path
 
 GH_CANDIDATES = (r"C:\Program Files\GitHub CLI\gh.exe",)
 URGENT_WITHIN_S = 3 * 3600
 LOOKAHEAD_DAYS = 2
 
 
+STATE_META = "outreach.watchers"  # what each watcher saw last time, in runtime.db meta
+
+
 def _state():
-    try:
-        return json.loads(data_path("watchers_state.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
+    from waggle.core import store
+    st = store.loads(store.get_meta(STATE_META))
+    return st if isinstance(st, dict) else {}
 
 
 def _save(st):
-    data_path("watchers_state.json").write_text(json.dumps(st, indent=1), encoding="utf-8")
+    from waggle.core import store
+    store.set_meta(STATE_META, store.dumps(st))
 
 
 def _h(text):

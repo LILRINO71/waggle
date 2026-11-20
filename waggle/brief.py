@@ -1,7 +1,7 @@
 """Morning brief: Waggle reaches out first, every day, without being asked.
 
-At brief_time (07:30; the minute tick sends it through the outbox, and a brief missed while the PC was off is
-still sent up to brief_catchup_hours later, never in the afternoon) it sends a short brief: today's weather, the
+At brief_time (07:30; a core timer, outreach.brief, queues it in the outbox, and a brief missed while the PC was
+off is still sent up to brief_catchup_hours later, never in the afternoon) it sends a short brief: today's weather, the
 next action on your most active projects, today's dated items, builds that finished or are running, anything
 waiting for you, and one suggestion. The facts are gathered for free; the local model only phrases them in
 Waggle's voice (plain list if it's down).
@@ -181,7 +181,7 @@ def evening_note(settings=None, now=None, activity=None):
 
 
 def main():
-    """Thin caller kept for the old waggle-brief cron entry: the minute tick decides when the brief is due."""
+    """Thin caller kept for the old waggle-brief cron entry: the core timer outreach.brief decides when it is due."""
     from . import tick
     tick.main([])
 

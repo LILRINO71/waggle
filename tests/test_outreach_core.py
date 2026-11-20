@@ -212,3 +212,97 @@ def test_a_provisioned_twilio_account_never_makes_calls_ready(s, tmp_path, monke
     call._save_status(st)
     assert call.check_pending(opener=opener) == [("CA9", "completed")]
     assert notify.readiness("call")["state"] == "verified" and "completed" in notify.readiness("call")["line"]
+
+
+# ---- timing through core timers and jobs ---------------------------------------------------------------------
+
+def run_jobs(kind, now):
+    from waggle.core import jobs
+    out = []
+    while True:
+        j = jobs.run_one(kinds=[kind], now=now)
+        if j is None:
+            return out
+        out.append(j)
+
+
+def test_register_core_adds_its_timers_once(s, fake_sender):
+    from waggle.core import timers
+    tick.register_core(now=at(12))
+    first = {t["id"]: t for t in timers.list()}
+    assert set(first) == {"outreach.look", "outreach.brief", "outreach.evening", "outreach.scout"}
+    assert first["outreach.look"]["catch_up"] == "skip" and first["outreach.look"]["kind"] == "interval"
+    ev = first["outreach.evening"]
+    assert (ev["kind"], ev["spec"], ev["catch_up"], ev["max_late_s"]) == ("cron", "0 21 * * *", "latest",
+                                                                          s.evening_catchup_hours * 3600)
+    assert first["outreach.brief"]["spec"] == "30 7 * * *" and first["outreach.brief"]["catch_up"] == "latest"
+    tick.register_core(now=at(13))  # the next start: same schedule, nothing duplicated
+    again = {t["id"]: t for t in timers.list()}
+    assert {k: v["next_run"] for k, v in again.items()} == {k: v["next_run"] for k, v in first.items()}
+
+
+def test_evening_note_caught_up_late_once_or_dropped(s, fake_sender):
+    from waggle.core import timers
+    tick.register_core(now=at(12))
+    fired = timers.fire_due(at(21, 40))  # the PC came on 40 min after 21:00: still inside evening_catchup
+    assert len(fired) >= 1
+    done = run_jobs("outreach.evening", at(21, 40))
+    assert len(done) == 1 and done[0]["state"] == "done" and done[0]["payload"]["late_s"] == 40 * 60
+    note = [r for r in rows() if r["origin"] == "evening"]
+    assert len(note) == 1 and note[0]["idem_key"] == "evening:2026-11-19" and note[0]["body"].startswith("🌙")
+    report = timers.catch_up(at(23, 30, day=20))  # off all evening the next day: 2.5 h late, dropped
+    assert any(x["timer_id"] == "outreach.evening" for x in report["skipped"])
+    assert run_jobs("outreach.evening", at(23, 30, day=20)) == []
+
+
+def test_reminder_that_fires_late_says_so(s):
+    from waggle import followups
+    from waggle.core import timers
+    tick.register_jobs()
+    fid = followups.add(at(7, day=20), "Charge the batteries", now=at(12))
+    timers.catch_up(at(9, 30, day=20))  # the PC was off at 07:00
+    done = run_jobs("outreach.reminder", at(9, 30, day=20))
+    assert len(done) == 1 and done[0]["payload"]["late_s"] == 2.5 * 3600
+    body = rows()[0]["body"]
+    assert body.startswith("⏰ Charge the batteries") and "late: the PC was off at 07:00" in body
+    assert followups.get(fid)["status"] == "sent"
+
+
+def test_reminders_from_tests_or_agents_never_reach_the_phone(s):
+    from waggle import followups
+    from waggle.core import timers
+    tick.register_jobs()
+    followups.add(at(13), "bench reminder", origin="bench", now=at(12))
+    timers.fire_due(at(13))
+    run_jobs("outreach.reminder", at(13))
+    assert rows() == []
+
+
+def test_scheduled_call_on_time_queues_a_call_and_late_becomes_a_text(s):
+    from waggle.core import timers
+    tick.register_jobs()
+    call.schedule_at(at(13), "the meet starts soon")
+    call.schedule_at(at(7, day=20), "wake up for the meet")
+    timers.fire_due(at(13))
+    run_jobs("outreach.call", at(13))
+    timers.catch_up(at(9, day=20))  # PC off at 07:00
+    run_jobs("outreach.call", at(9, day=20))
+    got = [(r["kind"], r["origin"], r["body"]) for r in rows()]
+    assert got[0] == ("call", "asked", "the meet starts soon")
+    assert got[1][0] == "text" and "late: the PC was off, so I didn't call at 07:00" in got[1][2]
+    assert len(got) == 2
+
+
+def test_no_json_state_files_are_written(s, fake_sender):
+    from waggle.config import data_path
+    from waggle.core import timers
+    from waggle import followups
+    tick.register_core(now=at(12))
+    followups.add(at(13), "x", now=at(12))
+    tick.look(settings=s, now=at(12), activity={}, asker=lambda *a, **k: {"json": {"decisions": []}})
+    call.provisioned()
+    timers.fire_due(at(13))
+    run_jobs("outreach.reminder", at(13))
+    leftovers = {"outbox.db", "channel_evidence.json", "followups.json", "tick_state.json", "watchers_state.json",
+                 "scout_state.json", "call_status.json", "scheduled_calls.json"}
+    assert not [n for n in leftovers if data_path(n).exists()]

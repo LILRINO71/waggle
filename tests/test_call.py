@@ -69,11 +69,12 @@ def test_call_only_queues_one_outbox_row(tmp_path, monkeypatch):
     assert "not set up" in call.place("x")["why"]  # the raw request still says why it can't happen
 
 
-def test_schedule_and_run_due():
-    call.schedule("later", 10)
-    call.schedule("now", 0)
-    placed = call.run_due(caller=lambda m, **kw: {"ok": True, "m": m})
-    assert [p["m"] for p in placed] == ["now"]
-    placed = call.run_due(now=time.time() + 11 * 60, caller=lambda m, **kw: {"ok": True, "m": m})
-    assert [p["m"] for p in placed] == ["later"]
-    assert call.run_due(now=time.time() + 3600, caller=lambda m, **kw: {}) == []
+def test_schedule_makes_a_one_shot_core_timer():
+    from waggle.core import timers
+    t0 = time.time()
+    due = call.schedule("later", 10, now=t0)
+    ts = [t for t in timers.list() if t["job_kind"] == "outreach.call"]
+    assert due == t0 + 600 and len(ts) == 1
+    t = ts[0]
+    assert t["kind"] == "once" and t["catch_up"] == "all" and abs(t["next_run"] - due) < 0.01 and t["origin"] == "user"
+    assert t["payload"]["message"] == "later"

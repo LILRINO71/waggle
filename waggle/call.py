@@ -23,6 +23,7 @@ import datetime as dt
 import json
 import re
 import time
+import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -344,33 +345,42 @@ def parse_request(text, now=None):
     return minutes, (about or "").strip(" .!?")
 
 
-def schedule(message, minutes):
-    p = data_path("scheduled_calls.json")
-    rows = json.loads(p.read_text(encoding="utf-8")) if p.exists() else []
-    due = time.time() + max(0, float(minutes)) * 60
-    rows.append({"due": due, "message": message})
-    p.write_text(json.dumps(rows), encoding="utf-8")
-    return due
+def schedule(message, minutes, *, origin="user", now=None):
+    """'Call me in 10 minutes': a one-shot core timer (job outreach.call). Returns the due time. A call that falls
+    while the PC is off is not rung late: it becomes a text that says so (see call_due)."""
+    now = time.time() if now is None else float(now)
+    return schedule_at(now + max(0.0, float(minutes)) * 60, message, origin=origin)
 
 
-def run_due(settings=None, now=None, caller=None):
-    """Place any scheduled calls that are due (the minute tick calls this)."""
-    p = data_path("scheduled_calls.json")
-    if not p.exists():
-        return []
-    rows = json.loads(p.read_text(encoding="utf-8"))
-    now = now or time.time()
-    due = [r for r in rows if r["due"] <= now]
-    if not due:
-        return []
-    p.write_text(json.dumps([r for r in rows if r["due"] > now]), encoding="utf-8")
-    return [(caller or call)(r["message"], reason="scheduled", settings=settings, force=True) for r in due]
+def schedule_at(ts, message, *, origin="user"):
+    from waggle.core import timers
+    timers.once(float(ts), "outreach.call", {"message": message or "You asked me to call you.", "origin": origin},
+                timer_id=f"call:{uuid.uuid4().hex[:10]}", catch_up="all", origin=origin)
+    return float(ts)
+
+
+def call_due(payload, *, settings=None):
+    """Job handler for outreach.call: queue the call, or a text saying so when the timer fired too late."""
+    from waggle.core import timers
+
+    from . import notify
+    s = settings or Settings.load()
+    msg = payload.get("message") or "You asked me to call you."
+    ref = f"{payload.get('timer_id')}:{timers.fmt_ts(payload.get('scheduled_ts') or 0)}"
+    cause = payload.get("origin") or ""
+    if float(payload.get("late_s") or 0) > CALL_MAX_LATE_S:
+        at = dt.datetime.fromtimestamp(payload.get("scheduled_ts") or time.time())
+        row = notify.deliver("text", f"📞 late: the PC was off, so I didn't call at {at:%H:%M}. {msg}", asked=True,
+                             origin="asked", ref=ref, source=cause, settings=s)
+        return {"late": True, "outbox": row["id"]}
+    row = notify.deliver("call", msg, urgent=True, asked=True, origin="asked", ref=ref, source=cause, settings=s)
+    return {"late": False, "outbox": row["id"]}
 
 
 def main(argv=None):
     import sys
     args = sys.argv[1:] if argv is None else argv
-    if args[:1] == ["due"]:  # old cron entry: the minute tick now does this and more
+    if args[:1] == ["due"]:  # old cron entry: scheduled calls are core timers now
         from . import tick
         tick.main([])
         return 0

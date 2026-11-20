@@ -2,7 +2,7 @@
 
 The old pipeline (the local 4B model re-reading vault notes, a 4-a-day Sonnet check, and delivery by tier where only
 "critical" reached the phone) is replaced by fact watchers (watchers.py) and a reasoning step (initiative.py),
-driven by tick.py. What stays here: find_repos/_git (used by the watchers), git_watch, stale_watch and
+driven by core timers (tick.register_core). What stays here: find_repos/_git (used by the watchers), git_watch, stale_watch and
 objective_watch (objectives that are blocked, waiting for a yes, or stalled).
 """
 import datetime as dt
@@ -149,7 +149,7 @@ def run(settings=None, now=None, **_):
     """Old entry point: one pass of the watchers and the decision step (see tick.py). Nothing is printed for cron:
     messages go out through the outbox."""
     from . import tick
-    tick.tick(now, settings, steps=("watchers", "decide", "flush"))
+    tick.look(settings=settings, now=now, steps=("watchers", "decide"))
     return []
 
 

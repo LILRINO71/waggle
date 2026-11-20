@@ -4,10 +4,8 @@
   calls tick(), which runs at most one due routine per tick (bounded cost) and recovers interrupted runs.
 - Schedules: 5-field cron ("0 7 * * 1"), "every 30m / 2h / 1d", "daily 21:30", "weekly mon 07:00",
   "weekdays 08:00", and one-shots: "once 2026-11-20 19:00" ("remind me at 7", "call me at 7 tomorrow").
-- Kinds: agent (a specialist agent does the task), message (a reminder: the text is sent as is, no model, no
-  budget) and call (a phone call; an urgent push + voice note when calls aren't possible). Reminders and calls run
-  from the minute tick (run_due_reminders); agent routines from the 5-minute routines job. A one-shot runs once and
-  is then marked done.
+- One-shot reminders and "call me at 7" are not routines: they are core timers (followups.add, call.schedule_at).
+  A "once" schedule here runs an agent routine once and is then marked done.
 - Delivery: telegram (the user's phone), vault (Routines/<name>.md log), or both. Monitor-style routines answer
   NOTHING_NEW when there's nothing worth saying, and then stay quiet, unless the routine is always_report (the
   nightly review feeds the evening note, which always goes out). Results are checked by a cheap verify
@@ -40,7 +38,6 @@ DEFAULTS = [
 ]
 # Earlier default definitions: a routine still exactly like this was never edited by the user and is upgraded.
 OLD_DEFAULTS = {"nightly-project-review": {"schedule": "daily 21:30", "deliver": "both"}}
-KINDS = ("agent", "message", "call")
 
 
 def _load():
@@ -119,32 +116,22 @@ def next_run(schedule, after=None):
 
 # ---- CRUD ----------------------------------------------------------------------------------------
 
-def add(name, schedule, task, agent="general", deliver="telegram", enabled=True, kind="agent", always_report=False,
-        source=""):
+def add(name, schedule, task, agent="general", deliver="telegram", enabled=True, always_report=False, source=""):
     name = re.sub(r"[^a-z0-9-]+", "-", name.lower()).strip("-")[:50] or "routine"
     nxt = next_run(schedule)  # validates
     if nxt is None:
         raise ValueError(f"{schedule!r} is in the past")
     if agent not in agents.AGENTS:
         agent = "general"
-    kind = kind if kind in KINDS else "agent"
     data = _load()
     rid = next((k for k, v in data.items() if v["name"] == name), uuid.uuid4().hex[:8])
     data[rid] = {"name": name, "schedule": schedule, "task": task, "agent": agent, "deliver": deliver,
                  "enabled": enabled, "created": data.get(rid, {}).get("created", time.time()), "next_run": nxt,
                  "last_run": data.get(rid, {}).get("last_run"), "last_status": data.get(rid, {}).get("last_status"),
-                 "runs": data.get(rid, {}).get("runs", 0), "kind": kind, "always_report": bool(always_report),
+                 "runs": data.get(rid, {}).get("runs", 0), "always_report": bool(always_report),
                  "source": source or ""}
     _save(data)
     return rid
-
-
-def add_once(text, when_ts, kind="message", name=None, source=""):
-    """A one-shot reminder ("remind me at 7 to charge the batteries") or call. Returns the routine id."""
-    when_s = dt.datetime.fromtimestamp(when_ts).strftime("%Y-%m-%d %H:%M")
-    name = name or f"{'call' if kind == 'call' else 'remind'}-{when_s.replace(' ', '-').replace(':', '')}-" \
-                   f"{re.sub(r'[^a-z0-9]+', '-', text.lower())[:24]}"
-    return add(name, f"once {when_s}", text, "general", "telegram", kind=kind, source=source)
 
 
 def ensure_defaults():
@@ -196,7 +183,7 @@ def listing():
     out = []
     for rid, v in _load().items():
         out.append({"id": rid, **{k: v.get(k) for k in ("name", "schedule", "agent", "deliver", "enabled",
-                                                         "last_status", "runs", "kind")},
+                                                         "last_status", "runs")},
                     "task": v["task"][:200],
                     "next": time.strftime("%a %m-%d %H:%M", time.localtime(v["next_run"])) if v.get("next_run") else None,
                     "last": time.strftime("%a %m-%d %H:%M", time.localtime(v["last_run"])) if v.get("last_run") else None})
@@ -211,8 +198,6 @@ def run_one(rid, settings=None, run_fn=None, verify_fn=None, now=None):
     data = _load()
     r = data[rid]
     now = now or time.time()
-    if r.get("kind") in ("message", "call"):
-        return _run_reminder(rid, s, now)
     model = agents.model_for(r["agent"], s)
     ok, why = quota.can_escalate(model, s)
     if not ok:
@@ -271,35 +256,6 @@ def _finish_run(r, now, status):
         r.update(enabled=False, last_status=status if status.startswith("done") else f"done ({status})")
 
 
-def _run_reminder(rid, s, now):
-    """A message or call one-shot: no agent, no budget. Things the user asked for bypass the daily cap."""
-    data = _load()
-    r = data[rid]
-    if r.get("kind") == "call":
-        from . import call
-        res = call.call(r["task"], reason="asked", settings=s, force=True)
-        status = "called" if res["ok"] else f"call not placed: {res['why'][:80]} (push + voice note instead)"
-    else:
-        row = notify.deliver("text", f"⏰ {r['task']}", asked=True, origin="reminder", topic=f"reminder:{rid}",
-                             source=r.get("source"), settings=s, now=now)
-        status = "sent" if row["status"] == "queued" else f"not queued ({row['status']})"
-    data = _load()
-    if rid in data:
-        _finish_run(data[rid], now, status)
-        _save(data)
-    return status
-
-
-def run_due_reminders(settings=None, now=None):
-    """Due message/call one-shots and reminders (the minute tick). Agent routines stay with tick()."""
-    now = now or time.time()
-    out = []
-    for rid, r in sorted(_load().items(), key=lambda kv: kv[1].get("next_run") or 0):
-        if r.get("kind") in ("message", "call") and r.get("enabled") and (r.get("next_run") or 1e18) <= now:
-            out.append((rid, _run_reminder(rid, settings or Settings.load(), now)))
-    return out
-
-
 def tick(settings=None, run_fn=None, verify_fn=None, now=None):
     """Called by cron every few minutes: recover crashed runs, then run the most overdue routine."""
     now = now or time.time()
@@ -347,23 +303,7 @@ def _t_add(args):
     return json.dumps({"id": rid, "next": time.strftime("%a %Y-%m-%d %H:%M", time.localtime(r["next_run"]))})
 
 
-def _t_reminder(args):
-    from . import when
-    at, has_time = when.parse(str(args.get("when", "")))
-    if not at or not has_time:
-        return json.dumps({"error": "give a clock time, e.g. 'at 7pm tomorrow' or 'in 2 hours'"})
-    kind = "call" if args.get("kind") == "call" else "message"
-    rid = add_once(str(args.get("text", "Reminder"))[:500], at.timestamp(), kind=kind)
-    return json.dumps({"id": rid, "kind": kind, "at": at.strftime("%a %Y-%m-%d %H:%M")})
-
-
 MCP_TOOLS = [
-    ({"name": "reminder_add", "description": "One-shot reminder or phone call at a time the user gave: 'remind me at "
-      "7 to charge the batteries' -> text='Charge the batteries', when='at 7pm'; 'call me at 7 tomorrow about the "
-      "meet' -> kind='call'. when: plain English ('at 7pm tomorrow', 'in 2 hours', 'friday 16:00'). Runs once.",
-      "parameters": {"type": "object", "properties": {
-          "text": {"type": "string"}, "when": {"type": "string"},
-          "kind": {"type": "string", "enum": ["message", "call"]}}, "required": ["text", "when"]}}, _t_reminder),
     ({"name": "routine_add", "description": "Schedule a recurring task run by a Waggle agent and delivered to the "
       "user. schedule: 'daily 21:30', 'weekdays 07:00', 'weekly mon 07:00', 'every 2h', or 5-field cron. agent: "
       "general, monitor (reports only changes), researcher, planner, coder, robotics, tutor. deliver: telegram, "

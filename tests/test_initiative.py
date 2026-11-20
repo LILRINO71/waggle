@@ -6,7 +6,7 @@ import sqlite3
 
 import pytest
 
-from waggle import call, followups, initiative, notify, origin, routines, tick, watchers
+from waggle import call, followups, initiative, notify, origin, tick, watchers
 from waggle.config import Settings
 
 
@@ -122,19 +122,27 @@ def test_commitment_becomes_a_dated_checkin(s):
              "request": "I'll test the shooter tomorrow"},
             {"id": 2, "time": said.timestamp(), "platform": "cli", "request": "I'll benchmark this tomorrow"}]
     added = followups.capture(s, said.timestamp(), rows=rows)
-    assert len(added) == 1
-    assert followups.due(at(18, day=20)) == []
-    due = followups.due(at(19, 5, day=20))
-    assert len(due) == 1 and "test the shooter" in due[0]["title"]
+    assert len(added) == 1 and added[0]["kind"] == "checkin" and added[0]["timer_id"] == f"checkin:{added[0]['id']}"
+    assert followups.capture(s, said.timestamp(), rows=rows) == []  # the cursor moved on
+    from waggle.core import jobs, timers
+    tick.register_jobs()
+    assert timers.fire_due(at(18, day=20)) == []
+    assert len(timers.fire_due(at(19, 1, day=20))) == 1
+    assert jobs.run_one(kinds=["outreach.checkin"], now=at(19, 1, day=20))["state"] == "done"
+    due = initiative.pending()
+    assert len(due) == 1 and due[0]["kind"] == "followup" and "test the shooter" in due[0]["title"]
 
 
 def test_one_shot_reminder_fires_once(s):
-    rid = routines.add_once("Charge the batteries", at(19, day=20))
-    assert routines.run_due_reminders(s, at(18, day=20)) == []
-    assert routines.run_due_reminders(s, at(19, 1, day=20)) == [(rid, "sent")]
-    assert routines.run_due_reminders(s, at(19, 2, day=20)) == []
-    assert [r["body"] for r in _outbox()] == ["⏰ Charge the batteries"] and not routines._load()[rid]["enabled"]
-    assert routines.normalize("once 2026-11-20 19:00")[0] == "once"
+    from waggle.core import jobs, timers
+    tick.register_jobs()
+    fid = followups.add(at(19, day=20), "Charge the batteries", now=at(12))
+    assert timers.fire_due(at(18, day=20)) == []
+    assert len(timers.fire_due(at(19, 0, day=20) + 30)) == 1
+    assert timers.fire_due(at(19, 2, day=20)) == []  # once
+    assert jobs.run_one(kinds=["outreach.reminder"], now=at(19, 1, day=20))["state"] == "done"
+    assert [r["body"] for r in _outbox()] == ["⏰ Charge the batteries"]
+    assert _outbox()[0]["origin"] == "reminder" and followups.get(fid)["status"] == "sent"
 
 
 def test_call_me_at_a_time():
@@ -165,14 +173,6 @@ def test_configured_is_false_without_a_number(s, monkeypatch, tmp_path):
         return Resp(json.dumps({"status": "active", "type": "Trial"}).encode())
     p = call.provisioned(refresh=True, opener=opener)
     assert p["ready"] is False and p["missing"] == call.STEP_FROM
-
-
-def test_brief_catch_up_window():
-    st = {}
-    assert tick.note_due("brief", (7, 30), 3, st, at(7, 0)) is None
-    assert tick.note_due("brief", (7, 30), 3, st, at(9, 0)) == "send"
-    assert tick.note_due("brief", (7, 30), 3, st, at(15, 0)) == "missed"  # a 3 pm brief is not sent
-    assert tick.note_due("brief", (7, 30), 3, st, at(16, 0)) is None
 
 
 def test_evening_note_always_has_content(s):

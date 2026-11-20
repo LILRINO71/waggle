@@ -1,7 +1,8 @@
 """Initiative: Claude decides what is worth telling the user, and how; rules outside the model keep it in bounds.
 
-Signals (watchers.py, followups.py, scout.py) are stored in ~/.waggle/initiative.db. On a schedule during waking
-hours (initiative_every_min), and right away when a signal is urgent by itself, decide() gives Claude (Sonnet, a
+Signals (watchers.py, followups.py, scout.py) are stored in initiative.db (this module's own database). Each look
+around (core timer outreach.look) checks due(): every initiative_every_min while awake, and right away when a
+signal is urgent by itself, decide() gives Claude (Sonnet, a
 background call under budget.py) the new signals, the user's profile and current projects, the recent
 conversation, what the user worked on today, the time, and everything Waggle already told them recently. For each
 signal it picks: none (say nothing), text, voice (a short voice note), call, evening (keep it for the evening note)
@@ -12,10 +13,13 @@ Guard rails applied to whatever the model says (guard()):
   - at most daily_text_cap unprompted texts/voice notes/calls a day; urgent items and things the user asked for
     bypass the cap; over the cap an item goes to the evening note;
   - quiet hours: nothing non-urgent goes out at night (the outbox holds it until morning); no calls at night;
-  - a call only for urgent items or when asked; when calls are impossible notify falls back to push + voice note;
+  - a call only for urgent items or when asked; when calls are not provisioned an urgent push + voice note go out
+    instead (and call.call_sender falls back to push + text when a queued call cannot ring);
   - at most one automation a day.
 Every decision is logged (signal, action the model chose, final action, reason, guard note, outbox id); whether the
-user answered is filled in later from the outbox. When Claude is unavailable, urgent facts still go out with
+user answered is filled in later (track_responses). The context the model sees holds only the user's own turns
+(origin.user_turns, decision 10); every message it causes is one core outbox row with origin initiative,
+followup or scout. When Claude is unavailable, urgent facts still go out with
 template text; the rest waits for the next decision or the evening note. The local model is not used here.
 """
 import datetime as dt
@@ -63,6 +67,9 @@ def _db():
         topic TEXT, model_action TEXT, action TEXT, message TEXT, reason TEXT, guard TEXT, decided_by TEXT,
         outbox_id TEXT, urgent INTEGER)""")
     con.execute("CREATE TABLE IF NOT EXISTS responses (outbox_id INTEGER PRIMARY KEY, responded_at REAL)")
+    con.execute("""CREATE TABLE IF NOT EXISTS followups (id TEXT PRIMARY KEY, kind TEXT, created REAL, trace INTEGER,
+        said TEXT, said_at REAL, what TEXT, due REAL, status TEXT, closed REAL, outbox TEXT, reason TEXT, chat TEXT,
+        origin TEXT, timer_id TEXT)""")
     return con
 
 
@@ -240,9 +247,8 @@ def context(settings, now, activity=None):
     if activity:
         parts.append("Commits today: " + "; ".join(f"{k}: {len(v)} ({v[0][:60]})" for k, v in activity.items()))
     try:
-        from . import traces
-        turns = [r for r in traces.all_traces(since=now - 2 * 86400, limit=60)
-                 if (r.get("platform") or "") in settings.followup_platforms][:10]
+        from . import origin, traces
+        turns = origin.user_turns(traces.all_traces(since=now - 2 * 86400, limit=60), settings)[:10]
         if turns:
             parts.append("Recent conversation (newest first):\n" + "\n".join(
                 f"[{dt.datetime.fromtimestamp(r['time']):%a %H:%M}] user: {(r.get('request') or '')[:160]} | "
@@ -283,8 +289,12 @@ def _ask_claude(sigs, settings, now, asker=None, activity=None):
     return {d.get("key"): d for d in data.get("decisions", []) if isinstance(d, dict)}
 
 
-def due(settings, now, state):
-    """Is a decision run due? Pending signals and (an urgent one, or the interval passed while awake)."""
+LAST_DECISION_META = "outreach.last_decision"
+
+
+def due(settings, now):
+    """Is a decision run due? Pending signals and (an urgent one, or initiative_every_min passed while awake)."""
+    from waggle.core import store
     p = pending()
     if not p:
         return False
@@ -292,7 +302,7 @@ def due(settings, now, state):
         return True
     if notify.in_quiet_hours(settings, now):
         return False
-    return now - state.get("last_decision", 0) >= settings.initiative_every_min * 60
+    return now - float(store.get_meta(LAST_DECISION_META, 0) or 0) >= settings.initiative_every_min * 60
 
 
 def decide(settings=None, now=None, asker=None, activity=None, only_urgent=False):

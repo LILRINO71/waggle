@@ -10,25 +10,27 @@ what was set up and how to turn it off. Nothing is built without that decision, 
 """
 import datetime as dt
 import hashlib
-import json
 import re
 import time
 
-from .config import Settings, data_path
+from .config import Settings
 
 STOP = set("a an the to of and or for on in at is it my me i you can could would please what how do does with "
            "this that be are was get give tell show about again".split())
 
 
+STATE_META = "outreach.scout"  # candidates already proposed and the last day it looked, in runtime.db meta
+
+
 def _state():
-    try:
-        return json.loads(data_path("scout_state.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {"proposed": {}, "last_day": ""}
+    from waggle.core import store
+    st = store.loads(store.get_meta(STATE_META))
+    return st if isinstance(st, dict) else {"proposed": {}, "last_day": ""}
 
 
 def _save(st):
-    data_path("scout_state.json").write_text(json.dumps(st, indent=1), encoding="utf-8")
+    from waggle.core import store
+    store.set_meta(STATE_META, store.dumps(st))
 
 
 def _words(text):
@@ -95,13 +97,14 @@ def daily(settings=None, now=None, rows=None, commits=None):
     if st.get("last_day") == today:
         return []
     st["last_day"] = today
+    from . import origin
     if rows is None:
         try:
             from . import traces
-            rows = [r for r in traces.all_traces(since=now - 21 * 86400, limit=2000)
-                    if (r.get("platform") or "") in s.followup_platforms]
+            rows = traces.all_traces(since=now - 21 * 86400, limit=2000)
         except Exception:  # noqa: BLE001
             rows = []
+    rows = origin.user_turns(rows, s)  # decision 10: only the user's own turns
     if commits is None:
         try:
             commits = _commit_log(s, now)

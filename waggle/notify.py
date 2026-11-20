@@ -60,11 +60,13 @@ def quiet_ends(settings=None, now=None):
 
 
 def is_dev_source(source, settings=None):
-    """Developer one-shots and tests (Hermes session source oneshot/cli/tool/...) never reach the phone."""
+    """Developer one-shots, tests, benches, the CLI and agents (Hermes session source oneshot/cli/tool/..., or a
+    decision-10 origin other than the user's) never reach the phone."""
     if not source:
         return False
+    from .origin import NON_USER
     s = settings or Settings.load()
-    return str(source).lower() in {x.lower() for x in s.dev_sources}
+    return str(source).lower() in {x.lower() for x in (*s.dev_sources, *NON_USER)} - {"canary"}  # canaries go to a test chat
 
 
 # ---- raw senders (kept public: other modules and tests use them) ------------------------------------
