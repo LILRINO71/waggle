@@ -207,16 +207,27 @@ def ask(prompt, model="sonnet", system=None, schema=None, effort="medium", purpo
 
 
 STREAM_FLAGS = ["--output-format", "stream-json", "--verbose", "--include-partial-messages"]
+TOOL_RESULT_CAP = 500  # characters of a tool's result kept for the trace (after redaction)
+
+_AUTH_WORDS = ("authenticate", "authentication", "oauth", "log in", "login", "not logged in", "invalid api key",
+               "credentials")
+_LIMIT_WORDS = ("usage limit", "limit reached", "hit your limit", "rate limit", "rate_limit", "quota",
+                "limit will reset", "resets ")
 
 
 def error_kind(msg):
     """auth | limit | error, from a CLI error text."""
     low = (msg or "").lower()
-    if "authenticate" in low or "oauth" in low or "log in" in low or "login" in low or "not logged in" in low:
+    if any(w in low for w in _AUTH_WORDS):
         return "auth"
-    if "limit" in low:
+    if any(w in low for w in _LIMIT_WORDS) or re.search(r"\blimit\b", low):
         return "limit"
     return "error"
+
+
+def _redact(text):
+    from .policy import redact
+    return redact(text)
 
 
 class StreamParser:
@@ -224,15 +235,19 @@ class StreamParser:
 
     - text: everything the model wrote this turn (text blocks of every assistant message, in order). This is
       what the user sees while it streams, so it is also what is kept as the reply.
-    - steps: tool calls with their outcome ({"tool", "input", "ok", "denied", "result"}), for the trace.
+    - steps: tool calls with their outcome ({"tool", "id", "input", "ok", "denied", "result"}), for the trace;
+      inputs and results are redacted, results cut to TOOL_RESULT_CAP characters.
     - result: the final `result` event (None until the turn ends); session_id from any event.
+    - garbage: lines that were not stream-json (counted, never fatal).
     on_text(full_text) fires on every new piece of text; on_tool(step) when a tool call starts.
-    Events from sub-agents (parent_tool_use_id set) are ignored: only the main conversation is shown."""
+    Events from sub-agents (parent_tool_use_id set) are ignored: only the main conversation is shown.
+    feed() takes whole lines; feed_chunk() takes raw output and keeps an incomplete last line for later."""
 
     def __init__(self, on_text=None, on_tool=None, clock=time.time):
         self.on_text, self.on_tool, self.clock = on_text, on_tool, clock
         self.parts, self.steps, self._by_id, self._streamed = [], [], {}, set()
         self.result, self.session_id, self.first_text_at, self.rate_limit, self.model = None, "", None, None, ""
+        self.garbage, self._buf, self._msg_id = 0, "", None
         self._open = False  # a text block is being streamed
 
     @property
@@ -245,16 +260,34 @@ class StreamParser:
         if self.on_text and self.text:
             self.on_text(self.text)
 
+    def feed_chunk(self, data):
+        """Raw output that may end in the middle of a line. Returns True once the result has arrived."""
+        self._buf += data or ""
+        done = False
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            done = self.feed(line) or done
+        return done
+
     def feed(self, line):
         """One output line. Returns True when the turn's result has arrived."""
         line = (line or "").strip()
+        if not line:
+            return False
         if not line.startswith("{"):
+            self.garbage += 1
             return False
         try:
             ev = json.loads(line)
-        except ValueError:
+            if not isinstance(ev, dict):
+                raise ValueError("not an event")
+            return self._event(ev)
+        except (ValueError, TypeError, AttributeError, KeyError):
+            self.garbage += 1  # a partial line, a stray print, an event shape we don't know
             return False
-        if ev.get("session_id"):
+
+    def _event(self, ev):
+        if isinstance(ev.get("session_id"), str) and ev["session_id"]:
             self.session_id = ev["session_id"]
         if ev.get("parent_tool_use_id"):
             return False
@@ -262,35 +295,20 @@ class StreamParser:
         if t == "system" and ev.get("subtype") == "init":
             self.model = ev.get("model") or self.model
         elif t == "stream_event":
-            e = ev.get("event") or {}
-            et = e.get("type")
-            if et == "content_block_start" and (e.get("content_block") or {}).get("type") == "text":
-                self.parts.append("")
-                self._open = True
-                if ev.get("api_message_id"):
-                    self._streamed.add(ev["api_message_id"])
-            elif et == "content_block_delta" and (e.get("delta") or {}).get("type") == "text_delta":
-                if not self._open:
-                    self.parts.append("")
-                    self._open = True
-                if ev.get("api_message_id"):
-                    self._streamed.add(ev["api_message_id"])
-                self.parts[-1] += e["delta"].get("text", "")
-                self._emit()
-            elif et == "content_block_stop":
-                self._open = False
-            elif et == "content_block_start" and (e.get("content_block") or {}).get("type") == "tool_use":
-                self._open = False
+            self._stream_event(ev)
         elif t == "assistant":
             msg = ev.get("message") or {}
+            streamed = msg.get("id") is not None and msg.get("id") in self._streamed
             for block in msg.get("content") or []:
-                if block.get("type") == "text" and msg.get("id") not in self._streamed and block.get("text"):
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text" and not streamed and block.get("text"):
                     self.parts.append(block["text"])  # no partial events for this message: take it whole
+                    self._open = False
                     self._emit()
-                elif block.get("type") == "tool_use":
-                    from .policy import redact
-                    step = {"tool": block.get("name", ""), "input": redact(json.dumps(block.get("input"),
-                                                                                     default=str))[:400],
+                elif block.get("type") == "tool_use" and block.get("id") not in self._by_id:
+                    step = {"tool": block.get("name", ""), "id": block.get("id") or "",
+                            "input": _redact(json.dumps(block.get("input"), default=str))[:400],
                             "ok": None, "denied": False, "result": ""}
                     self._by_id[block.get("id")] = step
                     self.steps.append(step)
@@ -306,10 +324,9 @@ class StreamParser:
                 if isinstance(body, list):
                     body = " ".join(str(b.get("text", "")) for b in body if isinstance(b, dict))
                 body = str(body or "")
-                from .policy import redact
                 step["ok"] = not block.get("is_error")
                 step["denied"] = "NEEDS_APPROVAL" in body or "safety policy" in body
-                step["result"] = redact(body)[:300]
+                step["result"] = _redact(body)[:TOOL_RESULT_CAP]
         elif t == "rate_limit_event":
             self.rate_limit = ev.get("rate_limit_info")
         elif t == "result":
@@ -320,6 +337,31 @@ class StreamParser:
             return True
         return False
 
+    def _stream_event(self, ev):
+        e = ev.get("event") or {}
+        et = e.get("type")
+        if et == "message_start":
+            self._msg_id = (e.get("message") or {}).get("id")
+            self._open = False
+        elif et == "content_block_start":
+            kind = (e.get("content_block") or {}).get("type")
+            if kind == "text":
+                self.parts.append("")
+                self._open = True
+            else:
+                self._open = False
+        elif et == "content_block_delta" and (e.get("delta") or {}).get("type") == "text_delta":
+            if not self._open:
+                self.parts.append("")
+                self._open = True
+            for mid in (self._msg_id, ev.get("api_message_id")):
+                if mid:
+                    self._streamed.add(mid)
+            self.parts[-1] += e["delta"].get("text", "")
+            self._emit()
+        elif et == "content_block_stop":
+            self._open = False
+
     def error(self):
         """(kind, message) when the turn failed, else None."""
         r = self.result
@@ -327,12 +369,16 @@ class StreamParser:
             return "error", "no result"
         if r.get("is_error") or r.get("subtype") not in (None, "success"):
             msg = str(r.get("result") or r.get("terminal_reason") or r.get("subtype") or "unknown error")
+            if r.get("api_error_status") == 429:
+                return "limit", msg[:300]
             return error_kind(msg), msg[:300]
         return None
 
     def main_model(self):
         per = (self.result or {}).get("modelUsage") or {}
-        return max(per, key=lambda k: per[k].get("outputTokens", 0)) if per else self.model
+        if isinstance(per, dict) and per:
+            return max(per, key=lambda k: (per[k] or {}).get("outputTokens", 0))
+        return self.model
 
 
 def stream(prompt, model="sonnet", system=None, effort="low", purpose="stream", timeout=300, on_text=None,

@@ -8,7 +8,8 @@ Every user turn (pre_llm_call), the hook returns in well under a second:
       settings.sync_wait_s for the engine's answer and returns it as the block message (Hermes speaks/sends it);
       past that it acknowledges and the answer follows through post_message or the outbox.
   engine off (settings.engine_enabled = False): the old router path (_legacy_pre_llm_call) below.
-Background results and failed deliveries wait in chat.db's outbox; a gateway thread delivers them.
+Background results and failed deliveries wait in the core outbox (runtime.db); the core's sender
+delivers them.
 Hermes's local model answers only when the hook could not run (crash, timeout, skip); that reply is labelled
 and traced. Before every tool call: guardrails (messaging, money, destructive commands need your OK).
 """
@@ -197,6 +198,7 @@ def _engine_pre_llm(session_id, user_message, platform, t0):
     voice = kind == "voice"
     address = _address()
     chat = _chat_id(platform, session_id, address)
+    origin = chat_engine.origin_for(platform)  # only the owner's chat platform is "user"; the CLI chat is "test"
     prev_msg_at = _last_msg_at.get(chat, 0.0)
     _last_msg[session_id] = text
     _last_msg_at[chat] = time.time()
@@ -204,15 +206,16 @@ def _engine_pre_llm(session_id, user_message, platform, t0):
         __import__("waggle.budget", fromlist=["x"]).note_interactive()
     except Exception as e:
         log.warning("budget note failed: %s", e)
-    try:  # "no, I meant..." / "perfect, thanks" -> feedback on Waggle's previous answer
-        traces.judge_followup(chat, text)
-    except Exception as e:
-        log.warning("feedback capture failed: %s", e)
+    if origin == "user":
+        try:  # "no, I meant..." / "perfect, thanks" -> feedback on Waggle's previous answer
+            traces.judge_followup(chat, text)
+        except Exception as e:
+            log.warning("feedback capture failed: %s", e)
     threading.Thread(target=_upkeep_after_message, daemon=True, name="waggle-turn-upkeep").start()
     _turn[session_id] = {"t0": t0, "platform": platform, "voice": voice, "owned": True, "chat": chat}
 
     def direct(reply, route):
-        chat_engine.record_direct(chat, text, reply, platform=platform, t0=t0, route=route)
+        chat_engine.record_direct(chat, text, reply, platform=platform, origin=origin, t0=t0, route=route)
         return {"action": "block", "message": reply}
 
     mo = OBJECTIVE_CMD.match(text)
@@ -222,33 +225,48 @@ def _engine_pre_llm(session_id, user_message, platform, t0):
     if pre and pre[0] == "reply":
         return direct(pre[1], "approval")
     note = pre[1] if pre else ""
+    _start_reaper()
     if _mode(platform, voice, s) == "own":
         delivery = HermesDelivery(_ctx, address)
         run = contextvars.copy_context().run  # post_message reads this turn's chat from the context
-        threading.Thread(target=run, args=(_own_turn, chat, text, delivery, platform, t0, note, address),
+        threading.Thread(target=run, args=(_own_turn, chat, text, delivery, platform, t0, note, address, origin),
                          daemon=True, name="waggle-turn").start()
         return {"action": "block", "message": SILENT}
-    return _sync_turn(chat, text, platform, voice, t0, note, address, s)
+    return _sync_turn(chat, text, platform, voice, t0, note, address, s, origin)
 
 
-def _own_turn(chat, text, delivery, platform, t0, note, address):
+CRASHED = "Something went wrong answering that ({what}). Please send it again."
+
+
+def _own_turn(chat, text, delivery, platform, t0, note, address, origin="user"):
     from waggle import chat_engine
     try:
-        rec = chat_engine.run_turn(chat, text, delivery, platform=platform, t0=t0, note=note, address=address)
-        learn.learn_async(text, rec.reply)
-    except Exception as e:  # never silent: the user gets told, the trace says why
+        rec = chat_engine.run_turn(chat, text, delivery, platform=platform, origin=origin, t0=t0, note=note,
+                                   address=address)
+        if origin == "user":
+            learn.learn_async(text, rec.reply)
+    except Exception as e:  # never silent: the user gets told (or it waits in the outbox), the trace says why
         log.exception("waggle turn failed")
-        from waggle import chat_store
-        chat_store.enqueue(chat, f"Something went wrong answering that ({type(e).__name__}). Please send it again.",
-                           kind="error", source="crash")
-        chat_engine.record_turn(chat_engine.TurnRecord(chat=chat, text=text, fallback_reason=f"crash: {e}"[:300],
-                                                       total_s=round(time.time() - t0, 2)), platform=platform)
+        rec = chat_engine.TurnRecord(chat=chat, text=text, origin=origin, platform=platform, failure_notice=True,
+                                     fallback_reason=f"crash: {type(e).__name__}: {e}"[:300])
+        rec.reply = CRASHED.format(what=type(e).__name__)
+        try:
+            h = delivery.post(rec.reply)
+            rec.delivered = h is not None and h is not False
+        except Exception:
+            rec.delivered = False
+        rec.delivery = delivery.name if rec.delivered else "outbox"
+        if not rec.delivered:
+            rec.outbox_id = chat_engine.queue_reply(rec, address=address)
+        rec.total_s = round(time.time() - t0, 2)
+        chat_engine.record_turn(rec.settle())
     threading.Thread(target=_refresh_hq, daemon=True).start()
 
 
-def _sync_turn(chat, text, platform, voice, t0, note, address, s):
-    """Surfaces that show the hook's block message (and speak it, for voice): wait for the whole answer."""
-    from waggle import chat_engine, chat_store
+def _sync_turn(chat, text, platform, voice, t0, note, address, s, origin="user"):
+    """Surfaces that show the hook's block message (and speak it, for voice): wait for the whole answer.
+    Past settings.sync_wait_s the hook acknowledges and the answer goes to the core outbox."""
+    from waggle import chat_engine
     from waggle.delivery import CollectDelivery, plain_text
     filler = None
     if voice and _voice_active(platform):
@@ -257,23 +275,21 @@ def _sync_turn(chat, text, platform, voice, t0, note, address, s):
     box, lock, done = {}, threading.Lock(), threading.Event()
 
     def work():
-        rec = chat_engine.run_turn(chat, text, CollectDelivery(), platform=platform, voice=voice, t0=t0, note=note,
-                                   address=address, stream=False, record=False)
+        rec = chat_engine.run_turn(chat, text, CollectDelivery(), platform=platform, origin=origin, voice=voice,
+                                   t0=t0, note=note, address=address, stream=False, record=False)
         with lock:
             box["rec"] = rec
             late = box.get("late")
         done.set()
-        if late:
-            reply = plain_text(rec.reply) if platform not in ("cli", "", None) else rec.reply
-            rec.outbox_id = chat_store.enqueue(chat, reply, kind="reply", source="late")
-            n = 0
-            if platform not in ("cli", "", None) and _ctx is not None:
-                n = chat_engine.deliver_pending(chat, HermesDelivery(_ctx, address),
-                                                items=[chat_store.get_item(rec.outbox_id)])
-            rec.delivered, rec.delivery = n > 0, ("hermes" if n else "outbox")
+        if late:  # the hook already answered with LATE_ACK: the reply waits in the core outbox
+            rec.delivered, rec.delivery, rec.ttfw_s, rec.message_ids = False, "outbox", None, []
+            rec.outbox_id = chat_engine.queue_reply(rec, address=address)
+            if rec.outbox_id is None:
+                rec.delivery = "none"
             rec.total_s = round(time.time() - t0, 2)
-            chat_engine.record_turn(rec, platform=platform, voice=voice, note=note)
-        learn.learn_async(text, rec.reply)
+            chat_engine.record_turn(rec.settle(), voice=voice, note=note)
+        if origin == "user":
+            learn.learn_async(text, rec.reply)
 
     run = contextvars.copy_context().run
     threading.Thread(target=run, args=(work,), daemon=True, name="waggle-turn").start()
@@ -287,9 +303,9 @@ def _sync_turn(chat, text, platform, voice, t0, note, address, s):
     if not finished or rec is None:
         return {"action": "block", "message": LATE_ACK}
     reply = rec.reply if platform in ("cli", "", None) else plain_text(rec.reply)
-    rec.delivered, rec.delivery = True, "block"
-    rec.first_text_s = rec.total_s = round(time.time() - t0, 2)
-    chat_engine.record_turn(rec, platform=platform, voice=voice, note=note)
+    rec.delivered, rec.delivery, rec.outbox_id = True, "block", None
+    rec.ttfw_s = rec.total_s = round(time.time() - t0, 2)
+    chat_engine.record_turn(rec.settle(), voice=voice, note=note)
     threading.Thread(target=_refresh_hq, daemon=True).start()
     return {"action": "block", "message": reply}
 
@@ -301,54 +317,29 @@ def _upkeep_after_message():
         log.warning("resume_paused failed: %s", e)
 
 
-# ---- outbox: background results and failed deliveries reach the chat ---------------------------------------
+# ---- idle chat processes are stopped (their sessions resume on the next message) ---------------------------
+# Undelivered replies and background results wait in the core outbox (waggle.core.outbox); the core's sender
+# delivers them. The gateway does not drain that outbox: two senders would race for the same rows.
 
-_drain_started = False
-
-
-def _drain_once(now=None):
-    """Deliver what is waiting in the outbox. Messaging chats get it through post_message; anything that has
-    waited too long, or has no chat transport, goes through notify (queued for the next message + phone)."""
-    from waggle import chat_engine, chat_store
-    now = now or time.time()
-    chat_store.release_stuck()
-    addresses = {c["chat"]: c for c in chat_store.chats_with_address()}
-    sent = 0
-    for item in chat_store.pending(older_than=2.0):
-        c = addresses.get(item["chat"])
-        if c and c.get("platform") not in ("cli", "", None) and _ctx is not None and item["attempts"] < 6:
-            sent += chat_engine.deliver_pending(item["chat"], HermesDelivery(_ctx, c["address"]), items=[item])
-        elif now - item["created"] > 60 or item["attempts"] >= 6:
-            if chat_store.claim(item["id"]):
-                ok = chat_engine.deliver_by_phone(item)
-                chat_store.mark(item["id"], ok, via="notify")
-                sent += int(ok)
-    return sent
+_reaper_started = False
 
 
-def _drain_loop():
+def _reap_loop():
     from waggle import chat_engine
-    last_reap = time.time()
     while True:
-        time.sleep(3)
+        time.sleep(60)
         try:
-            _drain_once()
+            chat_engine.pool().reap()
         except Exception as e:
-            log.warning("outbox drain failed: %s", e)
-        if time.time() - last_reap > 60:
-            last_reap = time.time()
-            try:
-                chat_engine.pool().reap()
-            except Exception as e:
-                log.warning("chat session reap failed: %s", e)
+            log.warning("chat session reap failed: %s", e)
 
 
-def _start_drain():
-    global _drain_started
-    if _drain_started:
+def _start_reaper():
+    global _reaper_started
+    if _reaper_started:
         return
-    _drain_started = True
-    threading.Thread(target=_drain_loop, daemon=True, name="waggle-outbox").start()
+    _reaper_started = True
+    threading.Thread(target=_reap_loop, daemon=True, name="waggle-reaper").start()
 
 
 # ---- the old router path (engine_enabled = False) ------------------------------------------------------------
@@ -532,7 +523,8 @@ def _hand_over(session_id, user_message, reply, meta=None):
     a vetoed turn's user text as "[Message withheld]", but that no longer matters for context: Waggle keeps its
     own transcript (_convo) and hands it to whichever model answers next."""
     _remember_turn(session_id, "Waggle", reply)
-    learn.learn_async(user_message, reply)
+    if _origin((_turn.get(session_id) or {}).get("platform", "")) == "user":
+        learn.learn_async(user_message, reply)  # only the owner's own words may teach Waggle (plan decision 10)
     meta = meta or {}
     if meta.get("route") != "act":  # agent turns are traced by the agent thread (with their tool steps)
         _trace(session_id, user_message, reply, **meta)
@@ -659,6 +651,12 @@ YES = re.compile(r"^\s*(y|yes|yeah|yep|yup|sure|ok(ay)?|go ahead|do it|approved?
                  r"([\s,!.]+(do it|go ahead|please|you can|approved?))*[\s!.]*$", re.I)
 
 
+def _origin(platform):
+    """user | test | canary | bench | agent for a message arriving on `platform` (chat_engine.origin_for)."""
+    from waggle import chat_engine
+    return chat_engine.origin_for(platform)
+
+
 def _trace(session_id, user_message, reply, route="", model="", specialist="", steps=None, ok=True, error="",
            tokens=None, skills_used=None, **extra):
     t = _turn.get(session_id) or {}
@@ -666,7 +664,8 @@ def _trace(session_id, user_message, reply, route="", model="", specialist="", s
         traces.record(user_message, session=session_id or "", platform=t.get("platform", ""), route=route,
                       model=model or "", specialist=specialist or "", agent=extra.pop("agent", ""),
                       latency_s=round(time.time() - t.get("t0", time.time()), 2), ok=ok, error=error, reply=reply,
-                      tokens=tokens, steps=steps, skills_used=skills_used, extra=extra)
+                      tokens=tokens, steps=steps, skills_used=skills_used, extra=extra,
+                      origin=_origin(t.get("platform", "")))
     except Exception as e:
         log.warning("trace failed: %s", e)
 
@@ -792,10 +791,14 @@ def on_post_llm_call(user_message="", assistant_response="", session_id="", plat
             reason = (f"hook crashed: {t['crashed']}" if t.get("crashed") else
                       "hook skipped or timed out (Hermes's model answered)")
             try:
+                from waggle import chat_engine
+                outcome, why = traces.turn_outcome(answered_by="local", delivered=True,
+                                                   failure_notice=not assistant_response)
                 traces.record(str(user_message)[:20000], session=session_id or "", platform=platform or "",
                               route="hermes", model="local", reply=assistant_response or "", ok=False,
-                              error=reason, answerer="local", fallback_reason=reason, delivered=True,
-                              delivery="hermes", outcome="answered" if assistant_response else "failed",
+                              error=reason, chat=t.get("chat"), origin=chat_engine.origin_for(platform),
+                              answered_by="local", fallback_reason=reason, delivered=True, delivery="hermes",
+                              turn_outcome=outcome, outcome_why=why,
                               total_s=round(time.time() - t["t0"], 2) if t.get("t0") else None)
             except Exception as e:
                 log.warning("trace failed: %s", e)
@@ -804,7 +807,8 @@ def on_post_llm_call(user_message="", assistant_response="", session_id="", plat
         threading.Thread(target=_refresh_hq, daemon=True).start()
         return
     if user_message and assistant_response:
-        learn.learn_async(user_message, assistant_response)
+        if _origin(platform or (_turn.get(session_id) or {}).get("platform", "")) == "user":
+            learn.learn_async(user_message, assistant_response)
         t = _turn.pop(session_id, None) or {}
         if t.get("route") and t.get("platform") not in SKIP_ROUTING_PLATFORMS:
             _turn[session_id] = t
@@ -962,7 +966,6 @@ def _start_bridge():
         from waggle import bridge
         port, _ = bridge.start(_dispatch, _list_tools, pre=_bridge_pre)
         log.info("waggle bridge on 127.0.0.1:%s", port)
-        _start_drain()
         threading.Thread(target=_startup_upkeep, daemon=True, name="waggle-upkeep").start()
     except Exception as e:
         log.warning("waggle bridge failed to start: %s", e)

@@ -73,7 +73,7 @@ class Settings:
     home_location: str = ""
     units: str = "imperial"
     # Turn engine (waggle/chat_engine.py): one long-lived Claude process per chat, streamed replies.
-    engine_enabled: bool = True  # False = the old router/regex path (router.py) answers instead
+    engine_enabled: bool = False  # True = the turn engine answers in the gateway; False = the old router path
     chat_tools: list = field(default_factory=lambda: ["Read", "Glob", "Grep", "Bash", "PowerShell", "WebSearch",
                                                       "WebFetch"])
     chat_effort: str = "low"

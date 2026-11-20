@@ -1,58 +1,24 @@
 """Background jobs started from a chat, so heavy work never blocks the conversation.
 
 The chat brain calls the MCP tool `background_task` (served by waggle_mcp.py, which knows its chat from
-WAGGLE_CHAT). That writes a job row (chat.db) and starts a detached worker process:
+WAGGLE_CHAT). That queues a `chat.background` job in runtime.db (waggle.core.jobs). The core process runs it:
+a Claude tool agent (waggle/agents.py: same tools, policy hook and approvals as any agent) does the task, and
+its result goes to the core outbox with the idem key "chat.background:<key>", so it is delivered into the same
+chat exactly once, also when the core restarts in the middle: a re-run job whose result is already in the
+outbox does not run the agent again, and a second enqueue with the same key changes nothing.
 
-    python waggle/chat_jobs.py run <job_id>
-
-The worker runs a Claude tool agent (waggle/agents.py: same tools, policy hook and approvals as any agent),
-then writes the result to the chat's outbox. Whichever process owns a transport for that chat (the gateway's
-outbox drain) delivers it into the same chat. If nobody has delivered it after `wait_s`, the worker sends it
-through notify.send (queued for the next message + phone), so a result is never dropped, even when the
-gateway is down or restarted while the job runs.
+register_core() registers the job kinds; the core calls it once at start.
 """
 import json
 import os
-import subprocess
-import sys
-import time
-from pathlib import Path
+import uuid
 
-if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from waggle.core import jobs, outbox, store
 
-from waggle import chat_store  # noqa: E402
-
-REPO = Path(__file__).resolve().parent.parent
-WAIT_FOR_DELIVERY_S = 180
-
-
-def _python():
-    exe = Path(sys.executable)
-    if exe.name.lower().startswith("pythonw"):
-        exe = exe.with_name("python.exe")
-    return str(exe)
-
-
-def start(chat, task, agent="general", hard=False, spawn=None):
-    """Queue a job for `chat` and start its worker. Returns the job id."""
-    jid = chat_store.new_job(chat, task, agent, hard)
-    cmd = [_python(), str(REPO / "waggle" / "chat_jobs.py"), "run", jid]
-    env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1", WAGGLE_SESSION=chat, WAGGLE_CHAT=chat)
-    from waggle.config import HOME
-    env["WAGGLE_HOME"] = str(HOME)
-    if spawn is not None:
-        spawn(cmd, env)
-        return jid
-    flags = 0
-    if os.name == "nt":  # survives the chat process (and its MCP server) being stopped
-        flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000008  # DETACHED_PROCESS
-    log = open(chat_store.data_path(f"job-{jid}.log"), "w", encoding="utf-8") if hasattr(chat_store, "data_path") \
-        else subprocess.DEVNULL
-    p = subprocess.Popen(cmd, env=env, cwd=str(REPO), stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                         creationflags=flags, close_fds=True)
-    chat_store.update_job(jid, pid=p.pid)
-    return jid
+JOB_KIND = "chat.background"
+REAP_KIND = "chat.reap"
+JOB_LEASE_S = 2400.0  # an agent run may take up to 30 min; the core keeps its own process's jobs on recovery
+JOB_MAX_ATTEMPTS = 2  # a crash mid-run (core restart) runs it once more
 
 
 def _title(task):
@@ -60,48 +26,76 @@ def _title(task):
     return first[:70] + ("..." if len(first) > 70 else "")
 
 
-def run(jid, runner=None, wait_s=WAIT_FOR_DELIVERY_S, sleep=time.sleep, phone=None):
-    """Do the job, then make sure its result reaches the user. Returns the outbox id."""
-    job = chat_store.get_job(jid)
-    if not job:
-        return None
-    chat_store.update_job(jid, status="running", started=time.time(), pid=os.getpid())
+def result_key(payload):
+    return f"{JOB_KIND}:{payload['key']}"
+
+
+def start(chat, task, agent="general", hard=False, origin="", now=None):
+    """Queue a background job for `chat`. Returns (job id, key)."""
+    key = uuid.uuid4().hex
+    payload = {"chat": chat, "task": task, "agent": agent or "general", "hard": bool(hard), "key": key,
+               "origin": origin or "", "asked": store.now_or(now)}
+    return jobs.enqueue(JOB_KIND, payload, idem_key=f"{JOB_KIND}:{key}", now=now), key
+
+
+def _queued_result(idem_key):
+    row = store.connect().execute("SELECT id FROM outbox WHERE idem_key=?", (idem_key,)).fetchone()
+    return row[0] if row else None
+
+
+def run_background(payload, runner=None):
+    """The job handler: do the task, then queue its result for the chat (once). Never raises for a failed
+    task: the user is told it didn't finish, and the job's result says so."""
+    key = result_key(payload)
+    done = _queued_result(key)
+    if done is not None:  # a re-run after a restart: the result is already on its way
+        return {"ok": None, "outbox": done, "rerun": True}
     try:
         if runner is not None:
-            res = runner(job)
+            res = runner(payload)
         else:
             from waggle import agents
-            res = agents.run(job["agent"] or "general", job["task"], session=job["chat"], hard=bool(job["hard"]),
-                             timeout=1800)
+            res = agents.run(payload.get("agent") or "general", payload["task"], session=payload["chat"],
+                             hard=bool(payload.get("hard")), timeout=1800)
         from waggle.agent import approval_message
         ok = bool(getattr(res, "ok", False))
-        body = (getattr(res, "text", "") or f"It didn't work: {getattr(res, 'error', '')[:300]}") + approval_message(res)
-        err = getattr(res, "error", "")
-    except Exception as e:
-        ok, body, err = False, f"It failed: {type(e).__name__}: {e}"[:400], str(e)
-    text = f"Background job done: {_title(job['task'])}\n\n{body}" if ok else \
-        f"Background job didn't finish: {_title(job['task'])}\n\n{body}"
-    oid = chat_store.enqueue(job["chat"], text, kind="job", source=jid)
-    chat_store.update_job(jid, status="done" if ok else "failed", finished=time.time(), result=body[:20000],
-                          error=(err or "")[:500])
-    _ensure_delivered(oid, wait_s, sleep, phone)
-    return oid
+        body = (getattr(res, "text", "") or f"It didn't work: {str(getattr(res, 'error', ''))[:300]}") \
+            + (approval_message(res) if getattr(res, "approvals", None) else "")
+        err = str(getattr(res, "error", "") or "")
+    except Exception as e:  # the agent layer crashed: still an honest message, never silence
+        ok, body, err = False, f"It failed: {type(e).__name__}: {e}"[:400], f"{type(e).__name__}: {e}"
+    head = "Background job done" if ok else "Background job didn't finish"
+    text = f"{head}: {_title(payload['task'])}\n\n{body}"
+    oid = outbox.enqueue("text", text, chat=payload["chat"], idem_key=key, origin="background",
+                         meta={"kind": "background", "job_key": payload["key"], "ok": ok,
+                               "turn_origin": payload.get("origin") or ""})
+    return {"ok": ok, "outbox": oid, "error": err[:500], "result": body[:20000]}
 
 
-def _ensure_delivered(oid, wait_s, sleep, phone):
-    deadline = time.time() + wait_s
-    while time.time() < deadline:
-        item = chat_store.get_item(oid)
-        if not item or item["state"] == "delivered":
-            return True
-        sleep(3)
-    if chat_store.claim(oid):  # still undelivered: the gateway is down or can't reach the chat
-        item = chat_store.get_item(oid)
-        from waggle import chat_engine
-        ok = (phone or chat_engine.deliver_by_phone)(item)
-        chat_store.mark(oid, ok, via="notify", error="" if ok else "phone delivery failed")
-        return ok
-    return False
+def reap(payload=None):
+    """Stop chat processes idle longer than settings.chat_idle_s (their sessions resume on the next message)."""
+    from waggle import chat_engine
+    return {"stopped": chat_engine.pool().reap()}
+
+
+def register_core():
+    """Register this module's job kinds with waggle.core.jobs; returns their names."""
+    jobs.register(JOB_KIND, run_background, max_attempts=JOB_MAX_ATTEMPTS, lease_s=JOB_LEASE_S)
+    jobs.register(REAP_KIND, reap, max_attempts=1)
+    return [JOB_KIND, REAP_KIND]
+
+
+def status(chat=None, limit=6):
+    """Background jobs (newest first), optionally of one chat."""
+    rows = [j for j in jobs.list(kind=JOB_KIND, limit=200)
+            if chat is None or (j.get("payload") or {}).get("chat") == chat][:limit]
+    out = []
+    for j in rows:
+        p, r = j.get("payload") or {}, j.get("result") if isinstance(j.get("result"), dict) else {}
+        out.append({"job": j["id"], "task": _title(p.get("task", "")), "state": j["state"],
+                    "ok": r.get("ok"), "started": j.get("started"), "finished": j.get("finished"),
+                    "result": str(r.get("result") or j.get("error") or "")[:600]})
+    return out
 
 
 # ---- MCP tools (served by waggle_mcp.py to the chat brain) -------------------------------------------------
@@ -113,17 +107,15 @@ def _t_background_task(args):
         return "Give the task: a complete, self-contained description of what to do and what 'done' means."
     if not chat:
         return "background_task only works from a chat; use delegate for a sub-task you wait for."
-    jid = start(chat, task, args.get("agent") or "general", bool(args.get("hard")))
-    return json.dumps({"started": True, "job": jid, "note": "Running in the background. Tell the user in one short "
+    jid, _ = start(chat, task, args.get("agent") or "general", bool(args.get("hard")),
+                   origin=os.environ.get("WAGGLE_ORIGIN", ""))
+    return json.dumps({"started": True, "job": jid, "note": "Queued in the background. Tell the user in one short "
                        "line that you're on it; the result will be posted into this chat when it's done."})
 
 
 def _t_background_status(args):
     chat = os.environ.get("WAGGLE_CHAT", "")
-    rows = chat_store.jobs(chat or None, limit=int(args.get("limit", 6)))
-    return json.dumps([{"job": r["id"], "task": _title(r["task"]), "status": r["status"],
-                        "started": r["started"], "finished": r["finished"],
-                        "result": (r["result"] or "")[:600]} for r in rows])
+    return json.dumps(status(chat or None, limit=int(args.get("limit", 6))))
 
 
 MCP_TOOLS = [
@@ -139,12 +131,3 @@ MCP_TOOLS = [
       "parameters": {"type": "object", "properties": {"limit": {"type": "integer"}}, "required": []}},
      _t_background_status),
 ]
-
-
-def main():
-    if len(sys.argv) >= 3 and sys.argv[1] == "run":
-        run(sys.argv[2])
-
-
-if __name__ == "__main__":
-    main()

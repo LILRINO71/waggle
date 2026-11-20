@@ -9,7 +9,8 @@ kept warm between messages (no ~1 s start per turn, warm prompt cache), with:
   Waggle's PreToolUse policy hook (approvals with 4-letter codes, exactly as for agents);
 - the Waggle MCP server (memory, vault, projects, skills, send_to_me, background_task, objectives, routines,
   delegate, Hermes tools) and the user's claude.ai connectors; other heavy MCP servers are hidden.
-Its Claude session id is stored in chat.db: after an idle stop, a crash or a gateway restart the next message
+Its Claude session id is stored in runtime.db's chats table (waggle/chat_store.py): after an idle stop, a crash
+or a restart of the host process the next message
 resumes the same session (`--resume`). If that fails, or the session has run settings.chat_session_max_turns
 turns, a fresh session starts and its first message carries the recent transcript (from traces.db).
 A process that dies is restarted on the next turn; one that dies mid-turn before any text is retried once.
@@ -125,7 +126,8 @@ class _Proc:
         self.lines = queue.Queue()
         self.stderr_tail = []
         threading.Thread(target=self._read, daemon=True, name="waggle-chat-out").start()
-        threading.Thread(target=self._read_err, daemon=True, name="waggle-chat-err").start()
+        self._err_thread = threading.Thread(target=self._read_err, daemon=True, name="waggle-chat-err")
+        self._err_thread.start()
 
     def _read(self):
         try:
@@ -144,6 +146,11 @@ class _Proc:
 
     def alive(self):
         return self.p.poll() is None
+
+    def last_words(self, wait=0.5):
+        """The end of stderr once the process has ended (waits briefly for the reader to catch up)."""
+        self._err_thread.join(wait)
+        return " | ".join(self.stderr_tail[-3:])
 
     def send(self, text):
         msg = {"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}}
@@ -291,7 +298,7 @@ class ChatSession:
                 else:
                     continue
             if line is None:
-                tail = " | ".join(self.proc.stderr_tail[-3:]) if self.proc else ""
+                tail = self.proc.last_words() if self.proc else ""
                 low = tail.lower()
                 if "no conversation found" in low or "session" in low and "not found" in low:
                     chat_store.set_session(self.chat, "", turns=0)  # the stored session is gone: next start is fresh

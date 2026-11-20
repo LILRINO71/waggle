@@ -10,7 +10,8 @@ The turn engine (waggle/chat_engine.py) only ever talks to a `Delivery`. A trans
 
 plus two attributes: `can_edit` (False = edits are not shown in place, so stream nothing and post the final
 text once) and `max_len` (characters per message). The Hermes plugin implements it with post_message/edit
-(hermes_plugin/waggle/__init__.py); a direct Telegram Bot API transport would implement the same five calls.
+(hermes_plugin/waggle/__init__.py); BotApiDelivery below implements it over Waggle's own Telegram client
+(waggle.core.telegram.BotApi).
 
 StreamWriter turns a growing reply into a few edits: at most one per `interval` seconds (Telegram allows about
 one per second per chat and silently skips faster interim edits), the final text always sent (it waits out the
@@ -43,6 +44,12 @@ class Delivery:
 
     def typing(self):
         return None
+
+    def message_id(self, handle):
+        """The transport's id for the message behind `handle` (for the trace), or None."""
+        if isinstance(handle, (int, str)) and not isinstance(handle, bool):
+            return handle
+        return getattr(handle, "message_id", None)
 
 
 class CollectDelivery(Delivery):
@@ -245,5 +252,102 @@ class StreamWriter:
         delivered = self._push(final, final=True) if final.strip() else False
         if not delivered and not self.error:
             self.error = "the message could not be posted or updated"
+        ids = []
+        for h in self.handles:
+            try:
+                mid = self.d.message_id(h) if hasattr(self.d, "message_id") else Delivery.message_id(self.d, h)
+            except Exception:
+                mid = None
+            if mid is not None:
+                ids.append(mid)
         return {"delivered": delivered, "messages": len(self.handles), "error": "" if delivered else self.error,
-                "edits": self.edits, "first_shown_at": self.first_shown_at}
+                "edits": self.edits, "first_shown_at": self.first_shown_at, "message_ids": ids}
+
+
+# ---- Telegram through Waggle's own Bot API client ------------------------------------------------------------
+
+class BotApiDelivery(Delivery):
+    """Delivery over waggle.core.telegram.BotApi (imported only when no `api` is given), for one Telegram chat.
+
+    - post(text) -> the id of the new message (the last part, if the client split it); edit(id, text) -> bool.
+    - At least `min_edit_gap` seconds (1.0) between edits of one message: an edit that comes sooner waits.
+    - A retryable or rate-limited failure waits once (its retry_after, capped at MAX_WAIT_S) and tries again;
+      anything else raises (StreamWriter records it as a failed delivery; a failed final edit becomes a new
+      message there, so the final text always lands). "Message is not modified" counts as done.
+    - max_len 4096 (Telegram's limit): StreamWriter continues a longer reply in a new message.
+    The first message of a turn can reply to the user's message (`reply_to`)."""
+    can_edit = True
+    max_len = 4096
+    name = "telegram"
+    MAX_WAIT_S = 30.0
+
+    def __init__(self, chat_id, api=None, *, reply_to=None, min_edit_gap=1.0, clock=time.monotonic,
+                 sleep=time.sleep):
+        self.chat_id, self._api, self.reply_to = chat_id, api, reply_to
+        self.min_edit_gap, self.clock, self.sleep = float(min_edit_gap), clock, sleep
+        self._touched = {}  # message id -> clock of its post or last edit
+        self.message_ids, self.edits, self.last_error = [], 0, ""
+
+    @property
+    def api(self):
+        if self._api is None:
+            from waggle.core.telegram import BotApi  # lazy: the core's client, only when this transport is used
+            self._api = BotApi()
+        return self._api
+
+    def _call(self, fn, *args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            kind = getattr(e, "kind", None)
+            if kind in ("retryable", "rate_limited") and not getattr(e, "permanent", False):
+                self.last_error = f"{kind}: {e}"[:300]
+                self.sleep(min(max(float(getattr(e, "retry_after", None) or 1.0), 0.0), self.MAX_WAIT_S))
+                return fn(*args, **kwargs)
+            self.last_error = f"{kind or type(e).__name__}: {e}"[:300]
+            raise
+
+    def post(self, text):
+        kwargs = {"reply_to": self.reply_to} if self.reply_to and not self.message_ids else {}
+        ids = [i for i in (self._call(self.api.send_message, self.chat_id, text, **kwargs) or []) if i is not None]
+        if not ids:
+            return None
+        now = self.clock()
+        for i in ids:
+            self._touched[i] = now
+        self.message_ids += ids
+        return ids[-1]
+
+    def edit(self, handle, text):
+        last = self._touched.get(handle)
+        if last is not None:
+            wait = self.min_edit_gap - (self.clock() - last)
+            if wait > 0:
+                self.sleep(wait)
+        try:
+            ok = self._call(self.api.edit_message_text, self.chat_id, handle, text)
+        except Exception as e:
+            if "not modified" in str(e).lower():
+                ok = True
+            elif getattr(e, "kind", None) == "permanent" or getattr(e, "permanent", False):
+                return False  # e.g. the message was deleted: the writer posts the final text anew
+            else:
+                raise
+        self._touched[handle] = self.clock()
+        self.edits += 1
+        return bool(ok)
+
+    def send_file(self, path, caption=""):
+        return self._call(self.api.send_document, self.chat_id, str(path), caption=caption or None)
+
+    def send_voice(self, path, caption="", duration=None):
+        return self._call(self.api.send_voice, self.chat_id, str(path), caption=caption or None, duration=duration)
+
+    def typing(self):
+        try:
+            return self.api.send_chat_action(self.chat_id, "typing")
+        except Exception:
+            return None  # best effort
+
+    def message_id(self, handle):
+        return handle
