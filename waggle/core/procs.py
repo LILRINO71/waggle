@@ -90,8 +90,77 @@ def own_ctime():
 _DETACHED_PROCESS = 0x00000008
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
 _CREATE_BREAKAWAY_FROM_JOB = 0x01000000
-# Console tools started from the windowless core (git, taskkill, schtasks) must not flash a window.
+_CREATE_NEW_CONSOLE = 0x00000010
+# Console tools started from the windowless core (git, taskkill, schtasks, claude) must not flash a window: a
+# console program started by a process without a console gets its own, and with Windows Terminal as the default
+# terminal that is a terminal window that also takes the focus (measured: ~80 windows per outreach.look pass).
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+# Windows shows the "working in background" cursor for up to 2 s when a GUI program (pythonw) starts, unless the
+# creator forces feedback off (measured: one blink per detached job worker started by the core).
+STARTF_FORCEOFFFEEDBACK = 0x80
+
+
+def quiet_flags(flags=0):
+    """`flags` plus CREATE_NO_WINDOW, unless the caller chose how the child gets its console (no console at all,
+    or a new visible one on purpose)."""
+    if os.name != "nt":
+        return flags
+    if flags & (NO_WINDOW | _DETACHED_PROCESS | _CREATE_NEW_CONSOLE):
+        return flags
+    return flags | NO_WINDOW
+
+
+def quiet_startupinfo(info=None):
+    """A STARTUPINFO (a copy of `info` when given) that forces the app-starting cursor off; None off Windows."""
+    if os.name != "nt":
+        return info
+    import copy
+    import subprocess
+    out = copy.copy(info) if info is not None else subprocess.STARTUPINFO()
+    out.dwFlags |= STARTF_FORCEOFFFEEDBACK
+    return out
+
+
+_original_popen_init = None
+
+
+def quiet_installed():
+    return _original_popen_init is not None
+
+
+def install_quiet_children():
+    """Make every child this process starts quiet by default: subprocess.Popen (and so run/check_output/...) adds
+    CREATE_NO_WINDOW and STARTF_FORCEOFFFEEDBACK unless the caller chose its own console flags. The core and its
+    detached workers call this at start, so code in a plug-in that forgot the flags cannot flash a window.
+    Returns True when it installed the wrapper now (False off Windows or when already installed)."""
+    global _original_popen_init
+    if os.name != "nt" or _original_popen_init is not None:
+        return False
+    import subprocess
+    original = subprocess.Popen.__init__
+
+    def quiet_init(self, *args, **kwargs):
+        # `startupinfo` and `creationflags` are keyword arguments in all of Waggle's calls; a call that passes
+        # them positionally (14+ positional arguments) is left alone.
+        if len(args) < 13:
+            kwargs["creationflags"] = quiet_flags(kwargs.get("creationflags") or 0)
+            kwargs["startupinfo"] = quiet_startupinfo(kwargs.get("startupinfo"))
+        original(self, *args, **kwargs)
+
+    quiet_init.__wrapped__ = original
+    _original_popen_init = original
+    subprocess.Popen.__init__ = quiet_init
+    return True
+
+
+def uninstall_quiet_children():
+    """Undo install_quiet_children (tests)."""
+    global _original_popen_init
+    if _original_popen_init is None:
+        return
+    import subprocess
+    subprocess.Popen.__init__ = _original_popen_init
+    _original_popen_init = None
 
 
 def pythonw():
@@ -108,15 +177,17 @@ def pythonw():
 
 def spawn_detached(args, *, cwd, log_path, env=None):
     """Start a process that outlives its parent (also when the parent runs inside a job object that kills its
-    members on close, as Task Scheduler tasks can). Output goes to `log_path`. Returns the pid."""
+    members on close, as Task Scheduler tasks can). Output goes to `log_path`. Returns the pid. On Windows the
+    child has no console (DETACHED_PROCESS) and the app-starting cursor is forced off."""
     import subprocess
     log = open(log_path, "ab")
     try:
         kw = dict(cwd=str(cwd), env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                   close_fds=True)
         if os.name != "nt":
-            return subprocess.Popen(args, start_new_session=True, **kw).pid
+            return subprocess.Popen(args, start_new_session=True, **kw).pid  # window: ok - not Windows
         flags = _DETACHED_PROCESS | _CREATE_NEW_PROCESS_GROUP
+        kw["startupinfo"] = quiet_startupinfo()
         try:
             return subprocess.Popen(args, creationflags=flags | _CREATE_BREAKAWAY_FROM_JOB, **kw).pid
         except OSError:  # the surrounding job forbids breakaway
@@ -132,7 +203,8 @@ def kill_tree(pid, pid_ctime=None):
         return False
     if os.name == "nt":
         subprocess.run(["taskkill", "/PID", str(int(pid)), "/T", "/F"], stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL, timeout=30, creationflags=NO_WINDOW)
+                       stderr=subprocess.DEVNULL, timeout=30, creationflags=NO_WINDOW,
+                       startupinfo=quiet_startupinfo())
     else:
         import signal
         try:

@@ -2,13 +2,14 @@
 
 It loads the plug-ins to find the handler, records its own pid on the job (so a core that died before doing
 so does not requeue a job that is still running), renews the lease while the handler runs and records the
-outcome as the job's owner. It keeps running if the core exits; the next core re-adopts it."""
+outcome as the job's owner. It keeps running if the core exits; the next core re-adopts it. Like the core it makes every child it starts
+windowless (procs.install_quiet_children)."""
 import logging
 import os
 import sys
 import threading
 
-from waggle.core import jobs, plugins
+from waggle.core import jobs, plugins, procs
 
 log = logging.getLogger("waggle.core.jobrun")
 
@@ -50,4 +51,5 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    procs.install_quiet_children()  # a handler's children (git, claude, ...) never flash a window
     sys.exit(main())

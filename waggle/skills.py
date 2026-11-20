@@ -477,7 +477,7 @@ def _hermes(*args, timeout=120):
         exe = HERMES_HOME / "bin" / "hermes"
     env = dict(os.environ, HERMES_HOME=str(HERMES_HOME))
     r = subprocess.run([str(exe), *args], capture_output=True, text=True, timeout=timeout, env=env,
-                       encoding="utf-8", errors="replace")
+                       encoding="utf-8", errors="replace", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     return re.sub(r"\x1b\[[0-9;]*m", "", (r.stdout or "") + (r.stderr or "")).strip()
 
 

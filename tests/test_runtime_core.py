@@ -308,3 +308,33 @@ def test_detached_job_past_its_timeout_is_killed_and_failed(core):
     event = [e for e in events.query("job.timeout") if e["ref"] == str(jid)][0]
     assert event["data"]["killed"] is True
     wait_for(lambda: not procs.alive(job["pid"]), what="the worker to be gone")
+
+
+def test_the_core_reports_that_its_children_are_quiet(core):
+    core.start()
+    assert control.heartbeat()["quiet_children"] is True
+
+
+def test_the_long_lived_watchdog_starts_replaces_and_never_doubles_the_core(core):
+    wd = subprocess.Popen([sys.executable, "-m", "waggle.core", "watch", "--loop", "--every-s", "1"],
+                          cwd=str(REPO), env=core.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    core.procs.append(wd)
+    try:
+        first = wait_for(lambda: control.running_pid(), 60, "the watchdog to start the core")
+        wait_for(lambda: (control.heartbeat() or {}).get("pid") == first, 60, "the first heartbeat")
+        wait_for(lambda: control.watchdog_running() == wd.pid, 30, "the watchdog's first beat")
+        again = subprocess.run([sys.executable, "-m", "waggle.core", "watch", "--loop"], cwd=str(REPO),
+                               env=core.env, capture_output=True, text=True, timeout=60)
+        assert again.returncode == control.EXIT_ALREADY_RUNNING  # never two watchdogs
+        info = control.core_info()
+        procs.kill_tree(first, info.get("ctime"))  # the core dies: the loop starts a new one
+        new = wait_for(lambda: (control.running_pid() not in (None, first)) and control.running_pid(), 60,
+                       "a replacement core")
+        assert new != first
+        assert wd.poll() is None
+        assert core.cli("watch", "--stop").returncode == 0
+        wd.wait(30)
+        assert control.watchdog_running() is None
+    finally:
+        if wd.poll() is None:
+            wd.kill()

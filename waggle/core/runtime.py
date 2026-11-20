@@ -321,7 +321,7 @@ class Core:
         store.set_meta("heartbeat", json.dumps({
             "ts": time.time(), "pid": self.pid, "pid_ctime": procs.own_ctime(), "started": self.started,
             "version": self.version, "loops": self.loops_view(), "stopping": self.stopping.is_set(),
-            "in_flight": len(self.inflight), "transports": sender.kinds(),
+            "in_flight": len(self.inflight), "transports": sender.kinds(), "quiet_children": procs.quiet_installed(),
             "inbound_handler": inbound.handler() is not None}))
 
     def shutdown(self):
@@ -544,4 +544,5 @@ class Core:
 
 
 def main():
+    procs.install_quiet_children()  # also when started without `python -m waggle.core`
     return Core().run()
