@@ -109,6 +109,7 @@ def test_urgent_fact_goes_out_when_claude_is_down(s):
     out = initiative.decide(s, at(12), asker=down)
     assert [(d["signal"], d["action"]) for d in out] == [("soon", "text")]
     assert "soon happened" in _outbox()[0]["body"] and _outbox()[0]["origin"] == "initiative"
+    assert not _outbox()[0]["body"].startswith("🐝 🐝")  # the rules fallback once doubled the bee
     assert [p["key"] for p in initiative.pending()] == ["later"]  # waits for the next run
 
 

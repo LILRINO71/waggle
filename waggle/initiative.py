@@ -350,7 +350,7 @@ def _automations_today(now):
 def _apply(sig, d, s, now, state, decided_by):
     model_action = str(d.get("action", "none"))
     action, note = guard(sig, model_action, s, now, state)
-    msg = " ".join(str(d.get("message") or "").split())[:900]
+    msg = " ".join(str(d.get("message") or "").split())[:900].lstrip("🐝 ")  # the bee is added once, below
     if action in SEND_ACTIONS and not msg:
         msg = template(sig).lstrip("🐝 ")
     did = uuid.uuid4().hex[:12]
