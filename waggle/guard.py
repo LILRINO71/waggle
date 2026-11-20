@@ -1595,6 +1595,17 @@ def gate():
     return bad
 
 
+def denial_text(bad):
+    """What an agent is told when the safety check fails (the hook's own wording, see agent_hook.denial_text)."""
+    try:
+        from . import agent_hook
+        return agent_hook.denial_text(bad, PACKAGE_ROOT)
+    except Exception:  # still a block, with the bare names
+        names = ", ".join(str(b.get("file") or b.get("path")) for b in bad)
+        return (f"Waggle's safety check failed ({names}), so every action is blocked until the user runs "
+                f'`cd "{PACKAGE_ROOT}"; python -m waggle.guard approve`. Do not retry or work around this.')
+
+
 def gate_passed():
     """The hook calls this after its own check passed, so the policy it runs next does not hash everything again."""
     _gate_memo.update(at=time.monotonic(), bad=None)

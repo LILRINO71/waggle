@@ -332,9 +332,7 @@ def decide(tool_name, args=None, settings=None, cwd=None):
     """Decision for one tool call (before approvals are consulted)."""
     bad = guard.gate()  # fail closed like the hook when the safety files on disk no longer match the manifest
     if bad:
-        return Decision(DENY, "integrity_violation: Waggle's safety files changed or could not be verified ("
-                        + ", ".join(str(b.get("file")) for b in bad) + "); the user must run "
-                        "`python -m waggle.guard approve`")
+        return Decision(DENY, "integrity_violation: " + guard.denial_text(bad))
     args = args or {}
     raw = tool_name or ""
     name = raw.lower()

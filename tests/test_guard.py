@@ -1895,3 +1895,52 @@ def test_the_hermes_wrapper_is_still_decided_as_the_tool_it_runs(world):
     assert policy.decide("mcp__waggle__hermes_tool", {"name": "send_message", "args": {"to": "a@b.c"}}).action == policy.ASK
     assert policy.decide("mcp__waggle__hermes_tool", {"name": "web_search", "args": {"query": "x"}}).allowed
     assert policy.decide("mcp__waggle__hermes_tool", {"name": "make_payment", "args": {}}).action == policy.ASK
+
+
+# ---- an integrity denial says what changed, in plain words, and the exact command, once -------------------------
+
+def _command(w):
+    return f'cd "{w.repo}"; python -m waggle.guard approve'
+
+
+def test_the_hook_names_the_changed_file_and_the_command(world, monkeypatch, capsys):
+    approve()
+    (world.repo / "waggle" / "policy.py").write_text("# tampered\n")
+    why = run_hook(monkeypatch, capsys, READ_EVENT)["permissionDecisionReason"]
+    assert "Waggle's permission rules (waggle/policy.py) was changed" in why
+    assert _command(world) in why and why.count("Do not retry") == 1
+
+
+def test_the_hook_says_so_when_nothing_was_approved_yet(world, monkeypatch, capsys):
+    why = run_hook(monkeypatch, capsys, READ_EVENT)["permissionDecisionReason"]
+    assert "no safety approval (manifest.json) exists yet for this Waggle folder" in why and _command(world) in why
+
+
+def test_the_in_process_gate_and_hermes_say_the_same_once(world, monkeypatch):
+    from waggle import security
+    approve()
+    (world.repo / "waggle" / "quota.py").write_text("# tampered\n")
+    monkeypatch.setattr(guard, "GATE_IN_TESTS", True)
+    d = policy.decide("Read", {"file_path": "notes.txt"})
+    assert d.action == policy.DENY and "the usage-limit code (waggle/quota.py) was changed" in d.reason
+    out = agent_hook.handle({"tool_name": "Read", "tool_input": {"file_path": "notes.txt"}})
+    why = out["hookSpecificOutput"]["permissionDecisionReason"]
+    assert _command(world) in why and why.count("Do not retry") == 1 and "Blocked by" not in why
+    msg = security.check_tool_call("web_search", {"query": "x"})
+    assert msg["action"] == "block" and "waggle/quota.py" in msg["message"] and _command(world) in msg["message"]
+
+
+def test_plain_words_for_every_kind_of_finding(world):
+    cases = [
+        ({"file": "waggle/guard.py", "expected": "a", "actual": None}, "the tamper guard (waggle/guard.py) is missing"),
+        ({"file": "json.py", "expected": "no file shadowing a Python module at the checkout root", "actual": "present"},
+         "would replace one of Python's own modules"),
+        ({"file": "manifest.json", "expected": "version 3", "actual": "version 2"}, "older Waggle version"),
+        ({"file": "WAGGLE_HOME", "expected": "C:/a", "actual": "C:/b"}, "Waggle data folder (WAGGLE_HOME) is C:/b"),
+        ({"path": guard.CONFIG_KEY, "kind": "changed", "keys": ["stop_at"]},
+         "protected settings in config.json changed (stop_at)"),
+        ({"path": "user:.hermes/plugins/waggle/__init__.py", "kind": "changed"}, "installed copy of the Hermes plug-in"),
+    ]
+    for item, words in cases:
+        assert words in agent_hook.plain(item), item
+    assert "start Waggle normally" in guard.denial_text([cases[3][0]])

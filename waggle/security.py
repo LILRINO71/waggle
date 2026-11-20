@@ -85,10 +85,7 @@ def guard_directive(tool_name, args):
         from . import guard, policy
         bad = guard.gate()
         if bad:
-            names = ", ".join(str(b.get("file")) for b in bad)
-            return {"action": "block", "message": f"Waggle's safety files changed or could not be verified ({names}), "
-                    "so every action is blocked until the user runs `python -m waggle.guard approve`. Do not retry "
-                    "or work around this; tell the user."}
+            return {"action": "block", "message": guard.denial_text(bad)}
         name = (tool_name or "").lower()
         hit = policy._guard_hit(name, name.split("__")[-1], args if isinstance(args, dict) else {}, None)
     except Exception:
