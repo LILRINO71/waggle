@@ -169,7 +169,8 @@ def status_text(snap):
             lines.append(f"{key.replace('_', ' ')}: {snap[key]:.0f}")
     lines.append(f"last 24 h: dead jobs {snap['dead_jobs_24h']}, failed sends {snap['failed_sends_24h']}")
     guard = snap["guard"]
-    lines.append(f"guard: {guard.get('status')}{' (FROZEN)' if guard.get('frozen') else ''}")
+    lines.append(f"guard: {guard.get('status')}{' (FROZEN)' if guard.get('frozen') else ''}"
+                 + (f" - {guard['detail']}" if guard.get("detail") else ""))
     if snap["ready"]:
         lines.append("ready: " + ", ".join(f"{k}={'yes' if v else 'no'}" for k, v in sorted(snap["ready"].items())))
     cu = snap.get("last_catch_up")

@@ -77,12 +77,12 @@ def core(monkeypatch):
     env = dict(os.environ)
     env.update(WAGGLE_HOME=str(home), PYTHONPATH=os.pathsep.join([str(REPO), str(REPO / "tests")]),
                WAGGLE_CORE_PORT=str(_free_port()), WAGGLE_CORE_CADENCE=FAST, WAGGLE_CORE_NO_TASK="1",
-               WAGGLE_CORE_PLUGINS="test_runtime_core_plugin",
+               WAGGLE_CORE_PLUGINS="test_runtime_core_plugin", WAGGLE_CORE_PLUGINS_ONLY="1",
                # The 1 s accept budget is tested in-process with an injected clock; here a loaded machine
                # must not turn a slow accept into a cancelled turn.
                WAGGLE_CORE_ACCEPT_BUDGET_S="60")
     for key in ("WAGGLE_HOME", "PYTHONPATH", "WAGGLE_CORE_PORT", "WAGGLE_CORE_CADENCE", "WAGGLE_CORE_NO_TASK",
-                "WAGGLE_CORE_PLUGINS", "WAGGLE_CORE_ACCEPT_BUDGET_S"):
+                "WAGGLE_CORE_PLUGINS", "WAGGLE_CORE_PLUGINS_ONLY", "WAGGLE_CORE_ACCEPT_BUDGET_S"):
         monkeypatch.setenv(key, env[key])
     h = Harness(env)
     yield h
@@ -123,7 +123,8 @@ def test_health_needs_the_token(core):
         assert health.fetch(path, auth=False)[0] == 401
     code, snap = health.fetch("/health")
     assert code == 200 and snap["healthy"] is True, snap["reasons"]
-    assert snap["guard"]["status"] == "not installed"
+    assert snap["guard"]["status"] == "not approved" and not snap["guard"]["frozen"]
+    assert snap["ready"]["safety_core"] is False
     for key in ("heartbeat_age_s", "loops", "queues", "oldest_queued_job_age_s", "oldest_queued_outbox_age_s",
                 "dead_jobs_24h", "failed_sends_24h", "ready", "last_catch_up"):
         assert key in snap

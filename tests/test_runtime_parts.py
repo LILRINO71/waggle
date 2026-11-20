@@ -110,6 +110,30 @@ def test_guard_result_shapes(monkeypatch, result, frozen):
     assert (runtime.check_guard()["status"] == "frozen") is frozen
 
 
+def test_a_checkout_without_an_approved_manifest_is_not_approved_not_frozen(monkeypatch):
+    no_manifest = [{"path": "manifest.json", "kind": "no_manifest", "expected": None, "actual": None}]
+    _fake_guard(monkeypatch, lambda: no_manifest)
+    status = runtime.check_guard(now=100)
+    assert status["status"] == "not approved" and "waggle.guard approve" in status["detail"]
+    assert store.get_meta("guard.frozen") != "1"
+    assert events.query("integrity_violation") == []
+    (cap,) = [r for r in ledger.status(now=101) if r["name"] == "safety_core"]
+    assert cap["ready"] is False and "waggle.guard approve" in cap["last_failure"]
+    from waggle.core import health
+    snap = health.snapshot(now=101)
+    assert snap["guard"]["status"] == "not approved"
+    assert not any("guard" in r for r in snap["reasons"])
+    # A real mismatch still freezes, and deleting the manifest afterwards does not lift the freeze.
+    _fake_guard(monkeypatch, lambda: [{"path": "waggle/policy.py", "kind": "changed", "expected": "a",
+                                        "actual": "b"}])
+    assert runtime.check_guard(now=200)["status"] == "frozen"
+    (cap,) = [r for r in ledger.status(now=201) if r["name"] == "safety_core"]
+    assert "changed: waggle/policy.py" in cap["last_failure"]
+    _fake_guard(monkeypatch, lambda: no_manifest)
+    assert runtime.check_guard(now=300)["status"] == "frozen"
+    assert store.get_meta("guard.frozen") == "1"
+
+
 def test_a_guard_that_errors_fails_closed(monkeypatch):
     def verify():
         raise OSError("hash file unreadable")
