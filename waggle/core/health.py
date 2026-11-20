@@ -6,6 +6,10 @@ GET /metrics?days=N  metrics_daily for the last N days (default 7)
 POST /turn           an inbound message, JSON {chat, address, text, kind, media, platform, origin, dedupe_key}
                      -> 202 {"turn_id", "duplicate"} once it is stored; the turn runs later. 503 while the core
                      is stopping or has no inbound handler (the caller falls back), 400 on a bad body.
+                     The turn becomes runnable only if the 202 was written within the accept budget (1 s,
+                     settings.accept_budget_s) of the request arriving; later than that it is cancelled (and
+                     answered 503 when not yet written), because the caller gives up after 2 s and answers the
+                     message itself.
 Anything else is 404; without the token everything is 401."""
 import hmac
 import json
@@ -21,6 +25,35 @@ from waggle.core import inbound, ledger, sender, settings, store
 log = logging.getLogger("waggle.core.health")
 
 MAX_TURN_BODY = 1_000_000
+
+# Seams for tests: the clock that measures the accept budget, a pause before the reply is written, and the
+# function that writes it.
+_clock = time.monotonic
+
+
+def _before_reply():
+    pass
+
+
+def _write_reply(handler, data):
+    handler.wfile.write(data)
+    handler.wfile.flush()
+
+
+class _Server(ThreadingHTTPServer):
+    """Records when each connection was accepted, before a thread is found for it."""
+    daemon_threads = True
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.arrivals = {}
+
+    def process_request(self, request, client_address):
+        self.arrivals[id(request)] = _clock()
+        super().process_request(request, client_address)
+
+    def arrival(self, request):
+        return self.arrivals.pop(id(request), _clock())
 TURN_FIELDS = {"chat": (str, int), "address": (str, int), "text": (str,), "kind": (str,), "platform": (str,),
                "origin": (str,), "dedupe_key": (str, int)}
 
@@ -182,19 +215,20 @@ def serve(loops_fn=None, port=None, accepting_fn=None):
         def log_message(self, fmt, *args):
             log.debug("health %s", fmt % args)
 
-        def _send(self, code, body):
+        def _send(self, code, body, write=None):
             data = json.dumps(body, default=str).encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
-            self.wfile.write(data)
+            (write or (lambda h, d: h.wfile.write(d)))(self, data)
 
         def _authorized(self):
             auth = self.headers.get("Authorization", "")
             return hmac.compare_digest(auth.encode(), f"Bearer {secret}".encode())
 
         def do_POST(self):  # noqa: N802 - http.server API
+            arrived = self.server.arrival(self.request)
             if not self._authorized():
                 return self._send(401, {"error": "unauthorized"})
             if urlparse(self.path).path != "/turn":
@@ -209,12 +243,38 @@ def serve(loops_fn=None, port=None, accepting_fn=None):
                 return self._send(400, {"error": "a JSON body of at most 1 MB is required"})
             try:
                 args = parse_turn(self.rfile.read(length))
-                return self._send(202, inbound.submit(**args))
+                result = inbound.submit_pending(**args)
             except ValueError as e:
                 return self._send(400, {"error": str(e)})
             except Exception as e:  # storage failed: the caller must fall back
                 log.exception("turn submission failed")
                 return self._send(503, {"error": f"{type(e).__name__}: {e}"})
+            if result["duplicate"]:
+                return self._send(202, result)
+            self._reply_then_confirm(result, arrived)
+
+        def _reply_then_confirm(self, result, arrived):
+            turn_id = result["turn_id"]
+            budget = settings.accept_budget_s()
+            _before_reply()
+            late = _clock() - arrived
+            if late > budget:
+                inbound.cancel(turn_id, f"accept took {late:.2f} s before the reply (budget {budget} s)")
+                try:
+                    self._send(503, {"error": "too slow to accept; answer it on the other path"})
+                except OSError:
+                    pass
+                return
+            try:
+                self._send(202, result, write=_write_reply)
+            except OSError as e:
+                inbound.cancel(turn_id, f"writing the 202 failed: {type(e).__name__}: {e}")
+                return
+            late = _clock() - arrived
+            if late > budget:
+                inbound.cancel(turn_id, f"the 202 was written after {late:.2f} s (budget {budget} s)")
+                return
+            inbound.confirm(turn_id)
 
         def do_GET(self):  # noqa: N802 - http.server API
             if not self._authorized():
@@ -231,8 +291,7 @@ def serve(loops_fn=None, port=None, accepting_fn=None):
                 return self._send(500, {"error": f"{type(e).__name__}: {e}"})
             return self._send(404, {"error": "not found"})
 
-    server = ThreadingHTTPServer(("127.0.0.1", port or settings.port()), Handler)
-    server.daemon_threads = True
+    server = _Server(("127.0.0.1", port or settings.port()), Handler)
     threading.Thread(target=server.serve_forever, name="core-health", daemon=True).start()
     return server
 

@@ -9,11 +9,15 @@ The handler is called as `fn(msg)` with:
   received_ts, attempt (1 on the first run, 2 after a restart interrupted the first)
 It is responsible for replying. Returning ends the turn (`done`); an exception marks the row `failed`.
 
+A message accepted over HTTP (POST /turn) is stored `pending` and becomes runnable (`confirm`) only after
+the 202 reply was written within the accept budget; otherwise it is `cancelled` and never run, because the
+caller has already fallen back to its old path and answered it there.
+
 A row still `running` when its core died is run again once (attempt 2). If that run dies too, the row is
 `failed`, an `inbox.lost` event is recorded and one honest text message is queued for that chat asking the
 user to send it again.
 
-States: waiting -> running -> done | failed.
+States: pending -> waiting | cancelled;  waiting -> running -> done | failed.
 """
 import os
 import threading
@@ -47,8 +51,20 @@ def wait_for_work(timeout):
 
 def submit(chat, text, *, address="", kind="text", media=None, platform="telegram", origin="user",
            dedupe_key=None, now=None):
-    """Store one inbound message. With a dedupe_key already used, nothing is stored and the existing turn is
-    reported as a duplicate. Returns {"turn_id", "duplicate"}."""
+    """Store one inbound message, runnable at once. With a dedupe_key already used, nothing is stored and the
+    existing turn is reported as a duplicate. Returns {"turn_id", "duplicate"}."""
+    return _store(chat, text, address=address, kind=kind, media=media, platform=platform, origin=origin,
+                  dedupe_key=dedupe_key, now=now, state="waiting")
+
+
+def submit_pending(chat, text, *, address="", kind="text", media=None, platform="telegram", origin="user",
+                   dedupe_key=None, now=None):
+    """Like submit, but the row is not runnable until confirm(turn_id); cancel(turn_id) drops it."""
+    return _store(chat, text, address=address, kind=kind, media=media, platform=platform, origin=origin,
+                  dedupe_key=dedupe_key, now=now, state="pending")
+
+
+def _store(chat, text, *, address, kind, media, platform, origin, dedupe_key, now, state):
     chat = "" if chat is None else str(chat).strip()
     if not chat:
         raise ValueError("chat is required")
@@ -60,16 +76,42 @@ def submit(chat, text, *, address="", kind="text", media=None, platform="telegra
             if row:
                 return {"turn_id": row[0], "duplicate": True}
         turn_id = store.new_id()
+        pid, ctime = (os.getpid(), procs.own_ctime()) if state == "pending" else (None, None)
         con.execute("INSERT INTO inbox(turn_id, dedupe_key, chat, address, platform, kind, text, media, origin, "
-                    "state, attempts, received_ts, updated) VALUES(?,?,?,?,?,?,?,?,?,'waiting',0,?,?)",
+                    "state, attempts, received_ts, pid, pid_ctime, updated) VALUES(?,?,?,?,?,?,?,?,?,?,0,?,?,?,?)",
                     (turn_id, dedupe_key, chat, str(address or ""), platform or "", kind or "text", text or "",
-                     store.dumps(media), origin or "", now, now))
+                     store.dumps(media), origin or "", state, now, pid, ctime, now))
         store.insert_event(con, "inbox.received", source="inbound", chat=chat, ref=turn_id, now=now,
                            data={"kind": kind, "platform": platform, "origin": origin, "dedupe_key": dedupe_key,
                                  "chars": len(text or "")})
-    _wake.set()
+    if state == "waiting":
+        _wake.set()
     return {"turn_id": turn_id, "duplicate": False}
 
+
+def confirm(turn_id, now=None):
+    """A pending message becomes runnable. False if it is no longer pending."""
+    now = store.now_or(now)
+    with store.transaction() as con:
+        ok = con.execute("UPDATE inbox SET state='waiting', pid=NULL, pid_ctime=NULL, updated=? "
+                         "WHERE turn_id=? AND state='pending'", (now, turn_id)).rowcount == 1
+    if ok:
+        _wake.set()
+    return ok
+
+
+def cancel(turn_id, reason, now=None):
+    """A pending message is dropped for good (kept as `cancelled`, with an event). False if not pending."""
+    now = store.now_or(now)
+    with store.transaction() as con:
+        row = con.execute("SELECT chat FROM inbox WHERE turn_id=? AND state='pending'", (turn_id,)).fetchone()
+        if row is None:
+            return False
+        con.execute("UPDATE inbox SET state='cancelled', error=?, finished=?, pid=NULL, pid_ctime=NULL, updated=? "
+                    "WHERE turn_id=?", (reason, now, now, turn_id))
+        store.insert_event(con, "inbox.cancelled", source="inbound", chat=row["chat"], ref=turn_id, now=now,
+                           data={"reason": reason})
+        return True
 
 def message(row):
     """The dict a handler receives for an inbox row."""
@@ -137,8 +179,18 @@ def recover(now=None):
     to the chat when the second run died too. Returns {"retried": n, "lost": n}."""
     from waggle.core import outbox
     now = store.now_or(now)
-    counts = {"retried": 0, "lost": 0}
+    counts = {"retried": 0, "lost": 0, "cancelled": 0}
     with store.transaction() as con:
+        for row in con.execute("SELECT * FROM inbox WHERE state='pending'").fetchall():
+            if procs.same_process(row["pid"], row["pid_ctime"]):
+                continue
+            # Its accepting process died before confirming: the caller may never have seen the 202 and then
+            # answered on its own path, so running it now could answer twice.
+            con.execute("UPDATE inbox SET state='cancelled', error=?, finished=?, updated=? WHERE id=?",
+                        ("the accepting core died before confirming the reply", now, now, row["id"]))
+            store.insert_event(con, "inbox.cancelled", source="inbound", chat=row["chat"], ref=row["turn_id"],
+                               now=now, data={"reason": "accepting core died"})
+            counts["cancelled"] += 1
         for row in con.execute("SELECT * FROM inbox WHERE state='running'").fetchall():
             if procs.same_process(row["pid"], row["pid_ctime"]):
                 continue
