@@ -176,9 +176,12 @@ class StreamWriter:
     {"delivered", "messages", "error", "edits", "first_shown_at"}."""
 
     def __init__(self, delivery, interval=1.2, stream=True, clean=plain_text, clock=time.time, sleep=time.sleep,
-                 tick=0.2, on_first_shown=None):
+                 tick=0.2, on_first_shown=None, first_hold_s=0.4, first_min_chars=80):
         self.d, self.interval, self.clean, self.clock, self.sleep, self.tick = delivery, interval, clean, clock, sleep, tick
         self.on_first_shown = on_first_shown  # called once, right after the first words were posted
+        # The first post waits until the text has first_min_chars or first_hold_s passed since the first words:
+        # a one-line answer that completes inside the hold goes out once, whole, with no edit (and no edit gap).
+        self.first_hold_s, self.first_min_chars, self._first_update = first_hold_s, first_min_chars, None
         self.stream = stream and getattr(delivery, "can_edit", True)
         self.limit = max(200, int(getattr(delivery, "max_len", 4000) or 4000) - 96)
         self.handles, self.shown = [], []  # one per message: its handle and the text it shows now
@@ -190,6 +193,8 @@ class StreamWriter:
     def update(self, text):
         with self._lock:
             self._latest = text or ""
+            if self._first_update is None and self._latest.strip():
+                self._first_update = self.clock()
         if self.stream and self._thread is None:
             ctx = contextvars.copy_context()  # a transport may read the caller's context (e.g. which chat)
             self._thread = threading.Thread(target=ctx.run, args=(self._loop,), daemon=True, name="waggle-stream")
@@ -199,8 +204,10 @@ class StreamWriter:
         while not self._stop.is_set():
             if self.clock() - self._last_push >= self.interval:
                 with self._lock:
-                    latest = self._latest
-                if latest and self.clean(latest) != "\n\n".join(self.shown):
+                    latest, first = self._latest, self._first_update
+                held = (not self.handles and first is not None and len(latest) < self.first_min_chars
+                        and self.clock() - first < self.first_hold_s)
+                if latest and not held and self.clean(latest) != "\n\n".join(self.shown):
                     self._push(latest, final=False)
             self._stop.wait(self.tick)
 

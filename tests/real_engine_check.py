@@ -2,6 +2,7 @@
 throwaway Waggle home, with no gateway and no Telegram. Uses the user's Claude login and quota.
 
 usage: python tests/real_engine_check.py <repo> <empty_temp_home> prep cold warm tool killmid resume killearly stop
+       pre-warm check: ... prep cold pause prewarm oneline oneline2 pause prewarm oneline stop
        (add `strict` before `cold` to compare a start with --strict-mcp-config)
 Every step is one user message (one real call), except killearly (the killed send plus the automatic retry).
 Prints one JSON line per step; raw stream-json goes to <home>/raw_stream.jsonl.
@@ -26,7 +27,7 @@ work.mkdir(parents=True, exist_ok=True)
 for n in ("alpha", "beta", "gamma"):
     (work / f"{n}.txt").write_text("x", encoding="utf-8")
 s = Settings(vault=str(home / "vault"), jobs_dir=str(home / "jobs"), agent_workdir=str(work), quiet_hours=[0, 0],
-             edit_interval_s=1.0)
+             edit_interval_s=1.2)
 s.save()
 
 from waggle import chat_engine, traces  # noqa: E402
@@ -124,6 +125,18 @@ for step in sys.argv[3:]:
         real_send = sess.proc.send
         sess.proc.send = send_then_die
         turn("killearly", "What is 6 times 7? Answer with the number only.")
+    elif step == "pause":  # stop the process cleanly (as the reaper or a core restart would)
+        sess.stop(grace=5.0)
+        print(json.dumps({"step": "pause", "alive": sess.alive()}), flush=True)
+    elif step == "prewarm":  # start the process without a message (what chat.prewarm does at core start)
+        t = time.time()
+        r = sess.warm()
+        time.sleep(15)  # the user's message comes later; MCP servers finish connecting meanwhile
+        print(json.dumps({"step": "prewarm", **r, "warm_call_s": round(time.time() - t - 15, 2)}), flush=True)
+    elif step == "oneline":
+        turn("oneline", "In one short sentence: what is the capital of France?")
+    elif step == "oneline2":
+        turn("oneline2", "In one short sentence: what is the largest planet?")
     elif step == "stop":
         sess.stop(grace=5.0)
         print(json.dumps({"step": "stop", "alive": sess.alive()}), flush=True)

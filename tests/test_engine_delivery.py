@@ -185,3 +185,27 @@ def test_bot_api_is_imported_lazily(monkeypatch):
     assert built == []
     d.post("hello")
     assert len(built) == 1 and built[0].messages
+
+
+def test_a_short_answer_that_completes_within_the_hold_is_posted_once_without_an_edit():
+    d = FakeDelivery()
+    w = StreamWriter(d, interval=1.0, tick=0.01, first_hold_s=0.3)
+    w.update("Four.")
+    time.sleep(0.1)
+    t = time.monotonic()
+    out = w.finish("Four.")
+    assert out["delivered"] and [k for k, _, _ in d.log] == ["post"] and time.monotonic() - t < 0.2
+
+
+def test_the_first_post_waits_at_most_the_hold():
+    d = FakeDelivery()
+    w = StreamWriter(d, interval=1.0, tick=0.01, first_hold_s=0.15)
+    w.update("Short start")
+    time.sleep(0.3)
+    assert [k for k, _, _ in d.log] == ["post"]
+    w2 = StreamWriter(FakeDelivery(), interval=1.0, tick=0.01, first_hold_s=5, first_min_chars=10)
+    w2.update("Long enough already")
+    time.sleep(0.1)
+    assert w2.d.log and w2.d.log[0][0] == "post"
+    w.finish("Short start, done.")
+    w2.finish("Long enough already.")

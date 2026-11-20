@@ -18,7 +18,9 @@ Stopping a process closes its stdin first and then kills the whole tree, so no M
 
 Measured against the real CLI (2026-11-19, Haiku, Claude Code 2.1.326, tests/real_engine_check.py): first words
 4.5 s cold (22 MCP servers start, ~85k tokens of tools) and 1.4 s warm; with --strict-mcp-config 2.5 s cold, but
-then the claude.ai connectors (Gmail, Drive, Calendar) are not loaded.
+then the claude.ai connectors (Gmail, Drive, Calendar) are not loaded. Pre-warmed with warm() (the core's
+chat.prewarm), a one-line answer showed its first (and only) words after 2.07 s and 2.28 s; 1.78 s on a warm
+process; 7.73 s with no pre-warm in the same run.
 """
 import json
 import os
