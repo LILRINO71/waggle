@@ -25,6 +25,13 @@ def _free_port():
         return s.getsockname()[1]
 
 
+def _answers():
+    try:
+        return health.fetch("/health", timeout=1)[0] == 200
+    except OSError:
+        return False
+
+
 def wait_for(cond, timeout=25.0, what="condition"):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -49,6 +56,7 @@ class Harness:
         out.close()
         self.procs.append(p)
         wait_for(lambda: (control.heartbeat() or {}).get("pid") == p.pid, what="the core's heartbeat")
+        wait_for(lambda: _answers(), what="the health endpoint")
         return p
 
     def cli(self, *args, timeout=90):
