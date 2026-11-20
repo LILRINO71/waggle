@@ -162,3 +162,28 @@ def test_outbox_meta_round_trips_and_defaults_to_empty():
     assert outbox.get(a)["meta"] == {"title": "Reminder", "decision_id": "d1"}
     assert outbox.get(b)["meta"] == {}
     assert [r["meta"] for r in outbox.claim_due()] == [{"title": "Reminder", "decision_id": "d1"}, {}]
+
+
+def test_claim_due_by_kind_and_retry_after():
+    t = outbox.enqueue("text", "a", now=0)
+    v = outbox.enqueue("voice", "b", now=0)
+    assert [r["id"] for r in outbox.claim_due(now=0, kinds=["text"])] == [t]
+    assert outbox.claim_due(now=0, kinds=[]) == []
+    assert outbox.get(v)["state"] == "queued"
+    assert outbox.mark_failed(t, "429", retry_after=7, now=10) == "queued"
+    assert outbox.get(t)["next_try"] == 17
+
+
+def test_prune_removes_old_sent_and_expired_rows():
+    sent = outbox.enqueue("text", "a", now=0)
+    outbox.claim_due(now=0)
+    outbox.mark_sent(sent, "m1", now=0)
+    gone = outbox.enqueue("text", "b", expires=1, now=0)
+    outbox.expire(now=5)
+    failed = outbox.enqueue("text", "c", now=0)
+    outbox.claim_due(now=6)
+    outbox.mark_failed(failed, "x", permanent=True, now=6)
+    fresh = outbox.enqueue("text", "d", now=0)
+    assert outbox.prune(50, now=100) == 2
+    assert outbox.get(sent) is None and outbox.get(gone) is None
+    assert outbox.get(failed)["state"] == "failed" and outbox.get(fresh)["state"] == "queued"

@@ -6,9 +6,12 @@ Feedback is captured from the conversation itself: "no, I meant..." marks the pr
 correction), "perfect, thanks" marks it right, 👍/👎 work too. Full-text search over past turns powers `recall`.
 """
 import json
+import os
 import re
 import sqlite3
+import subprocess
 import time
+from pathlib import Path
 
 from .config import data_path
 from .policy import redact
@@ -21,6 +24,31 @@ PRAISE = re.compile(r"^\s*(thanks?|thank you|perfect|great|awesome|nice|that wor
                     r"good job|love it|👍)\b", re.I)
 
 
+# The per-turn truth record (turn engine and plugin): who really answered and why, how fast, whether and where it
+# arrived, what it claims to have produced, which code version ran it and where the message came from.
+TRUTH_COLUMNS = [("turn_id", "TEXT"),         # one id per turn (also the outbox idem key of an undelivered reply)
+                 ("chat", "TEXT"),            # the engine's chat key
+                 ("origin", "TEXT"),          # user | test | canary | bench | agent (NULL: recorded before origins)
+                 ("answered_by", "TEXT"),     # the Claude model id | local | none
+                 ("fallback_reason", "TEXT"), # why Claude did not (fully) answer
+                 ("ttfw_s", "REAL"),          # message received -> first words shown to the user
+                 ("total_s", "REAL"),         # message received -> final text delivered
+                 ("delivered", "INTEGER"),    # 1 delivered, 0 not (queued in the outbox or lost), NULL unknown
+                 ("delivery", "TEXT"),        # the transport that delivered it, or outbox | none
+                 ("delivery_error", "TEXT"),
+                 ("message_ids", "TEXT"),     # JSON list of the transport's message ids
+                 ("turn_outcome", "TEXT"),    # ok | degraded | failed (turn_outcome(); the old `outcome` is feedback)
+                 ("outcome_why", "TEXT"),     # JSON list of the reasons for degraded / failed
+                 ("claims", "TEXT"),          # JSON {files, commits, urls, ids} the answer says it produced
+                 ("version", "TEXT")]         # code version stamp (code_version())
+TEXT_CAP = 20000  # the transcript keeps whole replies (the old 4000-char cut lost long answers)
+STEP_RESULT_CAP = 500  # characters of each tool result kept, after redaction
+ORIGINS = ("user", "test", "canary", "bench", "agent")
+NON_USER = tuple(o for o in ORIGINS if o != "user")
+LEARNABLE = "(origin IS NULL OR origin='user')"  # rows that may feed learning, recall and the profile
+REPO = Path(__file__).resolve().parent.parent
+
+
 def _db():
     con = sqlite3.connect(data_path("traces.db"), timeout=10)
     con.execute("""CREATE TABLE IF NOT EXISTS traces (
@@ -29,6 +57,10 @@ def _db():
         tokens TEXT, feedback INTEGER DEFAULT 0, correction TEXT, outcome REAL, skills TEXT, extra TEXT)""")
     con.execute("""CREATE TABLE IF NOT EXISTS steps (
         trace_id INTEGER, idx INTEGER, tool TEXT, input TEXT, ok INTEGER, denied INTEGER, result TEXT)""")
+    have = {r[1] for r in con.execute("PRAGMA table_info(traces)")}
+    for col, typ in TRUTH_COLUMNS:
+        if col not in have:
+            con.execute(f"ALTER TABLE traces ADD COLUMN {col} {typ}")
     con.execute("CREATE INDEX IF NOT EXISTS traces_session ON traces(session, time)")
     con.execute("CREATE INDEX IF NOT EXISTS steps_trace ON steps(trace_id)")
     try:
@@ -44,28 +76,156 @@ def _has_fts(con):
 
 
 def record(request, *, session="", platform="", route="", model="", specialist="", agent="", latency_s=0.0,
-           ok=True, error="", reply="", tokens=None, steps=None, skills_used=None, extra=None):
-    """Store one finished turn; returns its id."""
+           ok=True, error="", reply="", tokens=None, steps=None, skills_used=None, extra=None, turn_id=None,
+           chat=None, origin=None, answered_by=None, fallback_reason=None, ttfw_s=None, total_s=None, delivered=None,
+           delivery=None, delivery_error=None, message_ids=None, turn_outcome=None, outcome_why=None, claims=None,
+           version=None):
+    """Store one finished turn; returns its id. The truth fields (turn_id...version) are set by the turn engine
+    and the plugin; older callers leave them empty. Every row gets the code version stamp, and the origin from
+    WAGGLE_ORIGIN when the caller gives none (benches and test harnesses set it for their whole process)."""
+    if origin is None:
+        env = (os.environ.get("WAGGLE_ORIGIN") or "").strip().lower()
+        origin = env if env in ORIGINS else None
+    elif origin not in ORIGINS:
+        raise ValueError(f"origin must be one of {ORIGINS}, not {origin!r}")
     con = _db()
     cur = con.execute(
         """INSERT INTO traces (time, session, platform, request, route, model, specialist, agent, latency_s, ok,
-           error, reply, tokens, skills, extra) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (time.time(), session or "", platform or "", redact(request or "")[:4000], route or "", model or "",
+           error, reply, tokens, skills, extra, turn_id, chat, origin, answered_by, fallback_reason, ttfw_s, total_s,
+           delivered, delivery, delivery_error, message_ids, turn_outcome, outcome_why, claims, version)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (time.time(), session or "", platform or "", redact(request or "")[:TEXT_CAP], route or "", model or "",
          specialist or "", agent or "", float(latency_s or 0), 1 if ok else 0, redact(error or "")[:500],
-         redact(reply or "")[:4000], json.dumps(tokens or {}), ",".join(skills_used or []),
-         json.dumps(extra or {}, default=str)))
+         redact(reply or "")[:TEXT_CAP], json.dumps(tokens or {}), ",".join(skills_used or []),
+         json.dumps(extra or {}, default=str), turn_id, chat, origin, answered_by,
+         (fallback_reason or None) and redact(fallback_reason)[:500], ttfw_s, total_s,
+         None if delivered is None else int(bool(delivered)), delivery,
+         (delivery_error or None) and redact(delivery_error)[:500], _json_or_null(message_ids), turn_outcome,
+         _json_or_null(outcome_why), _json_or_null(claims), version or code_version()))
     tid = cur.lastrowid
     for i, s in enumerate(steps or []):
         con.execute("INSERT INTO steps VALUES (?,?,?,?,?,?,?)",
                     (tid, i, s.get("tool", ""), redact(str(s.get("input", "")))[:400],
                      None if s.get("ok") is None else int(bool(s.get("ok"))), int(bool(s.get("denied"))),
-                     redact(str(s.get("result", "")))[:300]))
+                     redact(str(s.get("result", "")))[:STEP_RESULT_CAP]))
     if _has_fts(con):
         con.execute("INSERT INTO traces_fts(rowid, request, reply) VALUES (?,?,?)",
-                    (tid, redact(request or "")[:4000], redact(reply or "")[:4000]))
+                    (tid, redact(request or "")[:TEXT_CAP], redact(reply or "")[:TEXT_CAP]))
     con.commit()
     con.close()
     return tid
+
+
+def _json_or_null(value):
+    return json.dumps(value, default=str, ensure_ascii=False) if value else None
+
+
+# ---- the truth helpers: outcome rule, claims, version stamp ------------------------------------------------
+
+def turn_outcome(*, answered_by, delivered, queued=False, steps=(), partial=False, failure_notice=False):
+    """(outcome, reasons) for one turn by a fixed rule, no model involved:
+    failed   - no real answer (only an honest failure notice), or the reply was neither delivered nor queued;
+    degraded - answered, but by the local model, or a tool errored or never returned, or the answer was cut off,
+               or it waits in the outbox instead of being shown;
+    ok       - otherwise. A denied tool (waiting for the user's approval) is not an error."""
+    why = []
+    if failure_notice:
+        why.append("no answer: a failure notice was sent instead")
+    if not delivered and not queued:
+        why.append("reply neither delivered nor queued")
+    if why:
+        return "failed", why
+    if answered_by == "local":
+        why.append("answered by the local model")
+    for st in steps or ():
+        if st.get("denied"):
+            continue
+        if st.get("ok") is False:
+            why.append(f"tool error: {st.get('tool') or '?'}")
+        elif st.get("ok") is None:
+            why.append(f"tool without a result: {st.get('tool') or '?'}")
+    if partial:
+        why.append("answer cut off")
+    if not delivered:
+        why.append("delivery deferred to the outbox")
+    return ("degraded" if why else "ok"), why
+
+
+_FILE_RE = re.compile(r"(?<![\w/:.\\])((?:[A-Za-z]:[\\/]|~[\\/]|\.{1,2}[\\/]|/)?(?:[\w.\-]+[\\/])+[\w.\-]+\.[A-Za-z0-9]{1,8})\b")
+_TICKED_FILE_RE = re.compile(r"`([\w.\-]+\.(?:py|md|txt|json|ya?ml|toml|csv|xlsx?|docx?|pptx?|pdf|png|jpe?g|svg|html?|"
+                             r"js|ts|tsx|css|java|kt|cs|cpp|h|stl|step|dxf|ogg|mp3|wav|mp4|zip|ps1|bat|sh))`", re.I)
+_COMMIT_RE = re.compile(r"\b(?:commit(?:ted)?|sha|hash)\b[^\n]{0,30}?\b([0-9a-f]{7,40})\b", re.I)
+_GIT_OUT_RE = re.compile(r"\[[\w./-]+(?: \(root-commit\))? ([0-9a-f]{7,40})\]")
+_URL_RE = re.compile(r"https?://[^\s)>\]\"'`]+")
+_ID_RE = re.compile(r"\b(?:job|id|issue|pr|pull request|message|objective|ticket|order)\s*(?:id)?\s*[:#]?\s*"
+                    r"([A-Za-z0-9-]*\d[\w-]{2,})", re.I)
+_HASH_ID_RE = re.compile(r"(?<![\w&])#(\d{2,})\b")
+_PATH_IN_INPUT = re.compile(r'"(?:file_path|notebook_path|path)":\s*"((?:[^"\\]|\\.)+)"')
+_WRITE_TOOLS = {"write", "edit", "multiedit", "notebookedit"}
+
+
+def extract_claims(reply, steps=()):
+    """What a reply says it produced, read from its text and its tool calls (no model): files, commits, urls, ids.
+    The verifier (plan decision 5) checks these later; here they are only recorded. None when there are none."""
+    text = reply or ""
+    out = {"files": [], "commits": [], "urls": [], "ids": []}
+
+    def add(key, value):
+        value = (value or "").strip().rstrip(".,;:")
+        if value and value not in out[key] and len(out[key]) < 20:
+            out[key].append(value)
+
+    for m in _URL_RE.finditer(text):
+        add("urls", m.group(0))
+    no_urls = _URL_RE.sub(" ", text)
+    for m in _FILE_RE.finditer(no_urls):
+        add("files", m.group(1))
+    for m in _TICKED_FILE_RE.finditer(no_urls):
+        add("files", m.group(1))
+    for m in _COMMIT_RE.finditer(text):
+        add("commits", m.group(1))
+    for m in _ID_RE.finditer(no_urls):
+        if m.group(1) not in out["commits"]:
+            add("ids", m.group(1))
+    for m in _HASH_ID_RE.finditer(no_urls):
+        add("ids", m.group(1))
+    for st in steps or ():
+        name = str(st.get("tool") or "").lower()
+        if name in _WRITE_TOOLS and st.get("ok") is not False:
+            m = _PATH_IN_INPUT.search(str(st.get("input") or ""))
+            if m:
+                add("files", m.group(1).replace("\\\\", "\\"))
+        if name in ("bash", "powershell") and st.get("ok"):
+            for m in _GIT_OUT_RE.finditer(str(st.get("result") or "")):
+                add("commits", m.group(1))
+    return {k: v for k, v in out.items() if v} or None
+
+
+_version = None
+
+
+def code_version():
+    """'waggle <package version>+<git sha>' of the code that is running (cached per process; WAGGLE_VERSION
+    overrides it, e.g. for a deployed copy without git)."""
+    global _version
+    if _version is None:
+        ver = os.environ.get("WAGGLE_VERSION", "")
+        if not ver:
+            pkg = "0"
+            try:
+                m = re.search(r'^version\s*=\s*"([^"]+)"', (REPO / "pyproject.toml").read_text(encoding="utf-8"), re.M)
+                pkg = m.group(1) if m else pkg
+            except OSError:
+                pass
+            try:
+                flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+                sha = subprocess.run(["git", "rev-parse", "--short=10", "HEAD"], cwd=str(REPO), capture_output=True,
+                                     text=True, timeout=5, creationflags=flags).stdout.strip()
+            except Exception:
+                sha = ""
+            ver = f"waggle {pkg}" + (f"+{sha}" if re.fullmatch(r"[0-9a-f]{4,40}", sha) else "")
+        _version = ver
+    return _version
 
 
 def last(session=None, before=None):
@@ -133,10 +293,14 @@ def get(trace_id):
     return out
 
 
-def all_traces(since=0.0, limit=5000):
+def all_traces(since=0.0, limit=5000, include_non_user=False):
+    """Turns since `since`, newest first, with their steps. Turns from tests, canaries, benches and agents are
+    left out unless include_non_user: what learns from these rows must only see the user's own words."""
     con = _db()
     con.row_factory = sqlite3.Row
-    rows = [dict(r) for r in con.execute("SELECT * FROM traces WHERE time>=? ORDER BY id DESC LIMIT ?", (since, limit))]
+    where = "time>=?" + ("" if include_non_user else f" AND {LEARNABLE}")
+    rows = [dict(r) for r in con.execute(f"SELECT * FROM traces WHERE {where} ORDER BY id DESC LIMIT ?",
+                                         (since, limit))]
     steps = {}
     for r in con.execute("SELECT * FROM steps WHERE trace_id IN (SELECT id FROM traces WHERE time>=?) ORDER BY idx",
                          (since,)):
@@ -160,20 +324,21 @@ def search(query, k=6):
             fts_q = " OR ".join(f'"{w}"' for w in words[:12])
             rows = [dict(r) for r in con.execute(
                 """SELECT t.id, t.time, t.request, t.reply, t.route FROM traces_fts f JOIN traces t ON t.id=f.rowid
-                   WHERE traces_fts MATCH ? ORDER BY rank LIMIT ?""", (fts_q, k))]
+                   WHERE traces_fts MATCH ? AND (t.origin IS NULL OR t.origin='user') ORDER BY rank LIMIT ?""",
+                (fts_q, k))]
         except sqlite3.OperationalError:
             rows = []
     if not rows:
         like = " OR ".join(["request LIKE ? OR reply LIKE ?"] * len(words[:6]))
         params = [p for w in words[:6] for p in (f"%{w}%", f"%{w}%")]
-        rows = [dict(r) for r in con.execute(f"SELECT id, time, request, reply, route FROM traces WHERE {like} "
+        rows = [dict(r) for r in con.execute(f"SELECT id, time, request, reply, route FROM traces WHERE ({like}) AND {LEARNABLE} "
                                              f"ORDER BY id DESC LIMIT ?", (*params, k))]
     con.close()
     return rows
 
 
 def stats(since=0.0):
-    rows = all_traces(since)
+    rows = all_traces(since, include_non_user=True)
     if not rows:
         return {"turns": 0}
     by_route, by_model = {}, {}
@@ -202,6 +367,68 @@ def session_turns(session, n=8, within_s=12 * 3600):
     return [(r[0] or "", r[1] or "") for r in reversed(rows)]
 
 
+def chat_transcript(chat, n=8, within_s=3 * 86400, max_chars=12000):
+    """The last n exchanges of one chat as plain "User: ... / Waggle: ..." text, oldest first, whole replies.
+    Seeds a fresh Claude session so the conversation continues after its process or session is replaced."""
+    if not chat:
+        return ""
+    con = _db()
+    rows = con.execute("SELECT request, reply FROM traces WHERE chat=? AND time>? AND reply IS NOT NULL "
+                       "AND reply != '' ORDER BY id DESC LIMIT ?", (chat, time.time() - within_s, n)).fetchall()
+    con.close()
+    text = "\n\n".join(f"User: {r[0]}\nWaggle: {r[1]}" for r in reversed(rows))
+    return text[-max_chars:] if len(text) > max_chars else text
+
+
+def engine_stats(n=50, platform="telegram", since=0.0, origin="user"):
+    """The turn engine's scorecard over the last n turns on `platform` (all platforms when empty) from `origin`
+    (all when None): share answered by Claude, time to first words p50/p90, outcomes, lost answers (neither
+    delivered nor waiting in the outbox: must be 0), fallbacks by reason."""
+    con = _db()
+    con.row_factory = sqlite3.Row
+    q = ("SELECT id, turn_id, answered_by, fallback_reason, ttfw_s, total_s, delivered, delivery, turn_outcome, extra "
+         "FROM traces WHERE answered_by IS NOT NULL AND time>=?")
+    params = [since]
+    if platform:
+        q += " AND platform=?"
+        params.append(platform)
+    if origin:
+        q += " AND origin=?"
+        params.append(origin)
+    rows = [dict(r) for r in con.execute(q + " ORDER BY id DESC LIMIT ?", (*params, n))]
+    con.close()
+    if not rows:
+        return {"turns": 0, "claude_share": None, "ttfw_p50_s": None, "ttfw_p90_s": None, "lost": 0, "pending": 0,
+                "outcomes": {}, "fallbacks": {}}
+    from waggle.core import outbox
+    lost = pending = 0
+    for r in rows:
+        if r["delivered"] == 0:
+            try:
+                oid = json.loads(r["extra"] or "{}").get("outbox")
+            except ValueError:
+                oid = None
+            item = outbox.get(oid) if oid else None
+            if item and item["state"] in ("queued", "sending"):
+                pending += 1
+            elif not item or item["state"] != "sent":
+                lost += 1
+    firsts = sorted(r["ttfw_s"] for r in rows if r["ttfw_s"] is not None)
+    outcomes, falls = {}, {}
+    for r in rows:
+        outcomes[r["turn_outcome"] or "unknown"] = outcomes.get(r["turn_outcome"] or "unknown", 0) + 1
+        if r["fallback_reason"]:
+            key = r["fallback_reason"].split(":")[0][:60]
+            falls[key] = falls.get(key, 0) + 1
+
+    def pct(p):
+        return firsts[min(len(firsts) - 1, int(p * len(firsts)))] if firsts else None
+    return {"turns": len(rows),
+            "claude_share": round(sum(str(r["answered_by"]).startswith("claude") for r in rows) / len(rows), 3),
+            "ttfw_p50_s": pct(0.5), "ttfw_p90_s": pct(0.9), "lost": lost, "pending": pending,
+            "unanswered": sum(r["answered_by"] == "none" for r in rows), "outcomes": outcomes, "fallbacks": falls}
+
+
 def recent_elsewhere(session, within_s=7200, n=4):
     """The last few exchanges from OTHER sessions (voice, Telegram, terminal) in the last couple of hours, so a
     conversation started on one interface continues on another."""
@@ -209,15 +436,15 @@ def recent_elsewhere(session, within_s=7200, n=4):
     con.row_factory = sqlite3.Row
     rows = [dict(r) for r in con.execute(
         "SELECT time, platform, request, reply FROM traces WHERE session!=? AND session NOT LIKE 'objective-%' AND "
-        "session NOT LIKE 'routine-%' AND time>? ORDER BY id DESC LIMIT ?", (session or "", time.time() - within_s, n))]
+        f"session NOT LIKE 'routine-%' AND {LEARNABLE} AND time>? ORDER BY id DESC LIMIT ?", (session or "", time.time() - within_s, n))]
     con.close()
     if not rows:
         return ""
     lines = ["<recent_elsewhere>", "What the user and Waggle said shortly before on another interface (context only):"]
     for r in reversed(rows):
         where = r.get("platform") or "chat"
-        lines.append(f"[{time.strftime('%H:%M', time.localtime(r['time']))} {where}] User: {r['request'][:240]}\n"
-                     f"Waggle: {(r['reply'] or '')[:360]}")
+        lines.append(f"[{time.strftime('%H:%M', time.localtime(r['time']))} {where}] User: {r['request'][:1500]}\n"
+                     f"Waggle: {(r['reply'] or '')[:2500]}")
     lines.append("</recent_elsewhere>")
     return "\n".join(lines)
 

@@ -15,6 +15,12 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setattr(quota, "TRANSCRIPTS", tmp_path / "transcripts")  # not the real Claude Code usage
     import waggle.claude_cli as claude_cli
     monkeypatch.setattr(claude_cli, "mcp_servers", lambda claude=None, refresh=False: [])  # no real `claude mcp list`
+    monkeypatch.setattr(claude_cli, "find_claude", lambda: None)  # never the real Claude CLI (tests opt in with fakes)
+    import waggle.ollama as ollama
+
+    def no_ollama(*a, **k):
+        raise ollama.OllamaError("no Ollama in tests")
+    monkeypatch.setattr(ollama, "_post", no_ollama)
     import waggle.skills as skills
 
     def no_embed(texts, kind):
@@ -27,11 +33,38 @@ def isolated_home(tmp_path, monkeypatch):
     real_ntfy = notify.to_ntfy
     monkeypatch.setattr(notify, "to_ntfy", lambda text, *a, post=None, **k: real_ntfy(
         text, *a, post=post or (lambda url, body: sent.append("ntfy:" + body["message"]) or True), **k))
-    monkeypatch.setattr(notify, "PHONE_LOG", sent, raising=False)
+    monkeypatch.setattr(notify, "PHONE_LOG", PhoneLog(sent), raising=False)
+    monkeypatch.setattr(notify, "_synth", lambda text, out, settings=None: False)  # no real Kokoro in tests
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))  # never the real Hermes state, cron or `hermes send`
+    import waggle.watchers as watchers
+    monkeypatch.setattr(watchers, "run_gh", lambda args, timeout=40: None)  # no real `gh` calls
     # quiet_hours off: otherwise tests that expect a phone message fail when run between 23:00 and 07:00.
     s = Settings(vault=str(tmp_path / "vault"), jobs_dir=str(tmp_path / "jobs"), quiet_hours=[0, 0])
     s.save()
     return s
+
+
+class PhoneLog:
+    """What would reach the phone: anything a raw sender was handed directly, then every row queued in the core
+    outbox (notify only queues; the core's sender sends). Push rows read "ntfy:<text>", calls "call:<text>"."""
+
+    def __init__(self, direct):
+        self.direct = direct
+
+    def _items(self):
+        from waggle.core import outbox
+        rows = sorted(outbox.list(limit=100000), key=lambda r: r["id"])
+        prefix = {"push": "ntfy:", "call": "call:"}
+        return list(self.direct) + [prefix.get(r["kind"], "") + (r["body"] or "") for r in rows]
+
+    def __iter__(self):
+        return iter(self._items())
+
+    def __len__(self):
+        return len(self._items())
+
+    def __getitem__(self, i):
+        return self._items()[i]
 
 
 @pytest.fixture

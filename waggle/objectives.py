@@ -476,7 +476,8 @@ def finish(oid, settings=None, asker=None):
 
 def _tell(oid, text, urgent=False):
     try:
-        notify.send(text, urgent=urgent)
+        from .origin import objective_source  # developer/test objectives never reach the phone
+        notify.send(text, urgent=urgent, source=objective_source(oid), origin="objective")
     except Exception:
         pass
 
