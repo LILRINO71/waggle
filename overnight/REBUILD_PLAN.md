@@ -156,3 +156,18 @@ in `overnight/USER_TESTS.md`.
   environment of the gateway that was started from a tool session. The real output is unknown because agent tool
   results are not recorded anywhere. Step 3 must record them; a turn that falls back to memory because a tool
   failed must count as a failed task, not a success.
+
+2026-11-19 17:05: step 1 is deployed. The core runs under Task Scheduler ("Waggle Core", "Waggle Core
+Watchdog"), version stamped, health endpoint on 127.0.0.1.
+
+| Check on the live machine | Result |
+|---|---|
+| Core killed | Healthy again after 57 s, restarted by the watchdog |
+| Core frozen (process suspended) | Replaced after 356 s. Misses the 2-minute target; the watchdog moves to every minute |
+| One real message through the outbox (step 2) | Sent with a Telegram message id in 2.6 s; the same key did not create a second row |
+| Forced send failure retried and delivered once | Automated tests only, not yet on the live machine |
+| Health green for a day | Pending; green since 17:04 |
+
+Not yet on the core: the existing notify paths, the engine and the outreach timers. They are combined on
+`rebuild/integration` (550 tests pass) and are not live. Merging to main is a deploy, because the scheduled
+scripts and the tool hook run straight from the live checkout.
