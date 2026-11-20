@@ -207,7 +207,7 @@ def test_outbox_rows_are_sent_with_their_ids_and_a_failure_is_retried_once(core)
 
 def test_a_row_without_transport_stays_queued_with_one_event(core):
     core.start()
-    oid = outbox.enqueue("voice", "no transport for voice in the test plug-in")
+    oid = outbox.enqueue("push", "no transport for push in this core")
     wait_for(lambda: events.query("outbox.no_transport", ref=oid), what="the no-transport event")
     time.sleep(1.5)
     assert outbox.get(oid)["state"] == "queued" and outbox.get(oid)["attempts"] == 0

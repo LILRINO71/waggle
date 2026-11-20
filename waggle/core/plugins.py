@@ -10,7 +10,7 @@ import traceback
 
 from waggle.core import events, ledger
 
-MODULES = []
+MODULES = ["waggle.core.transports"]
 
 log = logging.getLogger("waggle.core.plugins")
 

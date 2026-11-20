@@ -23,6 +23,7 @@ from urllib.parse import quote, urlsplit
 log = logging.getLogger("waggle.telegram")
 
 API_BASE = "https://api.telegram.org"
+REAL_HOST = "api.telegram.org"
 MAX_TEXT = 4096
 MAX_CAPTION = 1024
 TOKEN_KEY = "TELEGRAM_BOT_TOKEN"
@@ -46,6 +47,18 @@ def redact(text, token):
     for shape in _TOKEN_SHAPES:
         text = shape.sub("<token>", text)
     return text
+
+
+def real_api_allowed():
+    """Real Telegram only from the real Waggle home, and never under a test run: a test that starts a core
+    (child processes inherit pytest's marker) must not be able to message the user."""
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    try:
+        import waggle.config as config
+        return Path(config.HOME).resolve() == (Path.home() / ".waggle").resolve()
+    except Exception:
+        return False
 
 
 class TelegramError(Exception):
@@ -321,6 +334,8 @@ class BotApi:
         return self._token
 
     def _call(self, method, params=None, *, files=None, read_timeout=None):
+        if self._host == REAL_HOST and not real_api_allowed():
+            raise TelegramError("permanent", "the real Telegram is off limits in a test run or a temporary home")
         token = self._get_token()
         if files:
             file_parts, fields = files
