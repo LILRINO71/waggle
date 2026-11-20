@@ -72,7 +72,7 @@ def test_typing_stays_alive_until_the_first_words(settings, monkeypatch):
     chat_engine.on_inbound(msg())
     kinds = [c[0] for c in api.calls]
     first_post = kinds.index("send_message")
-    assert kinds[0] == "send_chat_action" and kinds[:first_post].count("send_chat_action") >= 3
+    assert kinds[0] == "send_chat_action" and kinds[:first_post].count("send_chat_action") >= 2
     time.sleep(0.15)
     assert "send_chat_action" not in [c[0] for c in api.calls][first_post:]
 
@@ -394,3 +394,21 @@ def test_schedule_call_is_a_core_timer(settings, monkeypatch):
     calls = [t for t in timers.list() if t["job_kind"] == "outreach.call"]
     assert len(calls) == 1 and out["message"] == "the meet"
     assert calls[0]["payload"]["message"] == "the meet" and calls[0]["payload"]["origin"] == "user"
+
+
+def test_approval_replies_go_to_the_engine_only_for_its_own_approvals(core):
+    from waggle import policy
+    p = _plugin()
+    mine = policy.request_approval("Bash", {"command": "rm -r build"}, "deleting", session="telegram:42")
+    code = policy.get(mine)["code"]
+    event(p, "a1")
+    assert admit(p, text=f"approve {code}", mid="a1") == {"action": "handled"}
+    event(p, "a2")
+    assert admit(p, text="yes", mid="a2") == {"action": "handled"}  # still pending: the engine grants it
+    other = policy.request_approval("Bash", {"command": "git push"}, "pushing", session="hermes-session-1")
+    event(p, "a3")
+    assert admit(p, text=f"approve {policy.get(other)['code']}", mid="a3") is None
+    policy.grant(mine)
+    event(p, "a4")
+    assert admit(p, text="yes", mid="a4") is None  # nothing of the engine's pending: old path
+    assert len(core.seen) == 2

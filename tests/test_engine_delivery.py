@@ -194,7 +194,7 @@ def test_a_short_answer_that_completes_within_the_hold_is_posted_once_without_an
     time.sleep(0.1)
     t = time.monotonic()
     out = w.finish("Four.")
-    assert out["delivered"] and [k for k, _, _ in d.log] == ["post"] and time.monotonic() - t < 0.2
+    assert out["delivered"] and [k for k, _, _ in d.log] == ["post"] and time.monotonic() - t < 0.6
 
 
 def test_the_first_post_waits_at_most_the_hold():

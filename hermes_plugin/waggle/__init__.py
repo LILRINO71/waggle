@@ -1034,8 +1034,24 @@ def engine_route(platform, source, message_id, text, settings=None):
     if FEEDBACK.match(t) or OBJECTIVE_CMD.match(t):
         return "old", "feedback or objective command"
     if APPROVAL_CMD.match(t) or YES.match(t):
+        if _engine_owns_approval(f"telegram:{chat_id}", t):
+            return "engine", ""  # the engine asked for it: its own preflight grants and tells the brain
         return "old", "approval reply"
     return "engine", ""
+
+
+def _engine_owns_approval(chat_key, text):
+    """True when this approval reply answers an approval the engine's chat asked for (its session is the chat
+    key): "approve CODE" for one of them, or a plain yes while one of them is pending."""
+    from waggle import policy
+    try:
+        m = APPROVAL_CMD.match(text)
+        if m:
+            item = policy.get(m.group(2))
+            return bool(item and item.get("session") == chat_key and item.get("state") == "pending")
+        return any(p.get("session") == chat_key for p in policy.pending(chat_key))
+    except Exception:
+        return False
 
 
 def post_turn(chat_id, text, message_id, timeout=CORE_POST_TIMEOUT_S):
