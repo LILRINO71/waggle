@@ -376,3 +376,67 @@ def test_every_outbox_row_carries_its_origin(s):
     notify.send("objective done", settings=s)
     assert [r["origin"] for r in rows()] == ["initiative", "notify"]
     assert all(r["idem_key"].startswith(r["origin"] + ":") for r in rows())
+
+
+# ---- voice and call branches of the decision step -----------------------------------------------------------
+
+def fake_synth(ok=True):
+    def synth(text, out, settings=None):
+        if ok:
+            out.write_bytes(b"OggS fake opus")
+        return ok
+    return synth
+
+
+def test_voice_note_queues_the_audio_file_with_its_words(s):
+    row = notify.voice("Your meet starts in 20 minutes.", settings=s, origin="initiative", decision_id="d7",
+                       synth=fake_synth(True), now=at(12))
+    r = outbox.get(row["id"])
+    assert r["kind"] == "voice" and r["file"].endswith(".ogg") and r["body"] == "Your meet starts in 20 minutes."
+    assert r["idem_key"] == "initiative:d7:voice"
+    from pathlib import Path
+    assert Path(r["file"]).read_bytes().startswith(b"OggS")
+
+
+def test_voice_synthesis_failure_falls_back_to_text(s):
+    row = notify.voice("Check in about the essay?", settings=s, origin="followup", synth=fake_synth(False),
+                       now=at(12))
+    assert row["kind"] == "text" and "Check in about the essay?" in row["body"] and len(rows()) == 1
+
+
+def test_voice_from_a_test_source_is_neither_spoken_nor_queued(s):
+    spoken = []
+    row = notify.voice("hi", settings=s, source="test", synth=lambda t, o, st=None: spoken.append(t) or True)
+    assert row["status"] == "suppressed" and spoken == [] and rows() == []
+
+
+def _decide_one(s, action, urgent, monkeypatch, provisioned):
+    from waggle import initiative
+    monkeypatch.setattr(notify, "_synth", fake_synth(True))
+    monkeypatch.setattr(call, "configured", lambda: provisioned)
+    initiative.record([{"key": "meet", "kind": "upcoming", "title": "FTC meet at 13:00", "topic": "meet",
+                        "urgent": urgent}], at(12, 40))
+    return initiative.decide(s, at(12, 40), asker=lambda *a, **k: {"json": {"decisions": [
+        {"key": "meet", "action": action, "message": "The meet starts in 20 minutes.", "reason": "soon"}]}})[0]
+
+
+def test_decided_voice_goes_out_as_a_voice_row(s, monkeypatch):
+    d = _decide_one(s, "voice", False, monkeypatch, provisioned=False)
+    assert d["action"] == "voice" and [r["kind"] for r in rows()] == ["voice"]
+    assert outbox.get(d["outbox_id"])["kind"] == "voice"
+
+
+def test_decided_call_when_provisioned_queues_a_call(s, monkeypatch):
+    d = _decide_one(s, "call", True, monkeypatch, provisioned=True)
+    assert d["action"] == "call" and [r["kind"] for r in rows()] == ["call"]
+    assert rows()[0]["meta"]["urgent"] and rows()[0]["origin"] == "initiative"
+
+
+def test_decided_call_when_not_provisioned_sends_push_and_voice(s, monkeypatch):
+    d = _decide_one(s, "call", True, monkeypatch, provisioned=False)
+    assert [r["kind"] for r in rows()] == ["push", "voice"] and "calls not possible" in d["guard"]
+
+
+def test_call_for_a_non_urgent_item_is_downgraded_to_text(s, monkeypatch):
+    d = _decide_one(s, "call", False, monkeypatch, provisioned=True)
+    assert d["action"] == "text" and "downgraded" in d["guard"] and [r["kind"] for r in rows()] == ["text"]
