@@ -132,3 +132,14 @@ def test_weekly_run_writes_report(settings, monkeypatch):
     assert out["analysis"]["turns"] == 1
     from pathlib import Path
     assert "Corrections you gave me" in (Path(settings.vault) / "Waggle" / "Learning.md").read_text(encoding="utf-8")
+
+
+def test_per_message_extraction_is_retired(monkeypatch):
+    """A passing remark, or a development test prompt, must never become a profile fact."""
+    from waggle import learn
+    called = []
+    monkeypatch.setattr(learn, "extract", lambda *a, **k: called.append(a) or [], raising=False)
+    monkeypatch.setattr(learn, "file_facts", lambda *a, **k: called.append(a), raising=False)
+    assert learn.learn_async("I have a robotics meet Saturday and a math test Friday", "ok") is None
+    worker = getattr(learn, "_worker", None)
+    assert called == [] and (worker is None or not worker.is_alive())

@@ -138,12 +138,9 @@ def _loop():
 
 
 def learn_async(user_msg, reply):
-    """Queue a turn for learning on a background thread so replies are never slowed down."""
-    global _worker
-    if _worker is None or not _worker.is_alive():
-        _worker = threading.Thread(target=_loop, daemon=True, name="waggle-learn")
-        _worker.start()
-    _q.put((user_msg, reply))
+    """Retired, no-op. Per-message extraction filed passing remarks, and development test prompts, as
+    permanent profile facts with no source. Learning returns with whole conversations and a recorded origin."""
+    return None
 
 
 CONSOLIDATE_SYSTEM = """You maintain a personal profile note for the user of an AI assistant. You get the current
