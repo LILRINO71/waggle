@@ -1848,3 +1848,50 @@ def test_a_shell_of_unknown_kind_reads_quotes_every_way(world):
     cmd = "grep 'x|python fix.py waggle/policy.py'"
     assert decide("Bash", {"command": cmd}, cwd=world.repo).allowed
     assert decide("terminal", {"command": cmd}, cwd=world.repo).action == policy.ASK
+
+
+# ---- Waggle's own tools: one table in policy.py -----------------------------------------------------------------
+# Found live: mcp__waggle__remind_me {"text": "Stand up", "in_minutes": 0.5} needed approval.
+
+def _mcp_tools():
+    import waggle.waggle_mcp as mcp
+    return sorted(mcp.TOOLS)
+
+
+def test_every_tool_waggles_mcp_server_offers_has_a_row():
+    tools = _mcp_tools()
+    assert len(tools) > 40
+    assert not [t for t in tools if t not in policy.WAGGLE_TOOLS]
+
+
+def test_the_table_decides_every_waggle_tool():
+    for name in _mcp_tools():
+        action, why = policy.WAGGLE_TOOLS[name]
+        if name == "hermes_tool":
+            continue  # decided as the Hermes tool it names
+        d = policy.decide("mcp__waggle__" + name, {})
+        assert d.action == action, name
+        if action == policy.ASK:
+            assert why in d.reason
+
+
+@pytest.mark.parametrize("name,args", [
+    ("remind_me", {"text": "Stand up", "in_minutes": 0.5}), ("cancel_reminder", {"id": "f1"}),
+    ("list_reminders", {}), ("schedule_call", {"message": "meet", "at": "07:00"}), ("call_me", {"minutes": 0}),
+    ("background_status", {}), ("waggle_doctor", {}), ("notify_me", {"text": "done"}),
+])
+def test_tools_that_only_reach_the_user_run_without_a_yes(world, name, args):
+    d = policy.check("mcp__waggle__" + name, args, session="s1")
+    assert d.allowed and not d.approval_id, (name, d.reason)
+
+
+@pytest.mark.parametrize("name", ["skill_install", "routine_remove", "graph_correct", "background_task",
+                                  "some_new_tool"])
+def test_waggle_tools_that_install_delete_or_are_unknown_still_ask(world, name):
+    assert policy.decide("mcp__waggle__" + name, {"identifier": "x"}).action == policy.ASK
+
+
+def test_the_hermes_wrapper_is_still_decided_as_the_tool_it_runs(world):
+    assert policy.decide("mcp__waggle__hermes_tool", {"name": "send_message", "args": {"to": "a@b.c"}}).action == policy.ASK
+    assert policy.decide("mcp__waggle__hermes_tool", {"name": "web_search", "args": {"query": "x"}}).allowed
+    assert policy.decide("mcp__waggle__hermes_tool", {"name": "make_payment", "args": {}}).action == policy.ASK
