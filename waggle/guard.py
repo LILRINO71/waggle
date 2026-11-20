@@ -1528,9 +1528,36 @@ def environment_failures(m):
     return out
 
 
+NOT_CHECKED = "not checked: this process was started by a test run"
+
+
+def started_by_test():
+    """A process a test started (it inherited pytest's PYTEST_CURRENT_TEST / PYTEST_VERSION) that is not pytest itself,
+    where no test asked for the real check (WAGGLE_GUARD_IN_TESTS=1). Used only by verify(), and it can only make
+    verify's answer stricter than clean: see verify."""
+    return ("_pytest" not in sys.modules and bool(os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("PYTEST_VERSION"))
+            and os.environ.get("WAGGLE_GUARD_IN_TESTS") != "1")
+
+
 def verify():
     """Violations over the whole protected set: [{path, kind, expected, actual}], kind = missing | changed | added
-    (a new holdout file) | no_manifest | old_manifest | environment. An empty list means clean."""
+    (a new holdout file) | no_manifest | old_manifest | environment. An empty list means clean.
+
+    In a process started by a test run (a core under a temp home) the answer is "not checked" (kind no_manifest, so
+    the core records "not approved", never "ok") instead of the environment mismatch every temp home has; a changed
+    file is still reported. An agent that sets the marker for a process it starts gains nothing: that process can
+    never get a clean verdict, and the hook and the gate do not read the marker at all."""
+    if started_by_test():
+        found = _verify()
+        # under another data folder its config.json and holdout files are not the approved ones either
+        other_home = any(v["kind"] == "environment" and v["path"] == "WAGGLE_HOME" for v in found)
+        return [{"path": NOT_CHECKED, "kind": "no_manifest", "expected": None, "actual": None}] + [
+            v for v in found if v["kind"] not in ("no_manifest", "environment")
+            and not (other_home and (v["path"] == CONFIG_KEY or v["path"].startswith("home:")))]
+    return _verify()
+
+
+def _verify():
     m = load_manifest()
     if m is None:
         return [{"path": str(manifest_path()), "kind": "no_manifest", "expected": None, "actual": None}]

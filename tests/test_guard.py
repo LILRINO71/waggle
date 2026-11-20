@@ -678,7 +678,7 @@ def pkg(tmp_path):
     home = tmp_path / "e2ehome"
     home.mkdir()
     env = {**os.environ, "USERPROFILE": str(home), "HOME": str(home), "WAGGLE_HOME": str(home / ".waggle"),
-           "PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"}
+           "PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1", "WAGGLE_GUARD_IN_TESTS": "1"}
     for k in ("HOMEDRIVE", "HOMEPATH", "WAGGLE_SESSION", "WAGGLE_AGENT"):
         env.pop(k, None)
     return SimpleNamespace(root=dst, home=home, env=env)
@@ -1944,3 +1944,67 @@ def test_plain_words_for_every_kind_of_finding(world):
     for item, words in cases:
         assert words in agent_hook.plain(item), item
     assert "start Waggle normally" in guard.denial_text([cases[3][0]])
+
+
+# ---- processes a test starts (a core under a temp home) are "not checked", never clean ----------------------------
+# Found by another builder: once a worktree is approved for a temp home, cores that tests start under other temp
+# homes froze on the WAGGLE_HOME mismatch. The pytest marker such a process inherits now gives "not checked".
+
+GATE_RUNNER = ("import sys; from pathlib import Path; import waggle.guard as g; h = Path(sys.argv[1]); "
+               "g.USER_HOME = h; g.GUARD_DIR = h / '.waggle-guard'; print('BAD' if g.gate() else 'CLEAN')")
+
+
+def _as_test_child(p, **extra):
+    """The environment of a process a test run starts (or an agent's shell that set the marker by hand)."""
+    env = {k: v for k, v in p.env.items() if k != "WAGGLE_GUARD_IN_TESTS"}
+    env.update(PYTEST_CURRENT_TEST="tests/x.py::t (call)", **extra)
+    return SimpleNamespace(root=p.root, home=p.home, env=env)
+
+
+def test_a_test_started_process_gets_not_checked_but_still_sees_changed_files(pkg, tmp_path):
+    assert guard_subprocess(pkg, "approve", "--yes").returncode == 0
+    child = _as_test_child(pkg, WAGGLE_HOME=str(tmp_path / "other-temp-home"))
+    r = guard_subprocess(child, "verify")
+    assert r.returncode == 1 and guard.NOT_CHECKED in r.stdout and "WAGGLE_HOME" not in r.stdout, r.stdout
+    (pkg.root / "waggle" / "policy.py").write_text("# tampered\n")
+    r = guard_subprocess(child, "verify")
+    assert r.returncode == 1 and "waggle/policy.py" in r.stdout and "changed" in r.stdout, r.stdout
+
+
+def test_the_marker_in_an_agents_shell_does_not_switch_off_the_hook_or_the_gate(pkg, tmp_path):
+    """PYTEST_CURRENT_TEST / PYTEST_VERSION set by an agent reach only processes it starts itself. Even there the hook
+    and the in-process gate keep their real checks: a tampered file, a redirected data folder or a missing approval
+    still deny; verify never comes back clean."""
+    event = {"tool_name": "Read", "tool_input": {"file_path": "x"}, "cwd": str(pkg.root)}
+    marked = _as_test_child(pkg, PYTEST_VERSION="9.0.0")
+    assert hook_subprocess(marked, event)["permissionDecision"] == "deny"  # nothing approved yet
+    assert guard_subprocess(pkg, "approve", "--yes").returncode == 0
+    assert hook_subprocess(marked, event)["permissionDecision"] == "allow"  # the real check passes...
+    assert guard_subprocess(marked, "verify").returncode == 1  # ...but verify is never clean with the marker
+    moved = _as_test_child(pkg, WAGGLE_HOME=str(tmp_path / "elsewhere"))
+    assert hook_subprocess(moved, event)["permissionDecision"] == "deny"
+    gate = subprocess.run([sys.executable, "-c", GATE_RUNNER, str(pkg.home)], capture_output=True, text=True,
+                          env=moved.env, cwd=str(pkg.root), timeout=60)
+    assert gate.stdout.strip() == "BAD", gate.stdout + gate.stderr
+    (pkg.root / "waggle" / "policy.py").write_text("# tampered\n")
+    out = hook_subprocess(marked, event)
+    assert out["permissionDecision"] == "deny" and "waggle/policy.py" in out["permissionDecisionReason"]
+    gate = subprocess.run([sys.executable, "-c", GATE_RUNNER, str(pkg.home)], capture_output=True, text=True,
+                          env=marked.env, cwd=str(pkg.root), timeout=60)
+    assert gate.stdout.strip() == "BAD", gate.stdout + gate.stderr
+
+
+def test_in_this_test_process_verify_runs_the_real_check(world):
+    assert not guard.started_by_test()
+    assert [v["kind"] for v in guard.verify()] == ["no_manifest"] and guard.verify()[0]["path"] != guard.NOT_CHECKED
+
+
+def test_a_test_started_core_under_another_temp_home_is_not_approved_not_frozen(world, monkeypatch, tmp_path):
+    """What the core records for that verify answer (runtime.check_guard is the hourly check)."""
+    from waggle.core import runtime
+    approve()
+    monkeypatch.setattr(config, "HOME", tmp_path / "another-temp-home")
+    monkeypatch.setattr(guard, "started_by_test", lambda: True)
+    assert runtime.check_guard(now=100)["status"] == "not approved"
+    (world.repo / "waggle" / "policy.py").write_text("# tampered\n")
+    assert runtime.check_guard(now=200)["status"] == "frozen"
