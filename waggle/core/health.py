@@ -26,6 +26,8 @@ log = logging.getLogger("waggle.core.health")
 
 MAX_TURN_BODY = 1_000_000
 
+CALLER_WAIT_FACTOR = 2.0  # a caller of POST /turn must wait at least this many accept budgets for the 202
+
 # Seams for tests: the clock that measures the accept budget, a pause before the reply is written, and the
 # function that writes it.
 _clock = time.monotonic
@@ -272,9 +274,13 @@ def serve(loops_fn=None, port=None, accepting_fn=None):
             except OSError as e:
                 inbound.cancel(turn_id, f"writing the 202 failed: {type(e).__name__}: {e}")
                 return
+            # The caller waits twice the budget. A 202 that reached the socket inside that wait was received,
+            # so the turn must run: cancelling it would leave the message unanswered on both paths. Past the
+            # wait the caller has already fallen back, and running the turn would answer twice.
             late = _clock() - arrived
-            if late > budget:
-                inbound.cancel(turn_id, f"the 202 was written after {late:.2f} s (budget {budget} s)")
+            if late > CALLER_WAIT_FACTOR * budget:
+                inbound.cancel(turn_id, f"the 202 was written after {late:.2f} s (the caller waits "
+                                        f"{CALLER_WAIT_FACTOR * budget} s)")
                 return
             inbound.confirm(turn_id)
 
