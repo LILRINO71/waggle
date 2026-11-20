@@ -306,3 +306,73 @@ def test_no_json_state_files_are_written(s, fake_sender):
     leftovers = {"outbox.db", "channel_evidence.json", "followups.json", "tick_state.json", "watchers_state.json",
                  "scout_state.json", "call_status.json", "scheduled_calls.json"}
     assert not [n for n in leftovers if data_path(n).exists()]
+
+
+# ---- origin rule (decision 10) ---------------------------------------------------------------------------------
+
+@pytest.fixture
+def mixed_turns(tmp_path, monkeypatch):
+    """Turns from the user's own Telegram chat mixed with a CLI prompt, an agent session, a bench run and a
+    Telegram-platform session that Hermes says a one-shot started."""
+    import sqlite3
+
+    from waggle import origin
+    db = origin.state_db()
+    db.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE sessions (id TEXT, source TEXT)")
+    con.execute("CREATE TABLE messages (session_id TEXT, role TEXT, timestamp REAL)")
+    con.execute("INSERT INTO sessions VALUES ('tg1', 'telegram'), ('dev1', 'oneshot')")
+    con.commit()
+    con.close()
+    t = at(10)
+    return [
+        {"id": 1, "time": t, "platform": "telegram", "session": "tg1", "request": "I'll finish the essay tonight"},
+        {"id": 2, "time": t + 1, "platform": "cli", "session": "c1", "request": "I'll benchmark this tonight"},
+        {"id": 3, "time": t + 2, "platform": "telegram", "session": "objective-ab12", "request": "I'll plan it tonight"},
+        {"id": 4, "time": t + 3, "platform": "telegram", "session": "dev1", "request": "I'll test the meet tonight"},
+        {"id": 5, "time": t + 4, "platform": "telegram", "session": "tg1", "request": "I'll ship it tonight",
+         "extra": '{"origin": "bench"}'},
+    ]
+
+
+def test_only_the_users_own_turns_count(s, mixed_turns):
+    from waggle import origin
+    assert [r["id"] for r in origin.user_turns(mixed_turns, s)] == [1]
+
+
+def test_followups_capture_reads_only_user_turns(s, mixed_turns):
+    from waggle import followups
+    added = followups.capture(s, at(10, 5), rows=mixed_turns)
+    assert [a["what"] for a in added] == ["finish the essay"]
+
+
+def test_decision_context_and_scout_exclude_machine_turns(s, mixed_turns, monkeypatch):
+    from waggle import initiative, scout, traces
+    monkeypatch.setattr(traces, "all_traces", lambda since=0.0, limit=5000: list(reversed(mixed_turns)))
+    ctx = initiative.context(s, at(11))
+    assert "finish the essay" in ctx
+    assert not any(w in ctx for w in ("benchmark", "plan it", "test the meet", "ship it"))
+    many = [dict(mixed_turns[3], id=10 + d, time=at(10, day=10 + d)) for d in range(4)]  # a dev prompt on 4 days
+    assert scout.daily(s, at(18), rows=many, commits={}) == []
+
+
+def test_replies_from_the_cli_do_not_count_as_the_user_answering(s):
+    from waggle import initiative
+    from waggle.core import outbox
+    oid = notify.deliver("text", "build broke", origin="initiative", settings=s, now=at(12))["id"]
+    outbox.claim_due(now=at(12))
+    outbox.mark_sent(oid, "tg:7", now=at(12))
+    assert initiative.track_responses(s, at(13), turns=[(at(12, 30), "cli")]) == 0
+    assert initiative.track_responses(s, at(13), turns=[(at(12, 31), "telegram")]) == 1
+
+
+def test_every_outbox_row_carries_its_origin(s):
+    from waggle import initiative
+    initiative.record([{"key": "pr", "kind": "github_pr", "title": "PR waiting", "topic": "pr", "urgent": False}],
+                      at(12))
+    initiative.decide(s, at(12), asker=lambda *a, **k: {"json": {"decisions": [
+        {"key": "pr", "action": "text", "message": "PR #3 has waited 3 days.", "reason": "people wait"}]}})
+    notify.send("objective done", settings=s)
+    assert [r["origin"] for r in rows()] == ["initiative", "notify"]
+    assert all(r["idem_key"].startswith(r["origin"] + ":") for r in rows())
