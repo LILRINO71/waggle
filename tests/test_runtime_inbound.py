@@ -270,15 +270,28 @@ def test_a_failed_write_of_the_202_cancels(server, clock, monkeypatch):
     assert inbound.claim_next("c") is None
 
 
-def test_a_202_written_after_the_budget_still_cancels(server, clock, monkeypatch):
-    port, token, _ = server
-    inbound.register(lambda msg: None)
+def _slow_write(monkeypatch, clock, seconds):
     real = health._write_reply
 
     def slow(handler, data):
-        clock.t += 1.5
+        clock.t += seconds
         real(handler, data)
     monkeypatch.setattr(health, "_write_reply", slow)
+
+
+def test_a_202_written_within_the_callers_wait_runs_so_no_message_is_dropped(server, clock, monkeypatch):
+    port, token, _ = server
+    inbound.register(lambda msg: None)
+    _slow_write(monkeypatch, clock, 1.5)
+    code, out = _post(port, {"chat": "c", "text": "slow but received"}, token=token)
+    assert code == 202
+    assert _settled(out["turn_id"]) == "waiting"
+
+
+def test_a_202_written_after_the_callers_wait_cancels(server, clock, monkeypatch):
+    port, token, _ = server
+    inbound.register(lambda msg: None)
+    _slow_write(monkeypatch, clock, 2.5)
     code, out = _post(port, {"chat": "c", "text": "late"}, token=token)
     assert code == 202
     assert _settled(out["turn_id"]) == "cancelled"
