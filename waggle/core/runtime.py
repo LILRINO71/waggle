@@ -169,11 +169,13 @@ class Core:
 
     def _tick(self, name):
         with self._state_lock:
-            self.loops[name]["last"] = time.time()
+            if name in self.loops:
+                self.loops[name]["last"] = time.time()
 
     def _busy(self, name, busy):
         with self._state_lock:
-            self.loops[name]["busy"] = busy
+            if name in self.loops:
+                self.loops[name]["busy"] = busy
 
     def _error(self, name, exc):
         log.exception("loop %s failed", name)
@@ -186,11 +188,13 @@ class Core:
                 log.exception("could not record the loop error")
 
     def _start_thread(self, name, cadence, body):
-        with self._state_lock:
-            self.loops[name] = {"last": time.time(), "cadence": cadence}
+        # The loop is published only once its thread runs: /health must never see a registered loop whose
+        # thread has not started yet (is_alive() is False then, which read as a stalled loop).
         t = threading.Thread(target=body, name=f"core-{name}", daemon=True)
-        self.threads[name] = t
         t.start()
+        with self._state_lock:
+            self.threads[name] = t
+            self.loops[name] = {"last": time.time(), "cadence": cadence}
 
     def _periodic(self, name, cadence, fn):
         def body():
