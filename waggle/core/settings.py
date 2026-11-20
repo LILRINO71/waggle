@@ -43,6 +43,11 @@ def workers():
     return max(1, int(os.environ.get("WAGGLE_CORE_WORKERS") or _config_value("core_workers", DEFAULT_WORKERS)))
 
 
+def accept_budget_s():
+    """POST /turn: how long after the request arrived the 202 may be written (the gateway waits 2 s)."""
+    return float(os.environ.get("WAGGLE_CORE_ACCEPT_BUDGET_S") or _config_value("core_accept_budget_s", 1.0))
+
+
 def inbound_chats():
     """How many chats may run turns at the same time."""
     return max(1, int(os.environ.get("WAGGLE_CORE_INBOUND_CHATS")

@@ -91,7 +91,8 @@ def test_a_dead_runner_gets_one_more_attempt_then_an_honest_message():
         row = inbound.claim_next("telegram:me")
         assert row["attempts"] == attempt
         store.connect().execute("UPDATE inbox SET pid=? WHERE turn_id=?", (dead, t))
-        assert inbound.recover() == ({"retried": 1, "lost": 0} if attempt == 1 else {"retried": 0, "lost": 1})
+        assert inbound.recover() == ({"retried": 1, "lost": 0, "cancelled": 0} if attempt == 1
+                                     else {"retried": 0, "lost": 1, "cancelled": 0})
     row = inbound.get(t)
     assert row["state"] == "failed" and "attempt 2" in row["error"]
     reply = outbox.get_by_key(f"inbox-lost:{t}")
@@ -99,13 +100,13 @@ def test_a_dead_runner_gets_one_more_attempt_then_an_honest_message():
     assert "please summarise the robot notes" in reply["body"] and "send it again" in reply["body"]
     assert reply["meta"] == {"turn_id": t, "chat_key": "telegram:me"}
     assert events.query("inbox.lost")[0]["data"]["outbox_id"] == reply["id"]
-    assert inbound.recover() == {"retried": 0, "lost": 0}
+    assert inbound.recover() == {"retried": 0, "lost": 0, "cancelled": 0}
 
 
 def test_a_live_runner_is_left_alone():
     inbound.submit("c", "x")
     inbound.claim_next("c")
-    assert inbound.recover() == {"retried": 0, "lost": 0}
+    assert inbound.recover() == {"retried": 0, "lost": 0, "cancelled": 0}
     assert inbound.counts()["running"] == 1
 
 
@@ -163,14 +164,42 @@ def _post(port, body, token=None, raw=None):
         return e.code, json.loads(e.read() or b"{}")
 
 
+class FakeClock:
+    """Stands in for the accept-budget clock: time moves only when a test moves it."""
+
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+
 @pytest.fixture
-def server():
+def clock(monkeypatch):
+    c = FakeClock()
+    monkeypatch.setattr(health, "_clock", c)
+    monkeypatch.delenv("WAGGLE_CORE_ACCEPT_BUDGET_S", raising=False)
+    return c
+
+
+@pytest.fixture
+def server(clock):
     port = _free_port()
     state = {"accepting": True}
     srv = health.serve(port=port, accepting_fn=lambda: state["accepting"] and inbound.handler() is not None)
     yield port, health.token(), state
     srv.shutdown()
     srv.server_close()
+
+
+def _settled(turn_id, timeout=30):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        state = inbound.get(turn_id)["state"]
+        if state != "pending":
+            return state
+        time.sleep(0.02)
+    return "pending"
 
 
 def test_turn_needs_the_token_and_a_handler(server):
@@ -190,14 +219,78 @@ def test_turn_accepts_validates_and_dedupes(server):
     inbound.register(lambda msg: None)
     body = {"chat": "telegram:me", "address": 123, "text": "hi", "kind": "text", "media": None,
             "platform": "telegram", "origin": "user", "dedupe_key": "tg:99"}
-    began = time.perf_counter()
     code, out = _post(port, body, token=token)
-    took = time.perf_counter() - began
-    assert code == 202 and out["duplicate"] is False and took < 1.0
+    assert code == 202 and out["duplicate"] is False
     assert _post(port, body, token=token) == (202, {"turn_id": out["turn_id"], "duplicate": True})
-    row = inbound.get(out["turn_id"])
-    assert row["address"] == "123" and row["state"] == "waiting"
+    assert _settled(out["turn_id"]) == "waiting"
+    assert inbound.get(out["turn_id"])["address"] == "123"
     for bad in ({"text": "no chat"}, {"chat": "c"}, {"chat": "c", "text": 5}, {"chat": True, "text": "x"}, [1]):
         assert _post(port, bad, token=token)[0] == 400, bad
     assert _post(port, None, token=token, raw=b"not json")[0] == 400
     assert len(inbound.list()) == 1
+
+
+# ---- the accept budget: a late 202 must never lead to a second answer -------------------------------------------
+
+def test_fast_accept_makes_the_turn_runnable(server, clock):
+    port, token, _ = server
+    inbound.register(lambda msg: None)
+    code, out = _post(port, {"chat": "c", "text": "hi"}, token=token)
+    assert code == 202
+    assert _settled(out["turn_id"]) == "waiting"
+    assert inbound.claim_next("c")["turn_id"] == out["turn_id"]
+
+
+def test_budget_missed_before_the_reply_cancels_and_answers_503(server, clock, monkeypatch):
+    port, token, _ = server
+    inbound.register(lambda msg: None)
+    monkeypatch.setattr(health, "_before_reply", lambda: setattr(clock, "t", clock.t + 1.5))
+    code, _ = _post(port, {"chat": "c", "text": "slow"}, token=token)
+    assert code == 503
+    (row,) = inbound.list()
+    assert row["state"] == "cancelled" and "budget" in row["error"]
+    assert events.query("inbox.cancelled")[0]["ref"] == row["turn_id"]
+    assert inbound.claim_next("c") is None
+
+
+def test_a_failed_write_of_the_202_cancels(server, clock, monkeypatch):
+    port, token, _ = server
+    inbound.register(lambda msg: None)
+
+    def broken(handler, data):
+        raise BrokenPipeError("client went away")
+    monkeypatch.setattr(health, "_write_reply", broken)
+    try:
+        _post(port, {"chat": "c", "text": "gone"}, token=token)
+    except Exception:  # the client sees a broken response; that is the point
+        pass
+    (row,) = inbound.list()
+    assert _settled(row["turn_id"]) == "cancelled"
+    assert "writing the 202 failed" in inbound.get(row["turn_id"])["error"]
+    assert inbound.claim_next("c") is None
+
+
+def test_a_202_written_after_the_budget_still_cancels(server, clock, monkeypatch):
+    port, token, _ = server
+    inbound.register(lambda msg: None)
+    real = health._write_reply
+
+    def slow(handler, data):
+        clock.t += 1.5
+        real(handler, data)
+    monkeypatch.setattr(health, "_write_reply", slow)
+    code, out = _post(port, {"chat": "c", "text": "late"}, token=token)
+    assert code == 202
+    assert _settled(out["turn_id"]) == "cancelled"
+    assert inbound.claim_next("c") is None
+
+
+def test_submit_directly_is_runnable_at_once_and_a_dead_accepter_cancels():
+    direct = inbound.submit("c", "direct")["turn_id"]
+    assert inbound.get(direct)["state"] == "waiting"
+    orphan = inbound.submit_pending("c", "orphan")["turn_id"]
+    assert inbound.recover()["cancelled"] == 0  # its accepting process (this one) is alive
+    store.connect().execute("UPDATE inbox SET pid=? WHERE turn_id=?", (_dead_pid(), orphan))
+    assert inbound.recover()["cancelled"] == 1
+    assert inbound.get(orphan)["state"] == "cancelled"
+    assert inbound.confirm(orphan) is False and inbound.cancel(direct, "x") is False

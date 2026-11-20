@@ -77,9 +77,12 @@ def core(monkeypatch):
     env = dict(os.environ)
     env.update(WAGGLE_HOME=str(home), PYTHONPATH=os.pathsep.join([str(REPO), str(REPO / "tests")]),
                WAGGLE_CORE_PORT=str(_free_port()), WAGGLE_CORE_CADENCE=FAST, WAGGLE_CORE_NO_TASK="1",
-               WAGGLE_CORE_PLUGINS="test_runtime_core_plugin")
+               WAGGLE_CORE_PLUGINS="test_runtime_core_plugin",
+               # The 1 s accept budget is tested in-process with an injected clock; here a loaded machine
+               # must not turn a slow accept into a cancelled turn.
+               WAGGLE_CORE_ACCEPT_BUDGET_S="60")
     for key in ("WAGGLE_HOME", "PYTHONPATH", "WAGGLE_CORE_PORT", "WAGGLE_CORE_CADENCE", "WAGGLE_CORE_NO_TASK",
-                "WAGGLE_CORE_PLUGINS"):
+                "WAGGLE_CORE_PLUGINS", "WAGGLE_CORE_ACCEPT_BUDGET_S"):
         monkeypatch.setenv(key, env[key])
     h = Harness(env)
     yield h
