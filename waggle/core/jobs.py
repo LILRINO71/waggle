@@ -1,11 +1,12 @@
 """Job queue with leases in runtime.db.
 
 A job is claimed by an owner token under a lease; only that owner may heartbeat, finish or fail it
-(`WHERE id=? AND lease_owner=?`). `attempts` counts failed or crashed runs. Recovery after a crash requeues a
-running job only when its lease has expired AND its process is gone (or the pid now belongs to a different
-process); a live worker is re-adopted with a fresh lease.
+(`WHERE id=? AND lease_owner=?`). `attempts` counts failed or crashed runs. Recovery requeues a running job
+as soon as its recorded process is gone (or the pid now belongs to a different process), whatever its lease
+says; the lease only matters while that process lives, and a live worker past its lease is re-adopted.
 
-Handlers are plain functions taking the job payload, registered per process with `register`.
+Handlers are plain functions registered per process with `register`. They receive the job payload, or the
+payload and the whole job row (id, attempts, ...) when registered with `with_job=True`.
 """
 import builtins
 import os
@@ -27,17 +28,33 @@ class Handler:
     detached: bool
     max_attempts: int
     lease_s: float
+    timeout_s: float | None = None
+    with_job: bool = False
 
 
 _handlers = {}
 
 
-def register(kind, fn, *, detached=False, max_attempts=DEFAULT_MAX_ATTEMPTS, lease_s=DEFAULT_LEASE_S):
-    _handlers[kind] = Handler(fn, bool(detached), int(max_attempts), float(lease_s))
+def register(kind, fn, *, detached=False, max_attempts=DEFAULT_MAX_ATTEMPTS, lease_s=DEFAULT_LEASE_S,
+             timeout_s=None, with_job=False):
+    """Register a job kind. `timeout_s`: a detached run past it is killed and failed; an in-process run past it
+    marks the core unhealthy (a thread cannot be killed safely, so the watchdog restarts the core)."""
+    _handlers[kind] = Handler(fn, bool(detached), int(max_attempts), float(lease_s),
+                              None if timeout_s is None else float(timeout_s), bool(with_job))
 
 
 def handler(kind):
     return _handlers.get(kind)
+
+
+def kinds(*, detached=None):
+    """Registered kinds; only in-process ones with detached=False, only detached ones with detached=True."""
+    return [k for k, h in _handlers.items() if detached is None or h.detached == detached]
+
+
+def invoke(h, job):
+    """Call a handler the way it was registered."""
+    return h.fn(job["payload"], job) if h.with_job else h.fn(job["payload"])
 
 
 def new_owner(prefix="core"):
@@ -162,17 +179,19 @@ def _end_attempt(con, row, error, *, retry, now, reason, delay=None):
 
 
 def recover(now=None):
-    """Run at core start (and periodically): settle running jobs whose lease expired.
+    """Run at core start and periodically: settle running jobs.
 
-    Process gone, or its pid reused by another process -> queued with attempts+1 (or dead when exhausted).
-    The recorded process still running -> left running and re-adopted with a fresh lease."""
+    Process gone, or its pid reused by another process -> queued at once with attempts+1 (dead when exhausted),
+    whatever the lease says. The recorded process still running past its lease -> left running and re-adopted
+    with a fresh lease."""
     now = store.now_or(now)
     counts = {"requeued": 0, "dead": 0, "adopted": 0}
     with store.transaction() as con:
-        rows = con.execute("SELECT * FROM jobs WHERE state='running' AND (lease_until IS NULL OR lease_until<?)",
-                           (now,)).fetchall()
+        rows = con.execute("SELECT * FROM jobs WHERE state='running'").fetchall()
         for row in rows:
             if procs.same_process(row["pid"], row["pid_ctime"]):
+                if row["lease_until"] is not None and row["lease_until"] >= now:
+                    continue
                 lease = row["lease_s"] or DEFAULT_LEASE_S
                 con.execute("UPDATE jobs SET lease_until=?, updated=? WHERE id=? AND state='running'",
                             (now + lease, now, row["id"]))
@@ -204,12 +223,20 @@ def run_one(owner=None, *, kinds=None, now=None):
         fail(job["id"], owner, f"no handler registered for {job['kind']!r}", retry=True, now=now)
         return get(job["id"])
     try:
-        result = h.fn(job["payload"])
+        result = invoke(h, job)
     except Exception as e:  # a handler failure is recorded on the job, never raised into the scheduler
         fail(job["id"], owner, f"{type(e).__name__}: {e}", now=now)
     else:
         complete(job["id"], owner, result, now=now)
     return get(job["id"])
+
+
+def prune(older_than_s, now=None):
+    """Delete done jobs finished more than `older_than_s` ago. Returns how many."""
+    cutoff = store.now_or(now) - older_than_s
+    with store.transaction() as con:
+        return con.execute("DELETE FROM jobs WHERE state='done' AND COALESCE(finished, updated) < ?",
+                           (cutoff,)).rowcount
 
 
 def get(job_id):

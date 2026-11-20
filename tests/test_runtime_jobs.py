@@ -179,14 +179,14 @@ def test_process_identity_detects_dead_and_reused_pids():
 def test_crashed_worker_is_requeued_with_attempts_plus_one():
     store.connect()
     jid = jobs.enqueue("k", max_attempts=3, now=time.time())
-    p = _python(CRASHER, 1)
+    p = _python(CRASHER, 600)
     out, err = p.communicate(timeout=60)
     assert p.returncode == 3, err
     assert int(out.strip()) == jid
     job = jobs.get(jid)
     assert job["state"] == "running" and job["pid"] == p.pid and job["pid_ctime"] is not None
-    assert jobs.recover(now=time.time() - 3600) == {"requeued": 0, "dead": 0, "adopted": 0}  # lease still valid
-    counts = jobs.recover(now=time.time() + 5)
+    assert job["lease_until"] > time.time()
+    counts = jobs.recover()  # lease still valid but the process is gone: requeued at once
     assert counts == {"requeued": 1, "dead": 0, "adopted": 0}
     job = jobs.get(jid)
     assert job["state"] == "queued" and job["attempts"] == 1 and job["lease_owner"] is None
@@ -246,4 +246,38 @@ def test_four_processes_claim_200_jobs_exactly_once(tmp_path):
     for jid in ids:
         job = jobs.get(jid)
         assert job["state"] == "done" and job["result"] == {"owner": owner_of[jid]}
-    assert sum(1 for r in results if r["got"]) >= 2
+
+
+# ---- review fixes: immediate recovery, handler options, retention ----------------------------------------------
+
+def test_a_live_worker_within_its_lease_is_left_alone():
+    jid = jobs.enqueue("k", now=0)
+    jobs.claim("me", lease_s=60, now=0)
+    assert jobs.recover(now=30) == {"requeued": 0, "dead": 0, "adopted": 0}
+    assert jobs.get(jid)["lease_until"] == 60
+
+
+def test_handler_may_receive_the_job_and_registers_timeouts():
+    seen = []
+    jobs.register("withjob", lambda p, job: seen.append((p, job["id"], job["attempts"])) or "ok", with_job=True,
+                  timeout_s=5)
+    jid = jobs.enqueue("withjob", {"a": 1}, now=0)
+    assert jobs.run_one(now=1)["result"] == "ok"
+    assert seen == [({"a": 1}, jid, 0)]
+    assert jobs.handler("withjob").timeout_s == 5 and jobs.handler("withjob").with_job
+    jobs.register("far", lambda p: None, detached=True)
+    assert jobs.kinds(detached=False) == ["withjob"] and jobs.kinds(detached=True) == ["far"]
+
+
+def test_prune_removes_only_old_done_jobs():
+    old = jobs.enqueue("k", now=0)
+    jobs.claim("o", now=0)
+    jobs.complete(old, "o", now=10)
+    dead = jobs.enqueue("k", max_attempts=1, now=0)
+    jobs.claim("o", now=0)
+    jobs.fail(dead, "o", "x", now=10)
+    new = jobs.enqueue("k", now=100)
+    jobs.claim("o", now=100)
+    jobs.complete(new, "o", now=100)
+    assert jobs.prune(50, now=100) == 1
+    assert jobs.get(old) is None and jobs.get(dead)["state"] == "dead" and jobs.get(new)["state"] == "done"

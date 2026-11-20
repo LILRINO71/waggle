@@ -38,14 +38,24 @@ def enqueue(kind, body="", *, chat="", file=None, idem_key=None, priority=0, ori
         return cur.lastrowid
 
 
-def claim_due(now=None, limit=10):
-    """Move up to `limit` due rows to `sending` (attempts+1) and return them, highest priority first."""
+def _due_sql(kinds):
+    sql = ("SELECT id FROM outbox WHERE state='queued' AND (not_before IS NULL OR not_before<=?) "
+           "AND (next_try IS NULL OR next_try<=?) AND (expires IS NULL OR expires>?)")
+    if kinds is not None:
+        sql += f" AND kind IN ({','.join('?' * len(kinds))})"
+    return sql + " ORDER BY priority DESC, id ASC LIMIT ?"
+
+
+def claim_due(now=None, limit=10, *, kinds=None):
+    """Move up to `limit` due rows (only of `kinds`, if given) to `sending` (attempts+1) and return them,
+    highest priority first."""
     now = store.now_or(now)
+    if kinds is not None:
+        kinds = [kinds] if isinstance(kinds, str) else [k for k in kinds]
+        if not kinds:
+            return []
     with store.transaction() as con:
-        rows = con.execute(
-            "SELECT id FROM outbox WHERE state='queued' AND (not_before IS NULL OR not_before<=?) "
-            "AND (next_try IS NULL OR next_try<=?) AND (expires IS NULL OR expires>?) "
-            "ORDER BY priority DESC, id ASC LIMIT ?", (now, now, now, int(limit))).fetchall()
+        rows = con.execute(_due_sql(kinds), (now, now, now, *(kinds or ()), int(limit))).fetchall()
         ids = [r[0] for r in rows]
         for oid in ids:
             con.execute("UPDATE outbox SET state='sending', attempts=attempts+1, updated=? "
@@ -70,9 +80,9 @@ def mark_sent(id, provider_msg_id, *, now=None):  # noqa: A002 - the public API 
         return True
 
 
-def mark_failed(id, error, *, permanent=False, now=None):  # noqa: A002 - the public API name
+def mark_failed(id, error, *, permanent=False, retry_after=None, now=None):  # noqa: A002 - the public API name
     """Record a failed send of a `sending` row. Returns the new state (queued, failed or expired), or None
-    when the row is not being sent."""
+    when the row is not being sent. `retry_after` (seconds, e.g. from the provider) replaces the backoff."""
     now = store.now_or(now)
     with store.transaction() as con:
         row = con.execute("SELECT * FROM outbox WHERE id=? AND state='sending'", (id,)).fetchone()
@@ -83,7 +93,8 @@ def mark_failed(id, error, *, permanent=False, now=None):  # noqa: A002 - the pu
             state, next_try, kind = "failed", None, "outbox.failed"
             data["permanent"] = bool(permanent)
         else:
-            next_try = now + retry_delay(row["attempts"])
+            delay = retry_delay(row["attempts"]) if retry_after is None else max(0.0, float(retry_after))
+            next_try = now + delay
             if row["expires"] is not None and next_try >= row["expires"]:
                 state, kind = "expired", "outbox.expired"
             else:
@@ -120,6 +131,14 @@ def expire(now=None):
             store.insert_event(con, "outbox.expired", source="outbox", chat=r["chat"], ref=r["id"], now=now,
                                data={"kind": r["kind"], "origin": r["origin"], "attempts": r["attempts"]})
         return len(rows)
+
+
+def prune(older_than_s, now=None):
+    """Delete sent and expired rows last touched more than `older_than_s` ago. Returns how many."""
+    cutoff = store.now_or(now) - older_than_s
+    with store.transaction() as con:
+        return con.execute("DELETE FROM outbox WHERE state IN ('sent', 'expired') "
+                           "AND COALESCE(sent_at, updated, created) < ?", (cutoff,)).rowcount
 
 
 def get(id):  # noqa: A002 - the public API name
