@@ -269,6 +269,9 @@ def _only_to_self(args, settings=None):
 _OTHER_SHELL = {"terminal", "shell", "execute_command", "run_command", "process"}
 _MUTATING_MCP = re.compile(r"write|edit|create|save|move|copy|rename|delete|remove|append|patch|replace|upload|"
                            r"overwrite", re.I)
+# MCP tool names that only look: every other MCP tool (put_file, run, apply...) has all its string arguments checked.
+_LOOKING_MCP = re.compile(r"^(read|get|list|search|find|view|show|query|fetch|describe|stat|head|tree|count|"
+                          r"download|export)(_|$)|_(info|status|metadata)$", re.I)
 
 
 def _guard_hit(name, base, args, cwd):
@@ -280,8 +283,9 @@ def _guard_hit(name, base, args, cwd):
         if name in SHELL_TOOLS or name in _OTHER_SHELL:
             return guard.shell_hit(args.get("command") or args.get("cmd") or "",
                                    args.get("cwd") or args.get("workdir") or cwd)
-        if name.startswith("mcp__") and not name.startswith("mcp__waggle__") and _MUTATING_MCP.search(base):
-            return guard.write_hit(args, cwd)
+        if name.startswith("mcp__") and not name.startswith("mcp__waggle__") and (
+                _MUTATING_MCP.search(base) or not _LOOKING_MCP.search(base)):
+            return guard.write_hit(args, cwd, deep=True)
     except Exception:  # prefer asking too often over letting an unchecked call through
         return "the guard could not check whether this touches Waggle's safety files"
     return None
@@ -289,6 +293,11 @@ def _guard_hit(name, base, args, cwd):
 
 def decide(tool_name, args=None, settings=None, cwd=None):
     """Decision for one tool call (before approvals are consulted)."""
+    bad = guard.gate()  # fail closed like the hook when the safety files on disk no longer match the manifest
+    if bad:
+        return Decision(DENY, "integrity_violation: Waggle's safety files changed or could not be verified ("
+                        + ", ".join(str(b.get("file")) for b in bad) + "); the user must run "
+                        "`python -m waggle.guard approve`")
     args = args or {}
     raw = tool_name or ""
     name = raw.lower()

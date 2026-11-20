@@ -9,7 +9,15 @@ Three layers share this module's data:
 
 The protected set is data (REPO_FILES, WAGGLE_HOME_PATHS, USER_HOME_PATHS, HOLDOUT_*). Add an entry there and it is
 path-protected, hashed and verified with no other change. There is deliberately no environment variable that moves
-the guard folder: an agent could set it. Tests monkeypatch GUARD_DIR / PACKAGE_ROOT instead.
+the guard folder: an agent could set it. The user's home comes from the OS account (`profile_dir`), not from
+USERPROFILE / HOME, for the same reason. Tests monkeypatch USER_HOME / GUARD_DIR / PACKAGE_ROOT instead.
+
+Hashes are over a normalised form (CRLF -> LF for text files), so a checkout or merge that only changes line endings
+(git autocrlf) does not lock every tool call. Python reads CRLF and LF source identically, so nothing that runs differs.
+
+What this cannot do: an agent that may run its own code as the same Windows user (any allowed script) can rewrite a
+protected file AND the manifest together, and the hook cannot tell. Only privilege separation (a manifest the user's
+account cannot write) closes that; see tests/test_guard.py "open" tests.
 """
 import fnmatch
 import hashlib
@@ -22,20 +30,53 @@ from pathlib import Path
 
 from . import config
 
-GUARD_DIR = Path.home() / ".waggle-guard"
+
+def profile_dir():
+    """The user's profile folder as the OS account records it (Windows: GetUserProfileDirectoryW on this process's
+    token, which reads the registry, not USERPROFILE). None when it cannot be found."""
+    try:
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+            fn = ctypes.WinDLL("userenv").GetUserProfileDirectoryW
+            fn.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+            fn.restype = wintypes.BOOL
+            buf = ctypes.create_unicode_buffer(1024)
+            size = wintypes.DWORD(len(buf))
+            if fn(wintypes.HANDLE(-4), buf, ctypes.byref(size)) and buf.value:  # -4 = GetCurrentProcessToken()
+                return Path(buf.value)
+            return None
+        import pwd
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except Exception:
+        return None
+
+
+USER_HOME = profile_dir() or Path.home()
+GUARD_DIR = USER_HOME / ".waggle-guard"
 # The checkout this code was imported from, so the live copy is protected wherever it lives.
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 MANIFEST_NAME = "manifest.json"
 VIOLATION_NAME = "violation.json"
+MANIFEST_VERSION = 2  # 2 = line-ending-normalised hashes + the Waggle home it was approved for
 
 REPO_FILES = (
     "waggle/__init__.py",  # runs before policy on import, so it can patch policy
     "waggle/policy.py", "waggle/security.py", "waggle/agent_hook.py", "waggle/budget.py", "waggle/quota.py",
     "waggle/guard.py", "hermes_plugin/waggle/__init__.py", "tests/test_trust.py", "tests/test_guard.py",
+    "waggle/config.py",  # imported inside the hook before the policy runs; decides the data folder and settings
+    "waggle/agent.py",  # writes the hook command and the --settings every tool agent starts with
+    "waggle/claude_cli.py",  # connector runs' --settings/--allowedTools and the permission mode of build sessions
+    "waggle/bridge.py",  # gives Claude agents Hermes tools, with its own in-process policy.decide check
 )
 # What agent_hook re-hashes on every call (it carries its own copy of this tuple: it must not trust guard.py).
+# Everything in REPO_FILES that runs, so a change to the files that start agents also stops the next tool call.
 HOOK_CHECKED = ("waggle/__init__.py", "waggle/policy.py", "waggle/agent_hook.py", "waggle/guard.py",
-                "waggle/security.py")
+                "waggle/security.py", "waggle/config.py", "waggle/budget.py", "waggle/quota.py", "waggle/agent.py",
+                "waggle/claude_cli.py", "waggle/bridge.py", "hermes_plugin/waggle/__init__.py")
+# Claude Code settings files anywhere: a project's .claude/settings.json can set "env" or "disableAllHooks" for the
+# next run in that folder. Path-protected (asked about), never hashed (the user edits them).
+CLAUDE_SETTINGS = re.compile(r"(^|/)\.claude/settings(\.local)?\.json$")
 
 # Under the Waggle data folder (config.HOME and ~/.waggle). "prefix" also covers SQLite -wal / -journal / -shm.
 WAGGLE_HOME_PATHS = (("config.json", "file"), ("approvals.db", "prefix"), ("budget.db", "prefix"))
@@ -56,17 +97,18 @@ CONFIG_KEY = "home:config.json#keys"
 
 # ---- paths -------------------------------------------------------------------------------------
 
-_ENV_RE = re.compile(r"%([A-Za-z_]\w*)%|\$\{(?:env:)?([A-Za-z_]\w*)\}|\$env:([A-Za-z_]\w*)|\$([A-Za-z_]\w*)", re.I)
+_ENV_RE = re.compile(r"%([A-Za-z_]\w*)%|!([A-Za-z_]\w*)!|\$\{(?:env:)?([A-Za-z_]\w*)\}|\$env:([A-Za-z_]\w*)|"
+                     r"\$([A-Za-z_]\w*)", re.I)
 
 
 def _env(name):
     if name.upper() in ("USERPROFILE", "HOME"):  # Windows has no $HOME, agents use it anyway
-        return str(Path.home())
+        return str(USER_HOME)
     return os.environ.get(name)
 
 
 def expand(text):
-    """%VAR%, $VAR, ${VAR}, $env:VAR; unknown names stay as written."""
+    """%VAR%, !VAR!, $VAR, ${VAR}, $env:VAR; unknown names stay as written."""
     return _ENV_RE.sub(lambda m: _env(next(g for g in m.groups() if g)) or m.group(0), text)
 
 
@@ -74,7 +116,7 @@ def _lex(raw, cwd, lower=True):
     """Lexical absolute form: forward slashes, no '..', no trailing dots/spaces, no alternate data stream."""
     s = str(raw).strip().strip("\"'").strip()
     if s == "~" or s[:2] in ("~/", "~\\"):
-        s = str(Path.home()) + s[1:]
+        s = str(USER_HOME) + s[1:]
     s = s.replace("\\", "/")
     if s.startswith(("//?/", "//./")):
         s = s[4:]
@@ -134,7 +176,7 @@ def _real(path):
 
 def waggle_homes():
     homes, seen = [], set()
-    for h in (Path.home() / ".waggle", config.HOME):
+    for h in (USER_HOME / ".waggle", config.HOME):
         if _lex(h, "/") not in seen:
             seen.add(_lex(h, "/"))
             homes.append(Path(h))
@@ -150,8 +192,28 @@ def entries():
             out.append(Entry(kind, h / name, f"{h.name}/{name}"))
         out.append(Entry("holdout", h / HOLDOUT_DIR, f"{h.name}/{HOLDOUT_DIR}/**/{HOLDOUT_PREFIX}*"))
     for rel, kind in USER_HOME_PATHS:
-        out.append(Entry(kind, Path.home() / rel, "~/" + rel))
+        out.append(Entry(kind, USER_HOME / rel, "~/" + rel))
     out.append(Entry("dir", GUARD_DIR, "~/" + GUARD_DIR.name))
+    return out
+
+
+def _file_id(path):
+    try:
+        st = os.stat(path)
+        return (st.st_dev, st.st_ino) if st.st_ino else None
+    except (OSError, ValueError):
+        return None
+
+
+def _ids(ents):
+    """{(volume, file id): label} of the protected files that exist, so a hard link, subst drive, 8.3 name or any
+    other alias of the same file is recognised by identity, not by spelling."""
+    out = {}
+    for e in ents:
+        if e.kind in ("file", "prefix"):
+            fid = _file_id(e.path)
+            if fid:
+                out[fid] = e.label
     return out
 
 
@@ -159,7 +221,8 @@ def _hit(e, f, ancestors, wild):
     if wild:
         d = f.rsplit("/", 1)[0]
         if e.kind in ("dir", "holdout"):
-            return any(d == p or d.startswith(p + "/") or (ancestors and p.startswith(d + "/")) for p in e.forms)
+            return any(d == p or d.startswith(p + "/") or fnmatch.fnmatchcase(p, d) or (ancestors and p.startswith(
+                d + "/")) for p in e.forms)
         return any(fnmatch.fnmatchcase(p, f) for p in e.forms)
     if e.kind == "file":
         return f in e.forms or (ancestors and any(p.startswith(f + "/") for p in e.forms))
@@ -179,23 +242,98 @@ def _hit(e, f, ancestors, wild):
     return False
 
 
-def match(raw, cwd=None, ancestors=False, _entries=None):
+def _settings_hit(f, ancestors):
+    if CLAUDE_SETTINGS.search(f):
+        return True
+    return ancestors and (f.endswith("/.claude") or f == ".claude")
+
+
+def _settings_glob(f):
+    """A wildcard (rm .claude/*, Set-Content .clau?e/settings.json) that could name a Claude Code settings file."""
+    d, _, b = f.rpartition("/")
+    last = d.rpartition("/")[2]
+    return fnmatch.fnmatchcase(".claude", last) and any(fnmatch.fnmatchcase(n, b) for n in
+                                                         ("settings.json", "settings.local.json"))
+
+
+def match(raw, cwd=None, ancestors=False, _entries=None, _idmap=None):
     """Label of the protected entry `raw` names (resolving ~, env vars, relative paths against cwd, '..', case,
-    trailing dots, links), or None. With ancestors=True a folder that contains a protected file counts too."""
+    trailing dots, links, hard links), or None. With ancestors=True a folder that contains a protected file counts
+    too."""
     raw = str(raw or "").strip()
     if not raw or len(raw) > 1024 or "\x00" in raw:
         return None
     cwd = str(cwd or os.getcwd())
     s = expand(raw)
-    wild = any(c in s for c in "*?")
+    wild = any(c in s for c in "*?[")
     ents = _entries if _entries is not None else entries()
     forms = [_lex(s, cwd)]
+    real = None
     for stage in (0, 1):
         for e in ents:
             if any(_hit(e, f, ancestors, wild) for f in forms):
                 return e.label
+        if any(_settings_hit(f, ancestors) or (wild and _settings_glob(f)) for f in forms):
+            return "Claude Code settings (.claude/settings.json)"
+        shadow = next((x for x in map(_shadow_hit, forms) if x), None)
+        if shadow:
+            return shadow
         if stage == 0 and not wild:
-            forms = [_lex(_real(_lex(s, cwd, lower=False).replace("/", os.sep)), cwd)]
+            real = _real(_lex(s, cwd, lower=False).replace("/", os.sep))
+            forms = [_lex(real, cwd)]
+        else:
+            break
+    if real is not None:
+        fid = _file_id(real)
+        if fid:
+            label = (_idmap if _idmap is not None else _ids(ents)).get(fid)
+            if label:
+                return label
+    return None
+
+
+def _shadow_name(name, is_package=False):
+    """The standard-library module a file or folder at the checkout root would replace, or None. Python puts the
+    working folder first on sys.path for `python -m ...`, so <root>/json.py runs instead of json for the guard
+    command and anything else started from the checkout."""
+    import importlib.machinery
+    if is_package:
+        stem = name
+    else:
+        stem = next((name[:-len(x)] for x in (".py", ".pyc", *importlib.machinery.EXTENSION_SUFFIXES)
+                     if name.lower().endswith(x)), None)
+    return stem if stem and stem.lower() in {m.lower() for m in sys.stdlib_module_names} else None
+
+
+def shadows(root=None):
+    """Names at the checkout root that shadow a standard-library module (see _shadow_name)."""
+    root = Path(root or PACKAGE_ROOT)
+    out = []
+    try:
+        items = list(os.scandir(root))
+    except OSError:
+        return out
+    for e in items:
+        try:
+            pkg = e.is_dir() and (Path(e.path) / "__init__.py").is_file()
+        except OSError:
+            pkg = False
+        if _shadow_name(e.name, pkg) and (pkg or not e.is_dir()):
+            out.append(e.name)
+    return sorted(out)
+
+
+def _roots():
+    return {_lex(PACKAGE_ROOT, "/"), _lex(_real(PACKAGE_ROOT), "/")}
+
+
+def _shadow_hit(f):
+    parent, _, base = f.rpartition("/")
+    if parent in _roots() and _shadow_name(base):
+        return f"{base} at the checkout root (it would replace Python's own {_shadow_name(base)} module)"
+    grand, _, folder = parent.rpartition("/")
+    if base == "__init__.py" and grand in _roots() and _shadow_name(folder, True):
+        return f"{folder}/__init__.py at the checkout root (it would replace Python's own {folder} package)"
     return None
 
 
@@ -213,19 +351,35 @@ _PATCH_FILE = re.compile(r"^\*\*\*\s*(?:Update File|Add File|Delete File|Move to
 REASON = "changing Waggle's own safety files ({}): needs your yes"
 
 
-def write_hit(args, cwd=None, patch=False):
-    """Reason string when a write/edit call's target is protected, else None."""
+def _strings(v, depth=0):
+    """Every short string inside an argument tree (MCP tools name their path arguments however they like)."""
+    if isinstance(v, str):
+        if len(v) <= 1024:
+            yield v
+    elif depth < 4 and isinstance(v, dict):
+        for x in v.values():
+            yield from _strings(x, depth + 1)
+    elif depth < 4 and isinstance(v, (list, tuple)):
+        for x in v[:50]:
+            yield from _strings(x, depth + 1)
+
+
+def write_hit(args, cwd=None, patch=False, deep=False):
+    """Reason string when a write/edit call's target is protected, else None. deep=True looks at every string in
+    the arguments, not only the usual path keys."""
     if not isinstance(args, dict):
         return None
     cwd = args.get("cwd") or args.get("workdir") or cwd
-    ents = entries()
+    ctx = _Ctx()
     cands = [v for k in PATH_KEYS for v in [args.get(k)] if isinstance(v, str)]
+    if deep:
+        cands += [s for s in _strings(args) if s not in cands and "\n" not in s]
     if patch:
         for k in ("patch", "diff", "content", "input"):
             if isinstance(args.get(k), str):
                 cands += [a or b for a, b in _PATCH_FILE.findall(args[k])]
     for c in cands:
-        label = match(c, cwd, _entries=ents)
+        label = ctx.match(c, cwd)
         if label:
             return REASON.format(label)
     return None
@@ -247,12 +401,21 @@ BENIGN_GIT = {"diff", "log", "show", "status", "blame", "ls-files", "rev-parse",
 ANCESTOR_VERBS = {"rm", "del", "erase", "rmdir", "rd", "ri", "remove-item", "mv", "move", "move-item", "mi", "ren",
                   "rename", "rename-item", "rni", "robocopy", "xcopy"}
 COPY_VERBS = {"cp", "copy", "copy-item", "cpi"}
+# Unpacking an archive writes whatever names the archive holds, into the folder named or the working folder.
+EXTRACT_VERBS = {"unzip", "expand-archive", "extrac32", "expand", "7z", "7za", "7zr", "bsdtar", "tar"}
 WRAPPERS = {"powershell", "pwsh", "cmd", "bash", "sh", "zsh"}
 WRAP_FLAGS = {"-c", "-command", "/c", "/k", "-lc", "-ic"}
+ENCODED_FLAGS = {"-e", "-ec", "-enc", "-encodedcommand", "-encoded"}
 PYTHONS = {"python", "python3", "py", "pythonw"}
+# Interpreters whose script file is read before the command is allowed (a script written to a write root and run).
+SCRIPT_RUNNERS = PYTHONS | {"node", "deno", "bun", "ruby", "perl", "php", "powershell", "pwsh", "bash", "sh", "zsh",
+                            "cmd", "cscript", "wscript"}
+SCRIPT_EXT = re.compile(r"\.(py|pyw|js|mjs|cjs|ts|ps1|psm1|sh|bash|bat|cmd|rb|pl|php|vbs)$", re.I)
 GUARD_CMD = re.compile(r"waggle[. ]guard\b", re.I)
 _REDIRECT = re.compile(r"(?<![<>])\d*>{1,2}\|?\s*(\"[^\"]*\"|'[^']*'|[^\s&|;<>]+)")
 _DISTINCTIVE = None
+# Text in a script or decoded payload that names the protected set (any slash style).
+_MENTION = None
 
 
 def _split(cmd, aware):
@@ -297,11 +460,20 @@ def _tokens(stmt):
     return out
 
 
+_BRACE = re.compile(r"\{([^{}]*,[^{}]*)\}")
+
+
 def _pieces(tok):
-    """A token plus the path-like fragments inside it (python -c "open('x','w')", -Path:x, a=b)."""
-    t = re.sub(r"^-[A-Za-z]+[:=]", "", tok)
-    found = {tok, t}
-    found.update(p for p in re.split(r"[,;()<>|&=\[\]{}'\"`]\s*|\s+", t) if p)
+    """A token plus the path-like fragments inside it (python -c "open('x','w')", -Path:x, a=b, a/{b,c})."""
+    toks = {tok}
+    m = _BRACE.search(tok)
+    if m:
+        toks.update(tok[:m.start()] + alt + tok[m.end():] for alt in m.group(1).split(",")[:20])
+    found = set()
+    for tk in toks:
+        t = re.sub(r"^-[A-Za-z]+[:=]", "", tk)
+        found.update((tk, t))
+        found.update(p for p in re.split(r"[,;()<>|&=\[\]{}'\"`]\s*|\s+", t) if p)
     return found
 
 
@@ -333,12 +505,106 @@ def _git_sub(rest):
     return ""
 
 
+def _git_read(rest):
+    """git subcommands that cannot change the files of the working tree they run in."""
+    sub = _git_sub(rest)
+    if sub not in BENIGN_GIT or any(t.startswith("--output") for t in rest):
+        return False
+    if sub == "worktree":  # add / move / remove / repair write or delete whole folders
+        low = [t.lower() for t in rest]
+        action = next((t for t in low[low.index("worktree") + 1:] if not t.startswith("-")), "")
+        return action in ("", "list", "prune")
+    return True
+
+
 def _git_dirs(rest):
-    return [rest[i + 1] for i, t in enumerate(rest[:-1]) if t in ("-C", "--work-tree")]
+    out = [rest[i + 1] for i, t in enumerate(rest[:-1]) if t in ("-C", "--work-tree", "--git-dir")]
+    out += [t.split("=", 1)[1] for t in rest if t.startswith(("--work-tree=", "--git-dir="))]
+    return out
 
 
 def _unresolvable(t):
     return not t or t == "-" or any(c in t for c in "$%`(")
+
+
+def _extracts(verb, rest):
+    """True when this is an archive being unpacked (tar -x, unzip, Expand-Archive, 7z x, expand)."""
+    if verb not in EXTRACT_VERBS:
+        return False
+    low = [t.lower() for t in rest]
+    if verb in ("tar", "bsdtar"):
+        first = low[0] if low else ""
+        return any(t in ("--extract", "--get") or re.match(r"^-[a-z]*x[a-z]*$", t) for t in low) or bool(
+            re.match(r"^[a-wyz]*x[a-z]*$", first))
+    if verb in ("7z", "7za", "7zr"):
+        return bool(low) and low[0] in ("x", "e")
+    if verb == "unzip":
+        return not any(t in ("-l", "-t", "-v", "-z") for t in low)
+    return True
+
+
+_EXTRACT_DEST = re.compile(r"^(-C|--directory(=.*)?|-d|-destinationpath(:.*)?|-o.+)$", re.I)
+
+
+def _script_file(verb, tok0, rest, cwd):
+    """The script file an interpreter (or a script run directly) is about to execute, or None."""
+    cand = None
+    if SCRIPT_EXT.search(tok0 or "") and verb not in SCRIPT_RUNNERS:
+        cand = tok0
+    elif verb in PYTHONS:
+        low = [t.lower() for t in rest]
+        if "-c" in low:
+            return None
+        if "-m" in low:
+            mod = rest[low.index("-m") + 1] if low.index("-m") + 1 < len(rest) else ""
+            base = Path(cwd) / mod.replace(".", os.sep)
+            for p in (base.with_suffix(".py"), base / "__main__.py"):
+                if p.is_file():
+                    return p
+            return None
+        skip = False
+        for t in rest:
+            if skip:
+                skip = False
+            elif t in ("-W", "-X", "-Q"):
+                skip = True
+            elif not t.startswith("-") or t == "-":
+                cand = None if t == "-" else t
+                break
+    elif verb in ("powershell", "pwsh"):
+        low = [t.lower() for t in rest]
+        for flag in ("-file", "-f"):
+            if flag in low and low.index(flag) + 1 < len(rest):
+                cand = rest[low.index(flag) + 1]
+                break
+        else:
+            cand = next((t for t in rest if SCRIPT_EXT.search(t)), None)
+    elif verb in SCRIPT_RUNNERS and verb not in ("cmd",):
+        args = [t for t in rest if not t.startswith("-")]
+        if verb == "deno" and args[:1] == ["run"]:
+            args = args[1:]
+        if not any(t.lower() in WRAP_FLAGS for t in rest):
+            cand = args[0] if args else None
+    if not cand or _unresolvable(cand):
+        return None
+    p = Path(_lex(expand(cand), cwd, lower=False))
+    try:
+        return p if p.is_file() and p.stat().st_size <= 2_000_000 else None
+    except OSError:
+        return None
+
+
+def _mentions(text):
+    """The protected set named in a script or decoded payload, in any slash style, or None."""
+    global _MENTION
+    if _MENTION is None:
+        names = [re.escape(r).replace("/", r"[\\/]+") for r in REPO_FILES]
+        extra = [r"waggle-guard", r"waggle\.guard\b", r"from\s+waggle\s+import\s+[^\n]*\bguard\b",
+                 r"\bagent_hook\b", r"\bapprovals\.db\b", r"\bbudget\.db\b", r"hermes[\\/]+plugins[\\/]+waggle",
+                 r"\.claude[\\/]+settings(\.local)?\.json", r"\.waggle[\\/]+(config\.json|eval\b)"]
+        _MENTION = re.compile("|".join(names + extra), re.I)
+    m = _MENTION.search(text or "")
+    return m.group(0) if m else None
 
 
 class _Result:
@@ -357,11 +623,19 @@ class _Ctx:
     def __init__(self):
         self.ents = entries()
         self.memo = {}
+        self._ids = None
+        self.git_dirs = []
+
+    @property
+    def ids(self):
+        if self._ids is None:
+            self._ids = _ids(self.ents)
+        return self._ids
 
     def match(self, piece, cwd, ancestors=False):
         key = (piece, cwd, ancestors)
         if key not in self.memo:
-            self.memo[key] = match(piece, cwd, ancestors, _entries=self.ents)
+            self.memo[key] = match(piece, cwd, ancestors, _entries=self.ents, _idmap=self.ids)
         return self.memo[key]
 
 
@@ -385,40 +659,62 @@ def _analyze(stmts, cwd, ctx, depth=0):
                 vcwd = None if _unresolvable(tgt) or vcwd is None else _lex(expand(tgt), vcwd, lower=False)
             continue
         sub = None
-        if verb in WRAPPERS:
-            idx = next((i for i, t in enumerate(rest) if t.lower() in WRAP_FLAGS), None)
-            if idx is not None and depth < 3:
+        if verb in WRAPPERS and depth < 3:
+            low = [t.lower() for t in rest]
+            idx = next((i for i, t in enumerate(low) if t in WRAP_FLAGS), None)
+            enc = next((i for i, t in enumerate(low) if t in ENCODED_FLAGS), None)
+            if idx is not None:
                 payload = " ".join(rest[idx + 1:])
                 sub = _analyze(_split(payload, True) + _split(payload, False), vcwd or os.getcwd(), ctx, depth + 1)
+            elif enc is not None and enc + 1 < len(rest) and verb in ("powershell", "pwsh"):
+                payload = _b64text(rest[enc + 1]) or ""
+                sub = _analyze(_split(payload, True) + _split(payload, False), vcwd or os.getcwd(), ctx, depth + 1)
+                sub.nonread = True  # an encoded command is never a plain read
         is_git = verb == "git"
         if sub is not None:
             read = not sub.nonread
         elif is_git:
-            read = _git_sub(rest) in BENIGN_GIT and not any(t.startswith("--output") for t in rest)
+            read = _git_read(rest)
         else:
             read = verb in READ_VERBS
         if not read:
             res.nonread = True
         if sub is not None:
             res.merge(sub)
-        ancestors = verb in ANCESTOR_VERBS or (is_git and not read) or (verb in COPY_VERBS and any(
+        extract = _extracts(verb, rest)
+        ancestors = verb in ANCESTOR_VERBS or extract or (is_git and not read) or (verb in COPY_VERBS and any(
             re.match(r"^-(r|R|a|recurse)$|^/[es]$", t) for t in rest))
         names = []
         for tok in tokens:
+            unres = not read and any(c in expand(tok) for c in "$%`")
             for piece in _pieces(tok):
                 if len(piece) < 2 or (piece.startswith("-") and "/" not in piece and "\\" not in piece):
                     continue
                 if vcwd is not None:
-                    label = ctx.match(piece, vcwd, ancestors)
+                    label = ctx.match(piece, vcwd, ancestors) or (_loose_name(piece) if unres else None)
                 else:
                     label = None if read else _loose_name(piece)
                 if label:
                     names.append(label)
+        if extract and vcwd is not None and not any(_EXTRACT_DEST.match(t) for t in rest):
+            label = ctx.match(vcwd, vcwd, ancestors=True) or (
+                "the Waggle checkout" if _inside_package(vcwd) else None)
+            if label:
+                names.append(label)
         if is_git and not read:
             base = vcwd or os.getcwd()
-            dirs = _git_dirs(rest) + [base]
+            dirs = _git_dirs(rest) + ctx.git_dirs + [base]
             if any(_inside_package(_lex(expand(d), base, lower=False)) for d in dirs):
                 names.append("the Waggle checkout")
+        if not read and vcwd is not None and verb:
+            script = _script_file(verb, tokens[len(tokens) - len(rest) - 1], rest, vcwd)
+            if script is not None:
+                try:
+                    said = _mentions(script.read_text(encoding="utf-8", errors="replace"))
+                except OSError:
+                    said = None
+                if said:
+                    names.append(f"a script that names {said}")
         if names:
             res.named += names
             if not read:
@@ -426,15 +722,77 @@ def _analyze(stmts, cwd, ctx, depth=0):
     return res
 
 
+# Basenames that count on their own when the folder is unknown (cd into a variable). The later additions to
+# REPO_FILES (config.py, agent.py...) are too common as names, so only their waggle/<name> form counts.
+_LOOSE_BASENAMES = {"__init__.py", "policy.py", "security.py", "agent_hook.py", "budget.py", "quota.py", "guard.py",
+                    "test_trust.py", "test_guard.py"}
+
+
 def _loose_name(piece):
-    """When the working folder is unknown (cd into a variable), a bare protected file name still counts."""
+    """When the working folder or part of the path is unknown (cd into a variable, $root/waggle/policy.py), a
+    protected file's name still counts."""
     global _DISTINCTIVE
     if _DISTINCTIVE is None:
-        _DISTINCTIVE = ({os.path.basename(r).lower() for r in REPO_FILES}
-                        | {n for n, k in WAGGLE_HOME_PATHS if n != "config.json"}
+        _DISTINCTIVE = (_LOOSE_BASENAMES | {n for n, k in WAGGLE_HOME_PATHS if n != "config.json"}
                         | {MANIFEST_NAME, VIOLATION_NAME})
-    base = piece.replace("\\", "/").rstrip("/. ").rsplit("/", 1)[-1].lower()
+    p = piece.replace("\\", "/").rstrip("/. ").lower()
+    for rel in REPO_FILES:
+        if p == rel or p.endswith("/" + rel):
+            return rel
+    base = p.rsplit("/", 1)[-1]
     return base if base in _DISTINCTIVE or base.startswith(HOLDOUT_PREFIX) else None
+
+
+_B64 = re.compile(r"[A-Za-z0-9+/]{16,}={0,2}")
+_GIT_ENV = re.compile(r"\bGIT_(?:WORK_TREE|DIR)\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s;&|]+)", re.I)
+_LIT = r"(?:\"[^\"\n]*\"|'[^'\n]*')"
+_ASSIGN = re.compile(r"(?:^|[\s;&|(\"'])(?:set\s+|export\s+|\$)?([A-Za-z_]\w*)\s*=\s*(" + _LIT + r"(?:\s*\+\s*" + _LIT +
+                     r")*|[^\s;&|\"'()]+)", re.I)
+
+
+def _b64text(tok):
+    """Printable text a base64 token decodes to (UTF-16LE for PowerShell -EncodedCommand, else UTF-8), or None."""
+    import base64
+    import binascii
+    t = tok.strip("\"'")
+    try:
+        raw = base64.b64decode(t + "=" * (-len(t) % 4), validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    for enc in (("utf-16-le",) if raw[1:2] == b"\0" else ()) + ("utf-8",):
+        try:
+            text = raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+        if text and sum(c.isprintable() or c in "\r\n\t" for c in text) >= 0.95 * len(text):
+            return text
+    return None
+
+
+def _join_literals(s):
+    return re.sub(r"([\"'])\s*\+\s*([\"'])", "", s)
+
+
+def _variants(text):
+    """The command as written plus the forms a simple disguise turns back into: 'a' + 'b' joined, $x / %x% replaced
+    by the literal assigned to it earlier in the same command, and base64 payloads decoded."""
+    out = [text, _join_literals(text)]
+    subs = {}
+    for name, val in _ASSIGN.findall(text):
+        v = _join_literals(val).strip("\"'")
+        if v:
+            subs[name] = v
+    if subs:
+        t = out[1]
+        for name, v in sorted(subs.items(), key=lambda kv: -len(kv[0])):
+            t = re.sub(r"\$\{?" + re.escape(name) + r"\}?\b|%" + re.escape(name) + "%|!" + re.escape(name) + "!|"
+                       r"(?<![\w$.])" + re.escape(name) + r"(?![\w=])", lambda _m, v=v: v, t)
+        out.append(t)
+    for m in list(_B64.finditer(text))[:10]:
+        decoded = _b64text(m.group(0))
+        if decoded:
+            out.append(decoded)
+    return list(dict.fromkeys(out))
 
 
 def shell_hit(command, cwd=None):
@@ -449,8 +807,12 @@ def shell_hit(command, cwd=None):
     if GUARD_CMD.search(text):
         return "running Waggle's guard command (it can re-approve changed safety files)"
     ctx = _Ctx()
+    ctx.git_dirs = [g.strip("\"'") for g in _GIT_ENV.findall(text)]
     res = _Result()
-    for variant in dict.fromkeys((text, command)):
+    variants = list(dict.fromkeys(_variants(text) + [command]))
+    if any(GUARD_CMD.search(v) for v in variants[1:]):
+        return "running Waggle's guard command (it can re-approve changed safety files)"
+    for variant in variants:
         for aware in (True, False):
             res.merge(_analyze(_split(variant, aware), cwd, ctx))
     if res.hit:
@@ -458,22 +820,32 @@ def shell_hit(command, cwd=None):
     if res.named and res.nonread:
         return REASON.format(res.named[0])
     if res.nonread:
-        low = text.lower().replace("\\", "/")
+        low = "\n".join(variants).lower().replace("\\", "/")
         if GUARD_DIR.name.lower() in low:
             return REASON.format("~/" + GUARD_DIR.name)
         if ".waggle" in low and re.search(r"approvals\.db|budget\.db|config\.json|holdout|/eval\b", low):
             return REASON.format("a file in the Waggle data folder")
-        if re.search(r"\b(import|from)\s+waggle|waggle\.(policy|security|agent_hook|budget|quota|guard)\b", low) \
-                and re.search(r"open\(|write_|__file__|shutil|\.replace\(|unlink|\.remove\(|rename|approve", low):
+        if re.search(r"\b(import|from)\s+waggle|waggle\.(policy|security|agent_hook|budget|quota|guard|config)\b",
+                     low) and re.search(r"open\(|write_|__file__|shutil|\.replace\(|unlink|\.remove\(|rename|approve",
+                                        low):
             return REASON.format("Waggle's code, through a script")
     return None
 
 
 # ---- manifest ----------------------------------------------------------------------------------
 
+def normalise(data):
+    """Bytes as hashed: CRLF -> LF for text (no NUL byte), raw bytes for binary files."""
+    return data if b"\0" in data else data.replace(b"\r\n", b"\n")
+
+
+def sha(data):
+    return hashlib.sha256(normalise(data)).hexdigest()
+
+
 def _sha_file(path):
     try:
-        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        return sha(Path(path).read_bytes())
     except OSError:
         return None
 
@@ -508,7 +880,7 @@ def snapshot():
     snap = {rel: _sha_file(PACKAGE_ROOT / rel) for rel in REPO_FILES}
     for rel, kind in USER_HOME_PATHS:
         if kind == "file":
-            snap["user:" + rel] = _sha_file(Path.home() / rel)
+            snap["user:" + rel] = _sha_file(USER_HOME / rel)
     snap[CONFIG_KEY] = config_keys_hash()
     snap.update(_holdout_files(config.HOME))
     return snap
@@ -539,25 +911,111 @@ def _diff(old, new):
     return out
 
 
+def _same(a, b):
+    try:
+        return os.path.normcase(os.path.realpath(str(a))) == os.path.normcase(os.path.realpath(str(b)))
+    except (OSError, ValueError):
+        return False
+
+
+def environment_failures(m):
+    """Ways the running process is pointed somewhere other than what was approved: USERPROFILE / HOME not the
+    account's real profile (Path.home() feeds the default Waggle folder and the write roots), or a Waggle data folder
+    (WAGGLE_HOME) that is not the one the manifest was approved for (approvals.db lives there)."""
+    out = []
+    if not _same(Path.home(), USER_HOME):
+        out.append({"file": "USERPROFILE", "expected": str(USER_HOME), "actual": str(Path.home())})
+    home = m.get("waggle_home") if isinstance(m, dict) else None
+    if home and not _same(config.HOME, home):
+        out.append({"file": "WAGGLE_HOME", "expected": str(home), "actual": str(config.HOME)})
+    return out
+
+
 def verify():
     """Violations over the whole protected set: [{path, kind, expected, actual}], kind = missing | changed | added
-    (a new holdout file) | no_manifest. An empty list means clean."""
+    (a new holdout file) | no_manifest | old_manifest | environment. An empty list means clean."""
     m = load_manifest()
     if m is None:
         return [{"path": str(manifest_path()), "kind": "no_manifest", "expected": None, "actual": None}]
-    return _diff(m["files"], snapshot())
+    out = []
+    if m.get("version") != MANIFEST_VERSION:
+        out.append({"path": str(manifest_path()), "kind": "old_manifest", "expected": str(MANIFEST_VERSION),
+                    "actual": str(m.get("version"))})
+    out += [{"path": e["file"], "kind": "environment", "expected": e["expected"], "actual": e["actual"]}
+            for e in environment_failures(m)]
+    out += [{"path": name, "kind": "shadow", "expected": None, "actual": "present"} for name in shadows()]
+    return out + _diff(m["files"], snapshot())
+
+
+# ---- the hook's verdict, for long-running processes ---------------------------------------------
+
+GATE_TTL = 3.0
+GATE_IN_TESTS = False  # tests that exercise gate() set this; every other test runs policy without a manifest
+_gate_memo = {"at": -1e9, "bad": None}
+
+
+def hook_failure():
+    """The verdict agent_hook.integrity_failure gives (same files, same hashing, same environment checks), computed
+    here so a process that imported policy long ago can ask for it: None when clean, else [{file, expected, actual}]."""
+    try:
+        try:
+            m = json.loads(manifest_path().read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return [{"file": "manifest.json", "expected": "an approved manifest", "actual": "missing"}]
+        files = m["files"]
+        if not isinstance(files, dict):
+            raise ValueError("files is not a table")
+        bad = []
+        if m.get("version") != MANIFEST_VERSION:
+            bad.append({"file": "manifest.json", "expected": f"version {MANIFEST_VERSION}",
+                        "actual": f"version {m.get('version')}"})
+        for rel in HOOK_CHECKED:
+            actual = _sha_file(PACKAGE_ROOT / rel)
+            if actual is None or files.get(rel) != actual:
+                bad.append({"file": rel, "expected": files.get(rel), "actual": actual})
+        bad += [{"file": name, "expected": "no file shadowing a Python module at the checkout root",
+                 "actual": "present"} for name in shadows()]
+        return (bad + environment_failures(m)) or None
+    except Exception as e:
+        return [{"file": "manifest.json", "expected": "a readable manifest",
+                 "actual": f"check failed ({type(e).__name__})"}]
+
+
+def gate():
+    """Cheap fail-closed check for code that calls the policy inside a long-running process (the gateway, the
+    bridge, objective workers): the same verdict as the hook, cached for GATE_TTL seconds. None = clean.
+
+    What it adds: a process that loaded policy.py before an agent changed the files on disk stops allowing tool
+    calls within GATE_TTL seconds, like the hook does; and because that process loaded guard.py before the change,
+    it also notices a changed agent_hook.py, which the hook cannot honestly report about itself. What it cannot do:
+    a process started after policy.py or guard.py was changed runs the changed code, and that code can skip this."""
+    if "_pytest" in sys.modules and not GATE_IN_TESTS:
+        return None
+    now = time.monotonic()
+    if now - _gate_memo["at"] < GATE_TTL:
+        return _gate_memo["bad"]
+    bad = hook_failure()
+    _gate_memo.update(at=now, bad=bad)
+    return bad
+
+
+def gate_passed():
+    """The hook calls this after its own check passed, so the policy it runs next does not hash everything again."""
+    _gate_memo.update(at=time.monotonic(), bad=None)
 
 
 def write_manifest(snap=None):
     snap = snapshot() if snap is None else snap
     GUARD_DIR.mkdir(parents=True, exist_ok=True)
-    body = {"version": 1, "created": time.time(), "root": str(PACKAGE_ROOT), "files": snap}
+    body = {"version": MANIFEST_VERSION, "created": time.time(), "root": str(PACKAGE_ROOT),
+            "waggle_home": str(config.HOME), "hashing": "sha256, CRLF->LF for text files", "files": snap}
     tmp = GUARD_DIR / f"{MANIFEST_NAME}.{os.getpid()}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(body, f, indent=1, sort_keys=True)
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, manifest_path())
+    _gate_memo.update(at=-1e9, bad=None)
     try:
         (GUARD_DIR / VIOLATION_NAME).unlink()
     except OSError:
