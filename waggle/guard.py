@@ -86,7 +86,10 @@ HOLDOUT_DIR, HOLDOUT_PREFIX = "eval", "holdout"
 # Under the user's home. install.py copies the Hermes plugin here, so this copy is the one that runs.
 USER_HOME_PATHS = ((".waggle-guard", "dir"), (".hermes/plugins/waggle/__init__.py", "file"))
 # Hashed but only some of these settings count: the budget/limit keys, plus the settings that decide where agents
-# may write without asking and whose mail needs no approval (policy.write_roots, policy._only_to_self).
+# may write without asking and whose mail needs no approval (policy.write_roots, policy._only_to_self). Only keys the
+# user sets belong here: Waggle's own code never writes any of them (Settings.save writes only what a caller changed;
+# the window size Waggle learns lives in budget.db, bounded by quota.py). tests/test_guard.py runs every code path
+# that writes config.json and checks the manifest stays clean.
 CONFIG_KEYS = (
     "waggle_share", "stop_at", "window_units_estimate", "window_hours",
     "background_daily_units", "background_stop_at", "background_max_workers", "background_reset_hour",
@@ -429,13 +432,14 @@ def write_hit(args, cwd=None, patch=False, deep=False):
 READ_VERBS = {
     "cat", "type", "get-content", "gc", "head", "tail", "more", "less", "ls", "dir", "gci", "get-childitem", "tree",
     "select-string", "sls", "grep", "egrep", "fgrep", "rg", "ag", "findstr", "wc", "sha256sum", "sha1sum", "md5sum",
-    "get-filehash", "file", "stat", "get-item", "gi", "get-itemproperty", "test-path", "resolve-path", "diff", "fc",
+    "get-filehash", "stat", "get-item", "gi", "get-itemproperty", "test-path", "resolve-path", "diff", "fc",
     "cmp", "compare-object", "echo", "write-output", "write-host", "printf", "pwd", "get-location", "where", "which",
     "get-command", "gcm", "basename", "dirname", "realpath", "readlink", "true", "pytest",
     # PowerShell pipeline shaping and tests: they pass values along and print, never write a file.
     "select-object", "select", "sort-object", "format-table", "ft", "format-list", "fl", "format-wide", "fw",
     "measure-object", "measure", "group-object", "out-string", "out-host", "join-path", "split-path", "[", "[[",
     "test", "get-date", "convertto-json", "convertfrom-json", "write-verbose", "write-debug", "write-information",
+    "cut", "tr", "sha224sum", "sha384sum", "sha512sum", "b2sum", "cksum", "sum", "shasum", "md5",
 }
 NAV_VERBS = {"cd", "chdir", "sl", "set-location", "pushd", "push-location", "popd", "pop-location"}
 BENIGN_GIT = {"diff", "log", "show", "status", "blame", "ls-files", "rev-parse", "rev-list", "grep", "describe",
@@ -485,6 +489,143 @@ def _split(cmd, aware):
             cur.append(c)
     out.append("".join(cur))
     return [p for p in out if p.strip()]
+
+
+_ESC = {"bash": "\\", "powershell": "`", "cmd": "^"}
+ALL_DIALECTS = ("bash", "powershell", "cmd")
+SHELL_DIALECTS = {"bash": ("bash",), "powershell": ("powershell",)}
+_WRAP_DIALECT = {"cmd": ("cmd",), "powershell": ("powershell",), "pwsh": ("powershell",), "bash": ("bash",),
+                 "sh": ("bash",), "zsh": ("bash",)}
+
+
+def _split_dialect(cmd, dialect):
+    """Statements as `dialect` (bash, powershell or cmd) separates them, with its quotes and escape character, or
+    None when its quotes do not close (then the caller uses the over-asking splits instead). A quoted regex like
+    "a|b" stays inside its statement; an escaped quote (bash \\", PowerShell `") does not open a string."""
+    cmd = re.sub(r"(\d*>+)&(\d)", r"\1\2", cmd)
+    esc = _ESC[dialect]
+    out, cur, q, i, n = [], [], None, 0, len(cmd)
+    while i < n:
+        c = cmd[i]
+        if q:
+            cur.append(c)
+            if (q == "$'" and c == "\\") or (q == '"' and dialect != "cmd" and c == esc):
+                if i + 1 < n:
+                    cur.append(cmd[i + 1])
+                i += 2
+                continue
+            if c == q[-1]:
+                if dialect == "powershell" and cmd[i + 1:i + 2] == c:  # '' and "" inside a string
+                    cur.append(c)
+                    i += 2
+                    continue
+                q = None
+            i += 1
+            continue
+        if c == esc and i + 1 < n:
+            cur += [c, cmd[i + 1]]
+            i += 2
+            continue
+        if dialect == "bash" and c == "$" and cmd[i + 1:i + 2] == "'":
+            q = "$'"
+            cur += ["$", "'"]
+            i += 2
+            continue
+        if c == '"' or (c == "'" and dialect != "cmd"):
+            q = c
+            cur.append(c)
+        elif c in ";|&\n\r" or (c == "{" and (i == 0 or cmd[i - 1] in " \t)")) or (
+                c == "}" and (i + 1 == n or cmd[i + 1] in " \t\n\r;|&)")):
+            out.append("".join(cur))
+            cur = []
+        else:
+            cur.append(c)
+        i += 1
+    if q:
+        return None
+    out.append("".join(cur))
+    return [p for p in out if p.strip()]
+
+
+def _substitutions(cmd, dialect):
+    """Commands inside $( ), <( ), >( ) (bash and PowerShell, also inside double quotes) and bash `backticks`:
+    `cat $(rm x)` runs rm."""
+    if dialect == "cmd":
+        return []
+    out, q, i, n = [], None, 0, len(cmd)
+    while i < n:
+        c = cmd[i]
+        if q == "'":
+            q = None if c == "'" else q
+            i += 1
+            continue
+        if c == _ESC[dialect] and i + 1 < n:
+            i += 2
+            continue
+        if c == '"':
+            q = None if q == '"' else '"'
+        elif c == "'" and q is None:
+            q = "'"
+        elif cmd.startswith(("$(", "<(", ">("), i):
+            depth, j = 1, i + 2
+            while j < n and depth:
+                depth += {"(": 1, ")": -1}.get(cmd[j], 0)
+                j += 1
+            out.append(cmd[i + 2:j - 1 if depth == 0 else j])
+            i += 2
+            continue
+        elif c == "`" and dialect == "bash":
+            j = cmd.find("`", i + 1)
+            out.append(cmd[i + 1:j if j > 0 else n])
+            i = j + 1 if j > 0 else n
+            continue
+        i += 1
+    return [x for x in out if x.strip()]
+
+
+def _statements(cmd, dialect, depth=0):
+    """Statements of cmd plus those of its command substitutions, or None when `dialect` cannot parse it."""
+    st = _split_dialect(cmd, dialect)
+    if st is None:
+        return None
+    if depth < 4:
+        for inner in _substitutions(cmd, dialect):
+            more = _statements(inner, dialect, depth + 1)
+            if more is None:
+                return None
+            st += more
+    return st
+
+
+def _parse(text, dialects):
+    """[(statements, dialect)] for each dialect the command may run in; when one of them cannot parse it (an
+    unclosed quote), the two older splits that ask too often instead: quote-aware, and blind to quotes."""
+    parsed = [(_statements(text, d), d) for d in dialects]
+    if all(st is not None for st, _d in parsed):
+        return parsed
+    return [(_split(text, True), None), (_split(text, False), None)]
+
+
+def _quoted(s, dialect):
+    """Set of indexes of s inside quotes, as `dialect` reads them."""
+    inside, q, i, esc = set(), None, 0, _ESC[dialect]
+    while i < len(s):
+        c = s[i]
+        if q:
+            inside.add(i)
+            if q == '"' and dialect != "cmd" and c == esc:
+                inside.add(i + 1)
+                i += 2
+                continue
+            if c == q:
+                q = None
+        elif c == esc and i + 1 < len(s):
+            i += 2
+            continue
+        elif c == '"' or (c == "'" and dialect != "cmd"):
+            q = c
+        i += 1
+    return inside
 
 
 def _tokens(stmt):
@@ -597,6 +738,11 @@ def _git_read(rest):
     sub = _git_sub(rest)
     if sub not in BENIGN_GIT or any(t.startswith("--output") for t in rest):
         return False
+    head = rest[:rest.index(next(t for t in rest if t.lower() == sub))] if sub in [t.lower() for t in rest] else rest
+    if any(t == "-c" or t.startswith(("--config-env", "--exec-path=")) for t in head):
+        return False  # git -c core.fsmonitor=<command> status runs that command
+    if sub == "grep" and any(t.startswith(("-O", "--open-files-in-pager")) for t in rest):
+        return False  # opens the matches in a program of the agent's choice
     if sub == "worktree":  # add / move / remove / repair write or delete whole folders
         low = [t.lower() for t in rest]
         action = next((t for t in low[low.index("worktree") + 1:] if not t.startswith("-")), "")
@@ -608,6 +754,236 @@ def _git_dirs(rest):
     out = [rest[i + 1] for i, t in enumerate(rest[:-1]) if t in ("-C", "--work-tree", "--git-dir")]
     out += [t.split("=", 1)[1] for t in rest if t.startswith(("--work-tree=", "--git-dir="))]
     return out
+
+
+_SED_LONG = {"--quiet", "--silent", "--regexp-extended", "--posix", "--debug", "--separate", "--unbuffered",
+             "--null-data", "--sandbox"}
+
+
+def _sed_script_ok(sc):
+    """A sed script that only prints: addresses, then p P l = n N d D g G h H x z q Q b t T : { } # and s/y with
+    printing-only flags. w W e r R a i c, s///w and s///e (and anything not understood) are not."""
+    i, n = 0, len(sc)
+
+    def ws(i):
+        while i < n and sc[i] in " \t":
+            i += 1
+        return i
+
+    def delimited(i, d):  # index after the unescaped delimiter d, or None
+        while i < n:
+            if sc[i] == "\\":
+                i += 2
+                continue
+            if sc[i] == d:
+                return i + 1
+            i += 1
+        return None
+
+    while True:
+        while i < n and sc[i] in " \t;\n\r":
+            i += 1
+        if i >= n:
+            return True
+        for part in (0, 1):
+            if sc[i].isdigit() or (part and sc[i] in "+~"):
+                i += 1
+                while i < n and (sc[i].isdigit() or sc[i] == "~"):
+                    i += 1
+            elif sc[i] == "$":
+                i += 1
+            elif sc[i] == "/" or (sc[i] == "\\" and i + 1 < n):
+                d = sc[i] if sc[i] == "/" else sc[i + 1]
+                i = delimited(i + (1 if sc[i] == "/" else 2), d)
+                if i is None:
+                    return False
+                while i < n and sc[i] in "IM":
+                    i += 1
+            i = ws(i)
+            if part == 0 and i < n and sc[i] == ",":
+                i = ws(i + 1)
+                if i >= n:
+                    return False
+                continue
+            break
+        if i < n and sc[i] == "!":
+            i = ws(i + 1)
+        if i >= n:
+            return False
+        c = sc[i]
+        i += 1
+        if c in "pPlnNdDgGhHxz={}":
+            continue
+        if c in "qQ":
+            while i < n and sc[i].isdigit():
+                i += 1
+            continue
+        if c in "btT:#":
+            while i < n and sc[i] not in ";\n":
+                i += 1
+            continue
+        if c in "sy":
+            if i >= n:
+                return False
+            d = sc[i]
+            for _part in (0, 1):
+                i = delimited(i + 1 if _part == 0 else i, d)
+                if i is None:
+                    return False
+            flags = ""
+            while i < n and sc[i].isalnum():
+                flags += sc[i]
+                i += 1
+            if c == "s" and set(flags) - set("gpiImM0123456789"):
+                return False
+            continue
+        return False
+
+
+def _sed_read(rest):
+    """sed that prints to stdout: no -i / --in-place, no script file, scripts that only print."""
+    scripts, i = [], 0
+    explicit = False
+    while i < len(rest):
+        t = rest[i]
+        if t in ("-e", "--expression"):
+            scripts.append(rest[i + 1] if i + 1 < len(rest) else "")
+            explicit, i = True, i + 2
+            continue
+        if t.startswith("--expression="):
+            scripts.append(t.split("=", 1)[1])
+            explicit, i = True, i + 1
+            continue
+        if t.startswith("--"):
+            if t not in _SED_LONG and not t.startswith("--line-length"):
+                return False  # --in-place, --file, anything unknown
+            i += 1
+            continue
+        if t.startswith("-") and len(t) > 1:
+            flags, step = t[1:], 1
+            for k, ch in enumerate(flags):
+                if ch in "nrEsuz":
+                    continue
+                if ch in "el":
+                    tail = flags[k + 1:]
+                    if ch == "e":
+                        scripts.append(tail or (rest[i + 1] if i + 1 < len(rest) else ""))
+                        explicit = True
+                    step = 1 if tail else 2
+                    break
+                return False  # -i (in place), -f (script file), unknown
+            i += step
+            continue
+        if not explicit and not scripts:
+            scripts.append(t)
+        i += 1
+    return bool(scripts) and all(_sed_script_ok(x) for x in scripts)
+
+
+_AWK_STRING = re.compile(r'"(?:[^"\\]|\\.)*"')
+
+
+def _awk_read(rest):
+    """awk whose program only prints to stdout: no print/printf > or >> file, no | to or from a command, no
+    system(), no program file (-f), no in-place or extensions (-i, -l, @include)."""
+    prog, i = None, 0
+    while i < len(rest):
+        t = rest[i]
+        if t in ("-F", "-v", "--field-separator", "--assign"):
+            i += 2
+            continue
+        if t.startswith(("-F", "-v", "--field-separator=", "--assign=")):
+            i += 1
+            continue
+        if t == "--":
+            prog = rest[i + 1] if i + 1 < len(rest) else None
+            break
+        if t.startswith("-"):
+            return False
+        prog = t
+        break
+    if prog is None:
+        return False
+    p = _AWK_STRING.sub('""', prog)
+    return not (re.search(r"\bsystem\s*\(", p) or "|" in p.replace("||", "") or "@" in p
+                or re.search(r"\bprintf?\b[^;{}\n]*>", p))
+
+
+def _sort_read(rest):
+    for t in rest:
+        if t == "--":
+            break
+        if t.startswith("--"):
+            if t.split("=")[0] in ("--output", "--compress-program", "--temporary-directory"):
+                return False
+        elif t.startswith("-") and len(t) > 1 and ("o" in t[1:] or "T" in t[1:]):
+            return False
+    return True
+
+
+def _uniq_read(rest):
+    """uniq [INPUT [OUTPUT]]: a second file operand is written."""
+    ops, i = [], 0
+    while i < len(rest):
+        t = rest[i]
+        if t in ("-f", "-s", "-w"):
+            i += 2
+            continue
+        if t == "--":
+            ops += rest[i + 1:]
+            break
+        if t.startswith("-") and t != "-":
+            i += 1
+            continue
+        ops.append(t)
+        i += 1
+    return len(ops) <= 1
+
+
+_FIND_WRITES = {"-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls"}
+CONDITIONAL_READS = {
+    "sed": _sed_read, "gsed": _sed_read, "awk": _awk_read, "gawk": _awk_read, "mawk": _awk_read, "nawk": _awk_read,
+    "sort": _sort_read, "uniq": _uniq_read, "find": lambda rest: not any(t.lower() in _FIND_WRITES for t in rest),
+    "file": lambda rest: not any(t.startswith("-C") or t == "--compile" for t in rest),
+    "certutil": lambda rest: [t.lower() for t in rest[:1]] == ["-hashfile"],
+}
+
+
+def _runs_commands(verb, rest):
+    """sed's e command or s///e flag and awk's system() or | run commands the guard cannot see (built from the
+    input), so they ask whatever they name."""
+    text = " ".join(rest)
+    if verb in ("sed", "gsed"):
+        return bool(re.search(r"(^|[\s;{}0-9$/!])e(\s|;|$)", text) or re.search(r"\bs(\S).*?\1.*?\1[gpiImMw0-9]*e",
+                                                                                   text))
+    if verb in ("awk", "gawk", "mawk", "nawk"):
+        p = _AWK_STRING.sub('""', text)
+        return bool(re.search(r"\bsystem\s*\(", p) or "|" in p.replace("||", ""))
+    return False
+
+
+def _env_prefix(tokens):
+    """A command started with NAME=value in front (bash): PAGER, GIT_*, LESSOPEN... can make a reader run code."""
+    for t in tokens:
+        if re.match(r"^[A-Za-z_]\w*=", t):
+            return True
+        if t not in ("&", ".", "call", "sudo", "time", "nohup", "command", "exec", "env"):
+            return False
+    return False
+
+
+def _is_read(verb, rest, ctoks):
+    """True when this one statement only reads: a plain reader, or a sed / awk / sort / uniq / find / file /
+    certutil in its read-only form, git in a read-only subcommand, never with a NAME=value prefix."""
+    if not verb:
+        return True
+    if _env_prefix(ctoks):
+        return False
+    if verb == "git":
+        return _git_read(rest)
+    if verb in CONDITIONAL_READS:
+        return CONDITIONAL_READS[verb](rest)
+    return verb in READ_VERBS
 
 
 def _unresolvable(t):
@@ -726,14 +1102,17 @@ class _Ctx:
         return self.memo[key]
 
 
-def _analyze(stmts, cwd, ctx, depth=0):
+def _analyze(stmts, cwd, ctx, depth=0, dialect=None):
     res = _Result()
     vcwd = str(cwd)
     for s in stmts:
         tokens = _tokens(s)
         ctoks, expr_read = _command_tokens(tokens, s.lstrip()[:1] in "\"'")
         verb, rest = _verb_info(ctoks)
+        quoted = _quoted(s, dialect) if dialect else ()
         for m in _REDIRECT.finditer(s):
+            if m.start() in quoted:  # grep "a > b" file: inside a string, not a redirect
+                continue
             target = m.group(1)
             label = ctx.match(target, vcwd) if vcwd is not None else _loose_name(target)
             if label:
@@ -754,22 +1133,26 @@ def _analyze(stmts, cwd, ctx, depth=0):
             low = [t.lower() for t in rest]
             idx = next((i for i, t in enumerate(low) if t in WRAP_FLAGS), None)
             enc = next((i for i, t in enumerate(low) if t in ENCODED_FLAGS), None)
+            payload = None
             if idx is not None:
                 payload = " ".join(rest[idx + 1:])
-                sub = _analyze(_split(payload, True) + _split(payload, False), vcwd or os.getcwd(), ctx, depth + 1)
             elif enc is not None and enc + 1 < len(rest) and verb in ("powershell", "pwsh"):
                 payload = _b64text(rest[enc + 1]) or ""
-                sub = _analyze(_split(payload, True) + _split(payload, False), vcwd or os.getcwd(), ctx, depth + 1)
-                sub.nonread = True  # an encoded command is never a plain read
+            if payload is not None:
+                sub = _Result()
+                for st, d in _parse(payload, _WRAP_DIALECT.get(verb, ALL_DIALECTS)):
+                    sub.merge(_analyze(st, vcwd or os.getcwd(), ctx, depth + 1, d))
+                if idx is None:
+                    sub.nonread = True  # an encoded command is never a plain read
         is_git = verb == "git"
         if sub is not None:
             read = not sub.nonread
         elif expr_read is not None:
             read, is_git = expr_read, False
         elif is_git:
-            read = _git_read(rest)
+            read = _is_read(verb, rest, ctoks)
         else:
-            read = verb in READ_VERBS or not verb
+            read = _is_read(verb, rest, ctoks)
         if not read:
             res.nonread = True
         if sub is not None:
@@ -777,14 +1160,18 @@ def _analyze(stmts, cwd, ctx, depth=0):
         extract = _extracts(verb, rest)
         recursive = any(t.lower() in ("-recurse", "--recursive", "/s", "/e", "/mir") or (
             re.match(r"^-[A-Za-z]{1,3}$", t) and "r" in t.lower()) for t in rest)
-        ancestors = verb in ANCESTOR_VERBS or extract or (is_git and not read) or (verb in COPY_VERBS and any(
+        ancestors = verb in ANCESTOR_VERBS or extract or (is_git and not read) or (verb == "find" and not read) or (
+            verb in COPY_VERBS and any(
             re.match(r"^-(r|R|a|recurse)$|^/[es]$", t) for t in rest))
         cross = ancestors and (recursive or verb not in _FLAT_DELETES)
         names = []
+        if not read and _runs_commands(verb, rest):
+            names.append(f"a {verb} program that runs other commands")
         for tok in tokens:
             unres = not read and any(c in expand(tok) for c in "$%`")
             for piece in _pieces(tok):
-                if len(piece) < 2 or (piece.startswith("-") and "/" not in piece and "\\" not in piece):
+                if (len(piece) < 2 and not (ancestors and piece == ".")) or (
+                        piece.startswith("-") and "/" not in piece and "\\" not in piece):
                     continue
                 if vcwd is not None:
                     label = ctx.match(piece, vcwd, ancestors, cross) or (_loose_name(piece) if unres else None)
@@ -792,6 +1179,10 @@ def _analyze(stmts, cwd, ctx, depth=0):
                     label = None if read else _loose_name(piece)
                 if label:
                     names.append(label)
+        if verb == "find" and not read and vcwd is not None and (not rest or rest[0][:1] in "-(!"):
+            label = ctx.match(vcwd, vcwd, ancestors=True, cross=True)  # find with no folder searches this one
+            if label:
+                names.append(label)
         if extract and vcwd is not None and not any(_EXTRACT_DEST.match(t) for t in rest):
             label = ctx.match(vcwd, vcwd, ancestors=True) or (
                 "the Waggle checkout" if _inside_package(vcwd) else None)
@@ -947,10 +1338,11 @@ def code_hit(code, cwd=None):
     return shell_hit(code, cwd)
 
 
-def shell_hit(command, cwd=None):
-    """Reason string when a shell command could change a protected file, else None. Reading one (cat, Get-Content,
-    git diff...) is fine: a command that names a protected file is only held when something in it is not a plain
-    reader. Deliberately over-asks."""
+def shell_hit(command, cwd=None, shell=None):
+    """Reason string when a shell command could change a protected file, else None. Reading one (cat, sed -n, grep,
+    Get-Content, git diff...) is fine: a command that names a protected file is only held when something in it is
+    not a plain reader. shell: "bash" or "powershell" when the tool says which shell runs the command (statements
+    are then split the way that shell splits them); otherwise every shell's reading counts. Deliberately over-asks."""
     command = str(command or "")
     if not command.strip():
         return None
@@ -964,9 +1356,10 @@ def shell_hit(command, cwd=None):
     variants = list(dict.fromkeys(_variants(text) + [command]))
     if any(GUARD_CMD.search(v) for v in variants[1:]):
         return "running Waggle's guard command (it can re-approve changed safety files)"
+    dialects = SHELL_DIALECTS.get(shell, ALL_DIALECTS)
     for variant in variants:
-        for aware in (True, False):
-            res.merge(_analyze(_split(variant, aware), cwd, ctx))
+        for st, d in _parse(variant, dialects):
+            res.merge(_analyze(st, cwd, ctx, dialect=d))
         res.hit = res.hit or _pipeline_hit(variant, cwd, ctx)
     if res.hit:
         return REASON.format(res.hit)
@@ -1003,16 +1396,40 @@ def _sha_file(path):
         return None
 
 
-def config_keys_hash(home=None):
-    """SHA-256 of the canonical JSON of only the protected keys, so unrelated settings may change freely.
-    A key that is absent counts as absent (adding "stop_at": 1.0 is a change)."""
+def _config_picked(home=None):
+    """The protected keys present in config.json, or None when it cannot be read as a JSON object."""
     p = Path(home or config.HOME) / "config.json"
     try:
         data = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
-        picked = {k: data[k] for k in CONFIG_KEYS if k in data}
+        return {k: data[k] for k in CONFIG_KEYS if k in data}
     except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
+def _canon(v):
+    return json.dumps(v, sort_keys=True, separators=(",", ":"))
+
+
+def config_keys_hash(home=None):
+    """SHA-256 of the canonical JSON of only the protected keys, so unrelated settings may change freely.
+    A key that is absent counts as absent (adding "stop_at": 1.0 is a change)."""
+    picked = _config_picked(home)
+    if picked is None:
         return "unparseable"
-    return hashlib.sha256(json.dumps(picked, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return hashlib.sha256(_canon(picked).encode()).hexdigest()
+
+
+def config_key_hashes(home=None):
+    """{key: sha256} per protected key present, kept in the manifest only to say WHICH key changed."""
+    picked = _config_picked(home)
+    return None if picked is None else {k: hashlib.sha256(_canon(v).encode()).hexdigest() for k, v in picked.items()}
+
+
+def changed_config_keys(old, new):
+    """Names of the protected keys that differ between two config_key_hashes results (added, removed, changed)."""
+    if not isinstance(old, dict) or not isinstance(new, dict):
+        return ["config.json (could not be read)"] if new is None else []
+    return sorted(k for k in set(old) | set(new) if old.get(k) != new.get(k))
 
 
 def _holdout_files(home):
@@ -1111,9 +1528,36 @@ def environment_failures(m):
     return out
 
 
+NOT_CHECKED = "not checked: this process was started by a test run"
+
+
+def started_by_test():
+    """A process a test started (it inherited pytest's PYTEST_CURRENT_TEST / PYTEST_VERSION) that is not pytest itself,
+    where no test asked for the real check (WAGGLE_GUARD_IN_TESTS=1). Used only by verify(), and it can only make
+    verify's answer stricter than clean: see verify."""
+    return ("_pytest" not in sys.modules and bool(os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("PYTEST_VERSION"))
+            and os.environ.get("WAGGLE_GUARD_IN_TESTS") != "1")
+
+
 def verify():
     """Violations over the whole protected set: [{path, kind, expected, actual}], kind = missing | changed | added
-    (a new holdout file) | no_manifest | old_manifest | environment. An empty list means clean."""
+    (a new holdout file) | no_manifest | old_manifest | environment. An empty list means clean.
+
+    In a process started by a test run (a core under a temp home) the answer is "not checked" (kind no_manifest, so
+    the core records "not approved", never "ok") instead of the environment mismatch every temp home has; a changed
+    file is still reported. An agent that sets the marker for a process it starts gains nothing: that process can
+    never get a clean verdict, and the hook and the gate do not read the marker at all."""
+    if started_by_test():
+        found = _verify()
+        # under another data folder its config.json and holdout files are not the approved ones either
+        other_home = any(v["kind"] == "environment" and v["path"] == "WAGGLE_HOME" for v in found)
+        return [{"path": NOT_CHECKED, "kind": "no_manifest", "expected": None, "actual": None}] + [
+            v for v in found if v["kind"] not in ("no_manifest", "environment")
+            and not (other_home and (v["path"] == CONFIG_KEY or v["path"].startswith("home:")))]
+    return _verify()
+
+
+def _verify():
     m = load_manifest()
     if m is None:
         return [{"path": str(manifest_path()), "kind": "no_manifest", "expected": None, "actual": None}]
@@ -1122,7 +1566,11 @@ def verify():
     out += [{"path": e["file"], "kind": "environment", "expected": e["expected"], "actual": e["actual"]}
             for e in environment_failures(m)]
     out += [{"path": name, "kind": "shadow", "expected": None, "actual": "present"} for name in shadows()]
-    return out + _diff(m["files"], snapshot())
+    for v in _diff(m["files"], snapshot()):
+        if v["path"] == CONFIG_KEY:
+            v["keys"] = changed_config_keys(m.get("config_keys"), config_key_hashes())
+        out.append(v)
+    return out
 
 
 # ---- the hook's verdict, for long-running processes ---------------------------------------------
@@ -1174,6 +1622,17 @@ def gate():
     return bad
 
 
+def denial_text(bad):
+    """What an agent is told when the safety check fails (the hook's own wording, see agent_hook.denial_text)."""
+    try:
+        from . import agent_hook
+        return agent_hook.denial_text(bad, PACKAGE_ROOT)
+    except Exception:  # still a block, with the bare names
+        names = ", ".join(str(b.get("file") or b.get("path")) for b in bad)
+        return (f"Waggle's safety check failed ({names}), so every action is blocked until the user runs "
+                f'`cd "{PACKAGE_ROOT}"; python -m waggle.guard approve`. Do not retry or work around this.')
+
+
 def gate_passed():
     """The hook calls this after its own check passed, so the policy it runs next does not hash everything again."""
     _gate_memo.update(at=time.monotonic(), bad=None)
@@ -1184,7 +1643,8 @@ def write_manifest(snap=None):
     folder = checkout_dir()
     folder.mkdir(parents=True, exist_ok=True)
     body = {"version": MANIFEST_VERSION, "created": time.time(), "root": resolved_root(),
-            "waggle_home": str(config.HOME), "hashing": "sha256, CRLF->LF for text files", "files": snap}
+            "waggle_home": str(config.HOME), "hashing": "sha256, CRLF->LF for text files", "files": snap,
+            "config_keys": config_key_hashes()}
     tmp = folder / f"{MANIFEST_NAME}.{os.getpid()}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(body, f, indent=1, sort_keys=True)
@@ -1202,7 +1662,9 @@ def write_manifest(snap=None):
 # ---- command line ------------------------------------------------------------------------------
 
 def _fmt(v):
-    return f"{v['kind']:<11} {v['path']}  expected={(v['expected'] or '-')[:12]} actual={(v['actual'] or '-')[:12]}"
+    keys = f"  keys: {', '.join(v['keys'])}" if v.get("keys") else ""
+    return (f"{v['kind']:<11} {v['path']}  expected={(v['expected'] or '-')[:12]} actual={(v['actual'] or '-')[:12]}"
+            + keys)
 
 
 def status(out=print):

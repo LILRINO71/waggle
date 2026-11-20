@@ -214,12 +214,69 @@ def _record_violation(bad, tool, args):
         pass
 
 
+# What each checked item is, in words the user knows. Self-contained (the hook must not trust guard.py); guard.py
+# uses this same text for the in-process gate and Hermes's tools.
+_PLAIN = {
+    "waggle/__init__.py": "Waggle's package start-up file", "waggle/policy.py": "Waggle's permission rules",
+    "waggle/agent_hook.py": "the safety hook every tool call goes through", "waggle/guard.py": "the tamper guard",
+    "waggle/security.py": "the safety checks for Hermes tools", "waggle/config.py": "the settings loader",
+    "waggle/budget.py": "the background budget code", "waggle/quota.py": "the usage-limit code",
+    "waggle/agent.py": "the code that starts tool agents", "waggle/claude_cli.py": "the code that starts Claude runs",
+    "waggle/bridge.py": "the Hermes tool bridge", "hermes_plugin/waggle/__init__.py": "the Hermes plug-in",
+    "tests/test_trust.py": "the budget and approval tests", "tests/test_guard.py": "the guard's tests",
+    "user:.hermes/plugins/waggle/__init__.py": "the installed copy of the Hermes plug-in",
+}
+
+
+def plain(b):
+    """One failed item ({file, expected, actual} from the hook and the gate, or {path, kind, ...} from verify) in
+    plain words."""
+    f = str(b.get("file") or b.get("path") or "")
+    exp, act, kind = str(b.get("expected") or ""), b.get("actual"), b.get("kind")
+    if f == "manifest.json" or kind in ("no_manifest", "old_manifest", "other_checkout"):
+        if act == "missing" or kind == "no_manifest":
+            return "no safety approval (manifest.json) exists yet for this Waggle folder"
+        if exp.startswith("version") or kind == "old_manifest":
+            return "the safety approval (manifest.json) was made by an older Waggle version"
+        if exp.startswith("approved for") or kind == "other_checkout":
+            return "the safety approval (manifest.json) belongs to a different Waggle folder"
+        return "the safety approval file (manifest.json) could not be read"
+    if f == "USERPROFILE":
+        return f"the user-profile folder (USERPROFILE) is {act} instead of {exp}"
+    if f == "WAGGLE_HOME":
+        return f"the Waggle data folder (WAGGLE_HOME) is {act}, but {exp} was approved"
+    if f == "user profile":
+        return "the user's profile folder could not be found"
+    if exp == "importable":
+        return "the tamper guard (waggle/guard.py) does not load"
+    if exp.startswith("no file shadowing") or kind == "shadow":
+        return f"a file named {f} in the Waggle folder would replace one of Python's own modules"
+    if f == "home:config.json#keys":
+        keys = ", ".join(b.get("keys") or []) or "budget, limits or trusted folders"
+        return f"protected settings in config.json changed ({keys})"
+    if f.startswith("home:eval/"):
+        return f"a held-out evaluation file changed ({f[5:]})"
+    what = _PLAIN.get(f)
+    state = "is missing" if act is None and kind != "added" else "was changed"
+    return f"{what} ({f}) {state}" if what else f"{f} {state}"
+
+
+def denial_text(bad, root=None):
+    """The one message an agent gets when the safety check fails: what changed, in plain words, and the exact
+    command the user runs. The agent passes it on; it does not retry."""
+    items = "; ".join(dict.fromkeys(plain(b) for b in bad)) or "the safety check could not run"
+    cmd = f'cd "{root or _ROOT}"; python -m waggle.guard approve'
+    env = any(str(b.get("file") or b.get("path")) in ("USERPROFILE", "WAGGLE_HOME") for b in bad)
+    return (f"Waggle's safety check failed, so every action is blocked until the user approves. What changed: "
+            f"{items}. Tell the user this once, in plain words, and that they must check the change and run this in "
+            f"a terminal: `{cmd}` (it lists the change and asks y/N)."
+            + (" If they did not move that folder on purpose, start Waggle normally instead of approving."
+               if env else "") + " Do not retry or work around this.")
+
+
 def lockdown(bad, tool="", args=None):
     _record_violation(bad, tool, args or {})
-    names = ", ".join(b["file"] for b in bad)
-    why = (f"Waggle's safety files changed or could not be verified ({names}), so every action is blocked until the "
-           f"user re-approves them. Do not retry or work around this. Tell the user in one plain sentence to run "
-           f"`python -m waggle.guard approve` (after checking the change), then try again.")
+    why = denial_text(bad)
     return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                    "permissionDecisionReason": why}}
 
@@ -234,7 +291,9 @@ def handle(event):
     if d.allowed:
         return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow",
                                        "permissionDecisionReason": d.reason or "allowed by Waggle policy"}}
-    if d.action == policy.DENY:
+    if d.action == policy.DENY and d.reason.startswith("integrity_violation: "):
+        why = d.reason[len("integrity_violation: "):]  # already says what changed and what the user runs
+    elif d.action == policy.DENY:
         why = f"Blocked by Waggle's safety policy: {d.reason}. Do not retry or work around this; tell the user."
     else:
         code = (policy.get(d.approval_id) or {}).get("code", "")

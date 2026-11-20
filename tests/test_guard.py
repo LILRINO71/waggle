@@ -678,7 +678,7 @@ def pkg(tmp_path):
     home = tmp_path / "e2ehome"
     home.mkdir()
     env = {**os.environ, "USERPROFILE": str(home), "HOME": str(home), "WAGGLE_HOME": str(home / ".waggle"),
-           "PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"}
+           "PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1", "WAGGLE_GUARD_IN_TESTS": "1"}
     for k in ("HOMEDRIVE", "HOMEPATH", "WAGGLE_SESSION", "WAGGLE_AGENT"):
         env.pop(k, None)
     return SimpleNamespace(root=dst, home=home, env=env)
@@ -1597,3 +1597,414 @@ def test_the_plugin_sends_every_hermes_tool_call_through_check_tool_call():
     first = [n for n in fn.body if not isinstance(n, ast.Expr)][1]  # after `args = args or {}`
     assert "security.check_tool_call(tool_name, args)" in ast.unparse(first)
     assert 'ctx.register_hook("pre_tool_call", on_pre_tool_call)' in src
+
+
+# ---- Waggle's own config writes never trip the guard; the learned window size is bounded state ------------------
+# Found live: the hourly check reported home:config.json#keys changed because quota.py rewrote
+# window_units_estimate (81.244 -> 21.388) by itself. Learned values now live in budget.db, clamped in quota.py.
+
+CONFIG_WRITERS = {("install.py", "main"), ("waggle/budget.py", "set_limit"), ("waggle/chat_engine.py", "set_engine_chat"),
+                  ("waggle/cli.py", "main"), ("waggle/live.py", "remember_city"), ("waggle/live.py", "weather"),
+                  ("waggle/notify.py", "ntfy_topic")}
+
+
+def test_every_code_path_that_writes_config_json_is_known():
+    """Settings.save() is the only writer of config.json; this lists its callers so a new one is seen (and added to
+    test_waggles_own_config_writes_keep_the_manifest_clean)."""
+    import ast
+    found = set()
+    files = [REAL_ROOT / "install.py", *(REAL_ROOT / "waggle").rglob("*.py"), *(REAL_ROOT / "hermes_plugin").rglob("*.py")]
+    for f in files:
+        src = f.read_text(encoding="utf-8")
+        rel = f.relative_to(REAL_ROOT).as_posix()
+        if rel != "waggle/config.py":
+            assert "CONFIG_FILE.write" not in src and "CONFIG_FILE, \"w" not in src, rel
+        for fn in ast.walk(ast.parse(src)):
+            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for n in ast.walk(fn):
+                    if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "save":
+                        found.add((rel, fn.name))
+    assert found == CONFIG_WRITERS
+
+
+def _limit_hit(monkeypatch, used):
+    from waggle import quota
+    monkeypatch.setattr(quota, "window_usage", lambda *a, **k: used)
+    quota.note_limit_hit(reset_in_hours=0.0001, now=time.time() - 3600)  # blocked_until is already over
+
+
+def test_waggles_own_config_writes_keep_the_manifest_clean(world, monkeypatch):
+    import waggle.learn as learn
+    from waggle import budget, chat_engine, cli, live, notify, quota
+    from waggle.config import Settings
+    approve()
+    user_value = Settings.load().window_units_estimate
+    # the real recalibration: usage past the estimate raises it, a limit hit sets it to the samples' mean
+    monkeypatch.setattr(quota, "window_usage", lambda *a, **k: 15.0)
+    quota.can_escalate("sonnet")
+    assert quota.window_estimate(Settings.load()) == pytest.approx(15.0 / 0.7, rel=1e-3)
+    quota.status()
+    _limit_hit(monkeypatch, 21.388)
+    _limit_hit(monkeypatch, 4.0)
+    assert quota.window_estimate(Settings.load()) == pytest.approx((21.388 + 4.0) / 2, rel=1e-3)
+    assert Settings.load().window_units_estimate == user_value  # learned, never written into config.json
+    with budget.background("objective"):
+        quota.can_escalate("haiku")
+    # every other code path that saves settings
+    monkeypatch.setattr(live, "geocode", lambda *a, **k: None)
+    monkeypatch.setattr(learn, "set_about", lambda *a, **k: None)
+    chat_engine.set_engine_chat("123", True)
+    chat_engine.set_engine_chat("123", False)
+    live.remember_city("Springfield")
+    s = Settings.load()
+    s.home_location = ""
+    s.save()
+    live.weather("Springfield", fetch=lambda url: {})
+    notify.ntfy_topic()
+    assert cli.main(["init"]) in (None, 0)
+    s = Settings.load()  # what install.py does
+    s.router_model, s.ollama_url, s.claude_bin = "haiku", "http://127.0.0.1:11434", "claude.exe"
+    s.save()
+    assert guard.verify() == []
+
+
+def test_a_hand_written_config_and_a_stale_settings_object_keep_the_manifest_clean(world):
+    """A config.json without most keys stays that way when Waggle saves one unrelated setting, and a Settings object
+    loaded before the user changed a limit (and approved it) does not write the old limit back."""
+    from waggle import notify
+    from waggle.config import Settings
+    write_config(world, stop_at=0.8, background_daily_units=2.0)
+    old = Settings.load()
+    write_config(world, stop_at=0.7, background_daily_units=2.0)
+    approve()
+    notify.ntfy_topic(old)
+    data = json.loads((world.cfg / "config.json").read_text(encoding="utf-8"))
+    assert data["stop_at"] == 0.7 and data["ntfy_topic"] and "waggle_share" not in data
+    assert guard.verify() == []
+
+
+def test_a_user_limit_change_is_still_a_violation_and_names_the_key(world):
+    from waggle import budget
+    approve()
+    budget.set_limit(40)
+    v = guard.verify()
+    assert [(x["path"], x["kind"], x["keys"]) for x in v] == [(guard.CONFIG_KEY, "changed", ["background_daily_units"])]
+    assert "window_units_estimate" in guard.CONFIG_KEYS  # the user's own window estimate stays protected
+
+
+def _write_learned(value):
+    from waggle import budget
+    con = budget._db()
+    con.execute("INSERT OR REPLACE INTO learned VALUES ('window_estimate', ?, 0)", (value,))
+    con.close()
+
+
+@pytest.mark.parametrize("planted", [1e9, 25.0, float("inf"), float("nan"), -5.0, 0.0, "1e9", "lots", None])
+def test_an_agent_cannot_raise_its_budget_by_editing_the_learned_state(world, monkeypatch, planted):
+    """Even written straight into budget.db (a script, bypassing the path check), a learned window size never counts
+    for more than 4x the user's own window_units_estimate: Waggle's share and both stop lines stay bounded."""
+    from waggle import budget, quota
+    from waggle.config import Settings
+    s = Settings.load()
+    user = s.window_units_estimate
+    ceiling = quota.ESTIMATE_BOUNDS[1] * user
+    _write_learned(planted)
+    cap = quota.window_estimate(s)
+    assert quota.ESTIMATE_BOUNDS[0] * user <= cap <= ceiling
+    # Waggle's own share: once it has used its share of the largest window allowed, it stops, whatever was planted
+    monkeypatch.setattr(quota, "waggle_usage", lambda *a, **k: s.waggle_share * ceiling)
+    ok, why = quota.can_escalate("haiku", s, used=0.0)
+    assert not ok and "share" in why
+    # the chat stop line and the background stop line use the same bounded size
+    _limit_hit(monkeypatch, user)
+    _write_learned(planted)
+    ok, why = quota.can_escalate("haiku", s, used=s.stop_at * ceiling)
+    assert not ok
+    ok, why, _ = budget.check("haiku", "routine", s, window_used=s.background_stop_at * ceiling)
+    assert not ok and "chat keeps the rest" in why
+
+
+def test_the_learned_state_is_path_protected_and_the_old_state_cannot_lift_the_limits(world, monkeypatch):
+    from waggle import quota
+    from waggle.config import Settings
+    db = world.cfg / "budget.db"
+    for tool, args in (("Write", {"file_path": str(db), "content": "x"}),
+                       ("Bash", {"command": f'sqlite3 "{db}" "UPDATE learned SET value=1e9"'}),
+                       ("Bash", {"command": "python -c \"import sqlite3; sqlite3.connect(r'" + str(db) + "')"
+                                            ".execute('UPDATE learned SET value=1e9')\""}),
+                       ("PowerShell", {"command": f"Remove-Item '{db}'"})):
+        assert decide(tool, args, cwd=world.user / "Claude").action == policy.ASK, (tool, args)
+    s = Settings.load()
+    _limit_hit(monkeypatch, s.window_units_estimate)  # calibrated by a real limit hit
+    learned = quota.window_estimate(s)
+    # quota_state.json is not protected: planting an estimate there or deleting the samples changes nothing
+    quota._save_state({"window_estimate": 1e9, "samples": []})
+    assert quota.window_estimate(s) == learned and quota.calibrated()
+    ok, why = quota.can_escalate("haiku", s, used=s.stop_at * learned)
+    assert not ok and "keeping the rest" in why
+
+
+def test_past_the_ceiling_waggle_stops_and_says_which_setting_to_raise(world, monkeypatch):
+    from waggle import quota
+    from waggle.config import Settings
+    s = Settings.load()
+    big = 10 * s.window_units_estimate
+    monkeypatch.setattr(quota, "window_usage", lambda *a, **k: big)
+    ok, why = quota.can_escalate("haiku", s)
+    assert quota.window_estimate(s) == quota.ESTIMATE_BOUNDS[1] * s.window_units_estimate
+    assert not ok and "window_units_estimate" in why
+
+
+# ---- reading a protected file through the shell is decided exactly as before the guard ---------------------------
+# Found live: a review agent's grep with a quoted "a|b|c" regex, then `sed -n 1,40p waggle/guard.py`, was held as
+# "changing Waggle's own safety files". The quoted | was split as a pipe and sed was not known as a reader.
+
+REAL_REVIEW_1 = ('grep -nE "subprocess|shell=True|os\\.system|eval\\(|exec\\(" waggle/guard.py waggle/claude_cli.py '
+                 "waggle/core/procs.py waggle/agent_hook.py waggle/core/control.py waggle/core/runtime.py | head -40; "
+                 "echo ---; sed -n 1,40p waggle/guard.py")
+REAL_REVIEW_2 = ('grep -nE "subprocess|shell=True|os\\.system|eval\\(|exec\\(" waggle/claude_cli.py waggle/agent.py '
+                 "waggle/core/runtime.py hermes_plugin/waggle/__init__.py | head -25")
+
+BASH_READS = [
+    REAL_REVIEW_1, REAL_REVIEW_2,
+    "cat waggle/guard.py", "type waggle/guard.py", "more waggle/guard.py", "head -n 40 waggle/guard.py",
+    "tail -5 waggle/policy.py", "wc -l waggle/*.py", "grep -n 'decide|check' waggle/policy.py", "rg -n 'a|b' waggle",
+    "findstr /n decide waggle\\policy.py", "sed -n 1,40p waggle/guard.py", "sed -n '/def /p' waggle/guard.py",
+    "sed -n -e 1p -e '$p' waggle/guard.py", "sed 's/a/b/g' waggle/guard.py", "sed -nE '/x|y/{p;q}' waggle/guard.py",
+    "sed -n '10,20{=;p}' waggle/guard.py", "awk 'NR<5' waggle/guard.py", "awk -F: '{print $1}' waggle/guard.py",
+    "awk '$3 > 5 || /def/ {print NR\": \"$0}' waggle/guard.py", "awk 'length > 120' waggle/policy.py",
+    "sort waggle/guard.py", "sort -u -k1,1 waggle/guard.py | uniq -c", "uniq waggle/guard.py", "uniq -c waggle/guard.py",
+    "cut -c1-10 waggle/guard.py", "cat waggle/guard.py | tr a-z A-Z", "diff waggle/guard.py waggle/policy.py",
+    "cmp waggle/guard.py waggle/policy.py", "ls -la waggle", "dir waggle", "stat waggle/guard.py", "file waggle/guard.py",
+    "find waggle -name '*.py'", "find . -name guard.py -print", "sha256sum waggle/guard.py",
+    "md5sum waggle/*.py", "certutil -hashfile waggle\\guard.py SHA256", "git log -p waggle/guard.py",
+    "git show HEAD:waggle/guard.py", "git diff waggle/guard.py", "git status", "git blame waggle/guard.py",
+    "git grep -n decide", "git ls-files waggle", "python -m pytest -q tests/test_guard.py",
+    "grep -c x waggle/guard.py && wc -l waggle/guard.py; head -5 waggle/policy.py",
+    'grep -n "a > b" waggle/guard.py', 'grep -n "x>$y" waggle/guard.py', "grep -n \"it's\" waggle/guard.py",
+    "echo \"files: $(ls waggle | wc -l)\"; cat waggle/guard.py",
+]
+PS_READS = [
+    "Get-Content waggle/guard.py -TotalCount 40", "Select-String -Path waggle/guard.py -Pattern 'a|b'",
+    "Get-Content waggle/guard.py | Measure-Object -Line", "Get-Item waggle/guard.py", "Get-ChildItem waggle -Recurse",
+    "Test-Path waggle/guard.py", "Get-FileHash waggle/guard.py", "gc waggle/policy.py | sls 'x|y' | select -First 5",
+    "Get-Content waggle/guard.py; Get-Content waggle/policy.py | Select-String \"def (a|b)\"",
+    "\"lines: $((Get-Content waggle/guard.py).Count)\"",
+]
+
+
+@pytest.mark.parametrize("tool,cmd", [("Bash", c) for c in BASH_READS] + [("PowerShell", c) for c in PS_READS])
+def test_shell_reads_of_protected_files_are_decided_as_before_the_guard(world, tool, cmd):
+    d = decide(tool, {"command": cmd}, cwd=world.repo)
+    assert (d.action, d.reason) == policy.classify_shell(cmd), (cmd, d.reason)
+
+
+BASH_WRITES = [
+    "sed -i s/a/b/ waggle/guard.py", "sed -i.bak 's/a/b/' waggle/guard.py", "sed --in-place 's/a/b/' waggle/guard.py",
+    "sed -ni 1p waggle/guard.py", "sed -n 'w waggle/policy.py' notes.txt", "sed -n '1w waggle/policy.py' notes.txt",
+    "sed 's/a/b/w waggle/policy.py' notes.txt", "sed -n '1e rm waggle/policy.py' notes.txt",
+    "sed 's/x/rm waggle\\/policy.py/e' notes.txt", "sed -f fix.sed waggle/guard.py",
+    "awk '{print > \"waggle/policy.py\"}' notes.txt", "awk '{print $0 >> \"waggle/policy.py\"}' notes.txt",
+    "awk 'BEGIN{system(\"rm waggle/policy.py\")}'", "awk 'BEGIN{\"rm waggle/policy.py\" | getline}'",
+    "awk '{print | \"tee waggle/policy.py\"}' notes.txt", "awk -i inplace '{print}' waggle/guard.py",
+    "awk -f prog.awk waggle/guard.py", "sort -o waggle/policy.py notes.txt", "sort notes.txt -o waggle/policy.py",
+    "sort --output=waggle/policy.py notes.txt", "sort -uo waggle/policy.py notes.txt", "uniq notes.txt waggle/policy.py",
+    "find waggle -name '*.py' -exec sed -i s/a/b/ {} +", "find waggle -delete", "find . -name policy.py -delete",
+    "find waggle -fprint waggle/policy.py", "find -delete", "find waggle -ok rm {} \\;", "find . -execdir rm {} \\;",
+    "cat notes.txt | tee waggle/policy.py", "grep x waggle/guard.py | tee -a waggle/policy.py",
+    "ls waggle/*.py | xargs rm", "ls waggle | xargs -I{} cp notes.txt waggle/{}", "git checkout -- waggle/policy.py",
+    "git restore waggle/guard.py", "git apply x.patch", "git stash", "git reset --hard", "git clean -fdx",
+    "git -c core.fsmonitor='rm waggle/policy.py' status", "cat notes.txt > waggle/policy.py",
+    "grep x notes.txt >> waggle/guard.py", "sed -n 1p notes.txt > waggle/policy.py", "head -1 notes.txt 1> waggle/guard.py",
+    "cat $(rm waggle/policy.py)", "cat \"$(rm waggle/policy.py)\"", "cat `rm waggle/policy.py`",
+    "diff <(cat notes.txt) >(tee waggle/policy.py)", "echo \\\"; rm waggle/policy.py; echo \\\"",
+    "PAGER='sed -i s/a/b/ waggle/policy.py' git log", "GIT_EXTERNAL_DIFF=./x.sh git diff waggle/policy.py",
+    "grep -n 'x' waggle/guard.py; sed -i s/a/b/ waggle/policy.py",
+]
+PS_WRITES = [
+    "Set-Content waggle/policy.py x", "Get-Content notes.txt | Out-File waggle/policy.py",
+    "Copy-Item notes.txt waggle/policy.py", "Move-Item notes.txt waggle/guard.py",
+    "Get-Content waggle/guard.py | Set-Content waggle/policy.py", "Get-Content notes.txt > waggle/policy.py",
+    "Select-String x waggle/guard.py | Tee-Object waggle/policy.py", "Get-Content \"$(Remove-Item waggle/policy.py)\"",
+    "echo `\"; Remove-Item waggle/policy.py; echo `\"", "Get-ChildItem waggle | Remove-Item",
+]
+
+
+@pytest.mark.parametrize("tool,cmd", [("Bash", c) for c in BASH_WRITES] + [("PowerShell", c) for c in PS_WRITES]
+                         + [("terminal", c) for c in BASH_WRITES + PS_WRITES])
+def test_shell_writes_that_reach_a_protected_file_still_ask(world, tool, cmd):
+    assert decide(tool, {"command": cmd}, cwd=world.repo).action in (policy.ASK, policy.DENY), (tool, cmd)
+
+
+def test_the_two_real_review_commands_are_allowed(world):
+    for cmd in (REAL_REVIEW_1, REAL_REVIEW_2):
+        for tool in ("Bash", "PowerShell"):
+            assert decide(tool, {"command": cmd}, cwd=world.repo).allowed, (tool, cmd)
+
+
+def test_a_shell_of_unknown_kind_reads_quotes_every_way(world):
+    """cmd.exe does not treat ' as a quote, so for a shell tool that does not say which shell it runs, a | inside
+    single quotes may still be a pipe: a protected file named there keeps asking."""
+    cmd = "grep 'x|python fix.py waggle/policy.py'"
+    assert decide("Bash", {"command": cmd}, cwd=world.repo).allowed
+    assert decide("terminal", {"command": cmd}, cwd=world.repo).action == policy.ASK
+
+
+# ---- Waggle's own tools: one table in policy.py -----------------------------------------------------------------
+# Found live: mcp__waggle__remind_me {"text": "Stand up", "in_minutes": 0.5} needed approval.
+
+def _mcp_tools():
+    import waggle.waggle_mcp as mcp
+    return sorted(mcp.TOOLS)
+
+
+def test_every_tool_waggles_mcp_server_offers_has_a_row():
+    tools = _mcp_tools()
+    assert len(tools) > 40
+    assert not [t for t in tools if t not in policy.WAGGLE_TOOLS]
+
+
+def test_the_table_decides_every_waggle_tool():
+    for name in _mcp_tools():
+        action, why = policy.WAGGLE_TOOLS[name]
+        if name == "hermes_tool":
+            continue  # decided as the Hermes tool it names
+        d = policy.decide("mcp__waggle__" + name, {})
+        assert d.action == action, name
+        if action == policy.ASK:
+            assert why in d.reason
+
+
+@pytest.mark.parametrize("name,args", [
+    ("remind_me", {"text": "Stand up", "in_minutes": 0.5}), ("cancel_reminder", {"id": "f1"}),
+    ("list_reminders", {}), ("schedule_call", {"message": "meet", "at": "07:00"}), ("call_me", {"minutes": 0}),
+    ("background_status", {}), ("waggle_doctor", {}), ("notify_me", {"text": "done"}),
+])
+def test_tools_that_only_reach_the_user_run_without_a_yes(world, name, args):
+    d = policy.check("mcp__waggle__" + name, args, session="s1")
+    assert d.allowed and not d.approval_id, (name, d.reason)
+
+
+@pytest.mark.parametrize("name", ["skill_install", "routine_remove", "graph_correct", "background_task",
+                                  "some_new_tool"])
+def test_waggle_tools_that_install_delete_or_are_unknown_still_ask(world, name):
+    assert policy.decide("mcp__waggle__" + name, {"identifier": "x"}).action == policy.ASK
+
+
+def test_the_hermes_wrapper_is_still_decided_as_the_tool_it_runs(world):
+    assert policy.decide("mcp__waggle__hermes_tool", {"name": "send_message", "args": {"to": "a@b.c"}}).action == policy.ASK
+    assert policy.decide("mcp__waggle__hermes_tool", {"name": "web_search", "args": {"query": "x"}}).allowed
+    assert policy.decide("mcp__waggle__hermes_tool", {"name": "make_payment", "args": {}}).action == policy.ASK
+
+
+# ---- an integrity denial says what changed, in plain words, and the exact command, once -------------------------
+
+def _command(w):
+    return f'cd "{w.repo}"; python -m waggle.guard approve'
+
+
+def test_the_hook_names_the_changed_file_and_the_command(world, monkeypatch, capsys):
+    approve()
+    (world.repo / "waggle" / "policy.py").write_text("# tampered\n")
+    why = run_hook(monkeypatch, capsys, READ_EVENT)["permissionDecisionReason"]
+    assert "Waggle's permission rules (waggle/policy.py) was changed" in why
+    assert _command(world) in why and why.count("Do not retry") == 1
+
+
+def test_the_hook_says_so_when_nothing_was_approved_yet(world, monkeypatch, capsys):
+    why = run_hook(monkeypatch, capsys, READ_EVENT)["permissionDecisionReason"]
+    assert "no safety approval (manifest.json) exists yet for this Waggle folder" in why and _command(world) in why
+
+
+def test_the_in_process_gate_and_hermes_say_the_same_once(world, monkeypatch):
+    from waggle import security
+    approve()
+    (world.repo / "waggle" / "quota.py").write_text("# tampered\n")
+    monkeypatch.setattr(guard, "GATE_IN_TESTS", True)
+    d = policy.decide("Read", {"file_path": "notes.txt"})
+    assert d.action == policy.DENY and "the usage-limit code (waggle/quota.py) was changed" in d.reason
+    out = agent_hook.handle({"tool_name": "Read", "tool_input": {"file_path": "notes.txt"}})
+    why = out["hookSpecificOutput"]["permissionDecisionReason"]
+    assert _command(world) in why and why.count("Do not retry") == 1 and "Blocked by" not in why
+    msg = security.check_tool_call("web_search", {"query": "x"})
+    assert msg["action"] == "block" and "waggle/quota.py" in msg["message"] and _command(world) in msg["message"]
+
+
+def test_plain_words_for_every_kind_of_finding(world):
+    cases = [
+        ({"file": "waggle/guard.py", "expected": "a", "actual": None}, "the tamper guard (waggle/guard.py) is missing"),
+        ({"file": "json.py", "expected": "no file shadowing a Python module at the checkout root", "actual": "present"},
+         "would replace one of Python's own modules"),
+        ({"file": "manifest.json", "expected": "version 3", "actual": "version 2"}, "older Waggle version"),
+        ({"file": "WAGGLE_HOME", "expected": "C:/a", "actual": "C:/b"}, "Waggle data folder (WAGGLE_HOME) is C:/b"),
+        ({"path": guard.CONFIG_KEY, "kind": "changed", "keys": ["stop_at"]},
+         "protected settings in config.json changed (stop_at)"),
+        ({"path": "user:.hermes/plugins/waggle/__init__.py", "kind": "changed"}, "installed copy of the Hermes plug-in"),
+    ]
+    for item, words in cases:
+        assert words in agent_hook.plain(item), item
+    assert "start Waggle normally" in guard.denial_text([cases[3][0]])
+
+
+# ---- processes a test starts (a core under a temp home) are "not checked", never clean ----------------------------
+# Found by another builder: once a worktree is approved for a temp home, cores that tests start under other temp
+# homes froze on the WAGGLE_HOME mismatch. The pytest marker such a process inherits now gives "not checked".
+
+GATE_RUNNER = ("import sys; from pathlib import Path; import waggle.guard as g; h = Path(sys.argv[1]); "
+               "g.USER_HOME = h; g.GUARD_DIR = h / '.waggle-guard'; print('BAD' if g.gate() else 'CLEAN')")
+
+
+def _as_test_child(p, **extra):
+    """The environment of a process a test run starts (or an agent's shell that set the marker by hand)."""
+    env = {k: v for k, v in p.env.items() if k != "WAGGLE_GUARD_IN_TESTS"}
+    env.update(PYTEST_CURRENT_TEST="tests/x.py::t (call)", **extra)
+    return SimpleNamespace(root=p.root, home=p.home, env=env)
+
+
+def test_a_test_started_process_gets_not_checked_but_still_sees_changed_files(pkg, tmp_path):
+    assert guard_subprocess(pkg, "approve", "--yes").returncode == 0
+    child = _as_test_child(pkg, WAGGLE_HOME=str(tmp_path / "other-temp-home"))
+    r = guard_subprocess(child, "verify")
+    assert r.returncode == 1 and guard.NOT_CHECKED in r.stdout and "WAGGLE_HOME" not in r.stdout, r.stdout
+    (pkg.root / "waggle" / "policy.py").write_text("# tampered\n")
+    r = guard_subprocess(child, "verify")
+    assert r.returncode == 1 and "waggle/policy.py" in r.stdout and "changed" in r.stdout, r.stdout
+
+
+def test_the_marker_in_an_agents_shell_does_not_switch_off_the_hook_or_the_gate(pkg, tmp_path):
+    """PYTEST_CURRENT_TEST / PYTEST_VERSION set by an agent reach only processes it starts itself. Even there the hook
+    and the in-process gate keep their real checks: a tampered file, a redirected data folder or a missing approval
+    still deny; verify never comes back clean."""
+    event = {"tool_name": "Read", "tool_input": {"file_path": "x"}, "cwd": str(pkg.root)}
+    marked = _as_test_child(pkg, PYTEST_VERSION="9.0.0")
+    assert hook_subprocess(marked, event)["permissionDecision"] == "deny"  # nothing approved yet
+    assert guard_subprocess(pkg, "approve", "--yes").returncode == 0
+    assert hook_subprocess(marked, event)["permissionDecision"] == "allow"  # the real check passes...
+    assert guard_subprocess(marked, "verify").returncode == 1  # ...but verify is never clean with the marker
+    moved = _as_test_child(pkg, WAGGLE_HOME=str(tmp_path / "elsewhere"))
+    assert hook_subprocess(moved, event)["permissionDecision"] == "deny"
+    gate = subprocess.run([sys.executable, "-c", GATE_RUNNER, str(pkg.home)], capture_output=True, text=True,
+                          env=moved.env, cwd=str(pkg.root), timeout=60)
+    assert gate.stdout.strip() == "BAD", gate.stdout + gate.stderr
+    (pkg.root / "waggle" / "policy.py").write_text("# tampered\n")
+    out = hook_subprocess(marked, event)
+    assert out["permissionDecision"] == "deny" and "waggle/policy.py" in out["permissionDecisionReason"]
+    gate = subprocess.run([sys.executable, "-c", GATE_RUNNER, str(pkg.home)], capture_output=True, text=True,
+                          env=marked.env, cwd=str(pkg.root), timeout=60)
+    assert gate.stdout.strip() == "BAD", gate.stdout + gate.stderr
+
+
+def test_in_this_test_process_verify_runs_the_real_check(world):
+    assert not guard.started_by_test()
+    assert [v["kind"] for v in guard.verify()] == ["no_manifest"] and guard.verify()[0]["path"] != guard.NOT_CHECKED
+
+
+def test_a_test_started_core_under_another_temp_home_is_not_approved_not_frozen(world, monkeypatch, tmp_path):
+    """What the core records for that verify answer (runtime.check_guard is the hourly check)."""
+    from waggle.core import runtime
+    approve()
+    monkeypatch.setattr(config, "HOME", tmp_path / "another-temp-home")
+    monkeypatch.setattr(guard, "started_by_test", lambda: True)
+    assert runtime.check_guard(now=100)["status"] == "not approved"
+    (world.repo / "waggle" / "policy.py").write_text("# tampered\n")
+    assert runtime.check_guard(now=200)["status"] == "frozen"
