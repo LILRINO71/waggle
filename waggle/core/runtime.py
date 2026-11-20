@@ -41,7 +41,7 @@ log = logging.getLogger("waggle.core")
 def code_version():
     try:
         out = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"], capture_output=True,
-                             text=True, timeout=5)
+                             text=True, timeout=5, creationflags=procs.NO_WINDOW)
         if out.returncode == 0 and out.stdout.strip():
             return out.stdout.strip()
     except (OSError, subprocess.SubprocessError):

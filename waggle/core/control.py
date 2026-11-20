@@ -52,8 +52,8 @@ def _use_task():
     if settings.home().resolve() != (Path.home() / ".waggle").resolve():
         return False
     try:
-        return subprocess.run(["schtasks", "/Query", "/TN", TASK_NAME], capture_output=True,
-                              timeout=15).returncode == 0
+        return subprocess.run(["schtasks", "/Query", "/TN", TASK_NAME], capture_output=True, timeout=15,
+                              creationflags=procs.NO_WINDOW).returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
 
@@ -65,7 +65,8 @@ def start(wait_s=START_TIMEOUT_S):
         return pid
     begun = time.time()
     if _use_task():
-        subprocess.run(["schtasks", "/Run", "/TN", TASK_NAME], capture_output=True, timeout=15)
+        subprocess.run(["schtasks", "/Run", "/TN", TASK_NAME], capture_output=True, timeout=15,
+                       creationflags=procs.NO_WINDOW)
     else:
         procs.spawn_detached([procs.pythonw(), "-m", "waggle.core", "run"], cwd=REPO,
                              log_path=settings.path("core.out"))

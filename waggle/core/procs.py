@@ -90,6 +90,8 @@ def own_ctime():
 _DETACHED_PROCESS = 0x00000008
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
 _CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+# Console tools started from the windowless core (git, taskkill, schtasks) must not flash a window.
+NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 
 def pythonw():
@@ -130,7 +132,7 @@ def kill_tree(pid, pid_ctime=None):
         return False
     if os.name == "nt":
         subprocess.run(["taskkill", "/PID", str(int(pid)), "/T", "/F"], stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL, timeout=30)
+                       stderr=subprocess.DEVNULL, timeout=30, creationflags=NO_WINDOW)
     else:
         import signal
         try:
