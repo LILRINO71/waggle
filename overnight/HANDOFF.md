@@ -189,3 +189,23 @@ Never rely on `hermes gateway stop` alone: it misses a gateway started by hand (
 - A worker's report is not evidence. Run the suite, read the records, and prove it on the real interface.
 - To check what really happened in a turn: `traces.db` (origin, answered_by, timings, tools with results,
   outcome), `runtime.db` (inbox, outbox, timers, jobs, events), and the Claude session file of the chat.
+
+## 2026-11-21 afternoon (live d883965, suite 3650 passed, canary passed)
+Owner's live voice test drove these, each proven live:
+- Voice judge: Ollama reloads a model whenever a call's num_ctx differs from the loaded copy (8 s); the judge now uses
+  the default, shared with mail triage. PC voice waits out a busy recogniser (429) and keeps it loaded from start-up.
+  Heard-you tone; "On it, sir. Starting now." at a voice request's first tool call; 12/20 s follow-up windows with a
+  soft cue (no "Waggle" needed); later sentences synthesized as one piece; SPOKEN/ANSWER parsed from the last marker.
+- Fast path (rebuild/voicefast): time/date/reminders/maths/conversions in code (~2 ms), plain general knowledge on
+  gemma4 (~0.5 s, gated); live Telegram voice note "what time is it" answered by code in 2.4 s total.
+  Test voice notes can't carry the test mark (origin user): relabel such traces to 'canary' after testing.
+- Vision: gemma4 is blind to images on Ollama 0.40.16. vision_model default "" = local_model (qwen3.6), used by the
+  screen, drop folder and Hermes image tool; owner config override removed (backup config.json.bak-vision-20261121).
+  Live: look_at_screen read the Monkeytype title and page text.
+- Small tools (rebuild/smalltools): feedwatch (5 feeds), markitdown OCR venv ~/.waggle-markitdown, Context7 for
+  proposal builds, Obsidian hub skills, pyright warnings in merge texts, `python -m waggle.usage_view`, session records.
+- Owner said YES to: gogcli (rebuild/gogcli; inert until the owner does docs/GOOGLE.md and `Waggle Google Login.bat`),
+  Cloudflare dead-man switch (rebuild/deadman; owner makes the free account, then docs/DEADMAN.md), ActivityWatch
+  (v0.14.1 portable, task "ActivityWatch", live on :5600; Chrome extension is the owner's step, docs/ACTIVITY.md),
+  focus blocks (`/waggle focus 45 calculus`, proven start/status/stop live).
+- Owner's "no audio" was Chrome muted in the Windows volume mixer (not Waggle).
