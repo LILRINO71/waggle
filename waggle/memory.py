@@ -39,7 +39,8 @@ KW_BONUS = 0.015  # per distinctive query word found in the chunk (max 3)
 # Histories and quarantines (what was removed from a note, retired versions) are never indexed or retrieved: a
 # removed line must not come back through the folder that records its removal.
 HISTORY_PREFIXES = ("Me/History/", "Archive/", "Quarantine/", ".trash/", "_archive/")
-EXCLUDE_PREFIXES = ("Objectives/", "Inbox/", "Jobs/", "Waggle/", "Me/Specialists/", *HISTORY_PREFIXES)
+EXCLUDE_PREFIXES = ("Objectives/", "Inbox/", "Jobs/", "Waggle/", "Me/Specialists/", "Drop/", "Sources/_files/",
+                    *HISTORY_PREFIXES)
 EXCLUDE_FILES = {"Waggle HQ.md", "Ideas/Digest.md"}
 ROUTE_LINE = re.compile(r"^\s*- \d{1,2}:\d{2} route=\S+.*$\n?", re.M)
 MARKER = re.compile(r"<!--\s*waggle:[^>]*-->\n?")
@@ -124,37 +125,39 @@ def reindex(settings=None, embedder=None):
     embedder = embedder or (lambda texts: ollama.embed(texts, "document", s))
     r = vault.root(s)
     con = _db()
-    ver = con.execute("SELECT v FROM meta WHERE k='version'").fetchone()
-    if not ver or ver[0] != INDEX_VERSION:  # cleaning rules changed: rebuild everything once
-        con.execute("DELETE FROM chunks")
-        con.execute("INSERT OR REPLACE INTO meta VALUES ('version', ?)", (INDEX_VERSION,))
-    seen = {row[0]: row[1] for row in con.execute("SELECT path, MAX(mtime) FROM chunks GROUP BY path")}
-    current = {}
-    updated = 0
-    for p in vault.notes(s):
-        rel = p.relative_to(r).as_posix()
-        if not indexable(rel):
-            continue
-        mtime = p.stat().st_mtime
-        current[rel] = mtime
-        if seen.get(rel) == mtime:
-            continue
-        text = p.read_text(encoding="utf-8", errors="replace")
-        pieces = [c for c in chunk(f"[{rel}]\n{clean(text)}") if _has_body(c)] if indexable(rel, text) else []
-        con.execute("DELETE FROM chunks WHERE path=?", (rel,))
-        if pieces:
-            vecs = embedder(pieces)
-            con.executemany("INSERT INTO chunks VALUES (?,?,?,?,?)",
-                            [(rel, mtime, i, t, _pack(v)) for i, (t, v) in enumerate(zip(pieces, vecs))])
-        else:
-            # Marker row so an empty (or opted-out) note is not re-read on every pass.
-            con.execute("INSERT INTO chunks VALUES (?,?,?,?,?)", (rel, mtime, -1, "", b""))
-        updated += 1
-        con.commit()  # per note: a crash halfway keeps what was embedded
-    for gone in set(seen) - set(current):
-        con.execute("DELETE FROM chunks WHERE path=?", (gone,))
-    con.commit()
-    con.close()
+    try:
+        ver = con.execute("SELECT v FROM meta WHERE k='version'").fetchone()
+        if not ver or ver[0] != INDEX_VERSION:  # cleaning rules changed: rebuild everything once
+            con.execute("DELETE FROM chunks")
+            con.execute("INSERT OR REPLACE INTO meta VALUES ('version', ?)", (INDEX_VERSION,))
+        seen = {row[0]: row[1] for row in con.execute("SELECT path, MAX(mtime) FROM chunks GROUP BY path")}
+        current = {}
+        updated = 0
+        for p in vault.notes(s):
+            rel = p.relative_to(r).as_posix()
+            if not indexable(rel):
+                continue
+            mtime = p.stat().st_mtime
+            current[rel] = mtime
+            if seen.get(rel) == mtime:
+                continue
+            text = p.read_text(encoding="utf-8", errors="replace")
+            pieces = [c for c in chunk(f"[{rel}]\n{clean(text)}") if _has_body(c)] if indexable(rel, text) else []
+            con.execute("DELETE FROM chunks WHERE path=?", (rel,))
+            if pieces:
+                vecs = embedder(pieces)
+                con.executemany("INSERT INTO chunks VALUES (?,?,?,?,?)",
+                                [(rel, mtime, i, t, _pack(v)) for i, (t, v) in enumerate(zip(pieces, vecs))])
+            else:
+                # Marker row so an empty (or opted-out) note is not re-read on every pass.
+                con.execute("INSERT INTO chunks VALUES (?,?,?,?,?)", (rel, mtime, -1, "", b""))
+            updated += 1
+            con.commit()  # per note: a crash halfway keeps what was embedded
+        for gone in set(seen) - set(current):
+            con.execute("DELETE FROM chunks WHERE path=?", (gone,))
+        con.commit()
+    finally:
+        con.close()  # also when the embedder fails: an open connection would keep the database locked
     return updated
 
 

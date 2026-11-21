@@ -100,5 +100,13 @@ def slug(text, n=50):
 
 
 def notes(settings=None):
+    """Every note in the vault. Drop/ (files waiting to be filed) and Sources/_files/ (the originals that were
+    dropped, some of them .md files) are not notes."""
     r = root(settings)
-    return [p for p in r.rglob("*.md") if ".obsidian" not in p.parts and ".trash" not in p.parts]
+    out = []
+    for p in r.rglob("*.md"):
+        parts = p.relative_to(r).parts
+        if ".obsidian" in parts or ".trash" in parts or "_files" in parts or parts[0] == "Drop":
+            continue
+        out.append(p)
+    return out
