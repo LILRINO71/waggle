@@ -18,6 +18,33 @@ Goals live in autonomy.db (never in the repository). The single switch for all a
 
     python -m waggle.goals list | show <id> | add <id> --title ... | enable <id> | disable <id> | seed
     python -m waggle.goals autonomy on|off | limit <steps per day>
+
+Charter boundary for the permission rules (interface only; nothing here is wired into policy.py, guard.py,
+agent_hook.py or security.py, and background work keeps today's rules until it is):
+
+  charter_for(session=..., objective_id=..., goal_id=...) returns, for background work that belongs to a goal,
+      {"goal": id, "charter": normalised charter, "write_roots": [absolute paths], "expired": bool}
+  and None for everything else (chat turns, the owner's own objectives, routines): None means "today's rules
+  only". A work-loop step runs as the agent session `objective-<id>` (agents.run), which is how it is found:
+  the objective's origin is 'autowork' and its goal is named in it; afterwards autonomy.db steps maps
+  objective_id -> goal_id. Autonomous work whose goal cannot be found gets an empty, expired charter.
+
+  classify_call(tool_name, args) maps one tool call to what a charter speaks about:
+      {"action": research | write_note | edit_code | run_tests | commit_local, "path": file written or None,
+       "channel": outward channel or None, "money": 0 | 1}
+
+  How policy would consult it, in this order, inside policy.check(tool, args, session=...):
+    1. d = decide(tool, args)               today's rules first, unchanged: a DENY stays a DENY
+    2. info = goals.charter_for(session=session)
+       if info is None: return d            not autonomous background work
+    3. if info["expired"]: DENY "the goal is disabled or its charter expired"
+    4. ok, why = goals.call_allowed(info, tool, args)
+       if not ok: DENY "outside the goal's charter: " + why
+       (call_allowed = classify_call + charter_allows: action kind, written path inside the write roots,
+        outward channel listed, money always 0)
+    5. if d is ASK: DENY "needs the owner, who is not watching"; the step ends as needs_approval and the evening
+       note says so, instead of an approval code waiting overnight
+    6. return d                             the charter only narrows today's rules, it never widens them
 """
 import argparse
 import datetime as dt
@@ -151,6 +178,110 @@ def charter_allows(charter, *, action=None, path=None, channel=None, money=0, go
     if channel is not None and channel not in c["channels"]:
         return False, f"channel '{channel}' is not in the charter"
     return True, "ok"
+
+
+# ---- the permission rules' view -------------------------------------------------------------------------------
+
+SHELL = {"bash", "powershell"}
+WRITE_TOOLS = {"edit", "write", "multiedit", "notebookedit"}
+READ_TOOLS = {"read", "glob", "grep", "ls", "websearch", "webfetch", "notebookread", "todowrite", "toolsearch"}
+TEST_SHAPES = ("python -m pytest", "npm test", "node --test")
+_OUT_SHAPES = {"git push": "github_push", "gh pr create": "github_pr", "gh pr merge": "github_pr",
+               "gh pr comment": "github_pr", "gh issue create": "github_pr", "gh issue comment": "github_pr",
+               "gh release create": "github_push", "curl": "web_post", "wget": "web_post",
+               "invoke-webrequest": "web_post", "invoke-restmethod": "web_post", "hermes send": "telegram",
+               "send-mailmessage": "email", "npm publish": "web_post"}
+_SEND = re.compile(r"(^|_)(send|reply|forward|post|publish|tweet|dm|share|invite)(_|$)", re.I)
+_MONEY = re.compile(r"payment|purchase|checkout|transfer|trade|order|billing|invoice|refund|buy", re.I)
+
+
+def classify_call(tool_name, args=None, settings=None):
+    """What one tool call means in charter terms: {action, path, channel, money}."""
+    from . import activity
+    s = settings or Settings.load()
+    args = args if isinstance(args, dict) else {}
+    name = (tool_name or "").lower()
+    base = name.split("__")[-1]
+    out = {"action": "research", "path": None, "channel": None, "money": 0}
+    if _MONEY.search(base):
+        out["money"] = 1
+    if name in WRITE_TOOLS:
+        p = str(args.get("file_path") or args.get("notebook_path") or "")
+        out["path"] = p
+        try:
+            vault, target = Path(s.vault).resolve(), Path(p).resolve()
+            in_vault = vault == target or vault in target.parents
+        except (OSError, ValueError):
+            in_vault = False
+        out["action"] = "write_note" if in_vault and p.lower().endswith(".md") else "edit_code"
+    elif name in SHELL:
+        shape = activity.command_shape(str(args.get("command") or ""))
+        parts = shape.split(" > ") if shape else []
+        for part in parts:
+            if part in _OUT_SHAPES or (part.startswith("gh ") and not part.endswith((" view", " list", " status",
+                                                                                      " checks", " diff"))):
+                out["channel"] = _OUT_SHAPES.get(part, "github_pr")
+        if any(x in ("git commit", "git merge", "git rebase", "git tag") for x in parts):
+            out["action"] = "commit_local"
+        elif parts and any(x in TEST_SHAPES for x in parts) and all(
+                x in TEST_SHAPES or activity.is_read_only(x) for x in parts):
+            out["action"] = "run_tests"
+        elif parts and not activity.is_read_only(shape):
+            out["action"] = "edit_code"  # any other command may write: it must be allowed to change code
+    elif base in READ_TOOLS:
+        out["action"] = "research"
+    elif _SEND.search(base):
+        out["channel"] = "email" if "mail" in name else "telegram" if "telegram" in name else "web_post"
+    return out
+
+
+def charter_for(session=None, objective_id=None, goal_id=None, settings=None, now=None):
+    """The charter that bounds this background work, or None when the work belongs to no goal (then only today's
+    permission rules apply). session is the agent session name ('objective-<id>')."""
+    if session and str(session).startswith("objective-") and not objective_id:
+        objective_id = str(session).split("-", 1)[1]
+    if objective_id and not goal_id:
+        con = store_.db()
+        try:
+            row = con.execute("SELECT goal_id FROM steps WHERE objective_id=? ORDER BY time DESC LIMIT 1",
+                              (objective_id,)).fetchone()
+        finally:
+            con.close()
+        goal_id = row[0] if row else None
+        if goal_id is None:  # the step is recorded after it runs; while it runs the objective itself says it
+            try:
+                from . import objectives
+                con = objectives._db()
+                row = con.execute("SELECT origin, goal FROM objectives WHERE id=?", (objective_id,)).fetchone()
+                con.close()
+            except Exception:  # noqa: BLE001
+                row = None
+            if row and row[0] in ("autowork", "shadow"):
+                m = re.match(r"\[(.+?)\]", row[1] or "")
+                hit = next((g for g in all_goals() if m and g["title"] == m.group(1)), None)
+                if hit is None:  # autonomous work whose goal cannot be found: the narrowest charter there is
+                    return {"goal": None, "charter": {"actions": [], "write_roots": [], "channels": [], "money": 0,
+                                                      "expires": "1970-01-01"}, "write_roots": [], "expired": True}
+                goal_id = hit["id"]
+    if not goal_id:
+        return None
+    g = get(goal_id)
+    if not g:
+        return None
+    c = check_charter(g["charter"])
+    return {"goal": goal_id, "charter": c, "write_roots": [str(r) for r in expand_roots(c, goal_id, settings)],
+            "expired": expired(c, now) or g["status"] != "enabled"}
+
+
+def call_allowed(info, tool_name, args=None, settings=None, now=None):
+    """(allowed, reason) for one tool call under charter_for()'s result."""
+    if info is None:
+        return True, "no charter: today's rules only"
+    if info.get("expired"):
+        return False, "the goal is disabled or its charter expired"
+    c = classify_call(tool_name, args, settings)
+    return charter_allows(info["charter"], action=c["action"], path=c["path"], channel=c["channel"],
+                          money=c["money"], goal_id=info["goal"] or "", settings=settings, now=now)
 
 
 # ---- store ------------------------------------------------------------------------------------------------------
