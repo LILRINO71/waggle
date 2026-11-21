@@ -32,6 +32,10 @@ from . import agents, budget, claude_cli, events, notify, projects, quota, vault
 from .config import Settings, data_path
 
 ACTIVE = ("planning", "active")
+# Objectives the autonomous work loop starts (waggle.autowork): they never message the owner themselves (results
+# reach the evening note through the loop), their report is written without a model call, and a step whose proof
+# fails ends them as 'unproven' (a final state nothing resumes) instead of being retried by the supervisor.
+QUIET_ORIGINS = ("autowork", "shadow")
 OPEN = ("planning", "active", "waiting_approval", "blocked", "paused")
 MAX_STEPS = 8
 MAX_ATTEMPTS = 2
@@ -113,6 +117,55 @@ def create(goal, project=None, title=None, origin="user", plan_now=True, asker=N
     if plan_now:
         plan(oid, asker=asker, settings=settings)
     return oid
+
+
+def create_planned(goal, steps, project=None, title=None, origin="autowork"):
+    """New objective with its steps given (no planning call): each step {title, detail, agent, done_when,
+    depends_on}. It starts active. Returns its id."""
+    if not steps:
+        raise ValueError("an objective needs at least one step")
+    oid = uuid.uuid4().hex[:8]
+    now = time.time()
+    con = _db()
+    con.execute("INSERT INTO objectives (id, title, goal, project, status, created, updated, origin) "
+                "VALUES (?,?,?,?,?,?,?,?)", (oid, (title or goal)[:80], goal, project, "active", now, now, origin))
+    for i, st in enumerate(steps[:MAX_STEPS], 1):
+        deps = sorted({int(x) for x in st.get("depends_on") or [] if 0 < int(x) < i})
+        agent = st.get("agent") if st.get("agent") in agents.AGENTS else "general"
+        con.execute("INSERT INTO steps (objective_id, idx, title, detail, agent, depends, done_when, status) "
+                    "VALUES (?,?,?,?,?,?,?,?)", (oid, i, str(st["title"])[:120], str(st.get("detail", ""))[:3000],
+                                                 agent, json.dumps(deps), str(st.get("done_when", ""))[:600],
+                                                 "pending"))
+    _log(con, oid, "created", f"{goal} ({len(steps)} given steps, origin {origin})")
+    con.commit()
+    con.close()
+    events.log("objective", id=oid, status="active", title=(title or goal)[:80])
+    return oid
+
+
+def conclude_unproven(oid, why):
+    """End a quiet-origin objective whose work could not be proven (or did not run): status 'unproven', which
+    the supervisor, the work watcher and resume never pick up again. Returns True when it changed."""
+    con = _db()
+    n = con.execute("UPDATE objectives SET status='unproven', error=?, updated=?, worker_pid=NULL, "
+                    "lease_until=NULL, deferred_until=NULL WHERE id=? AND origin IN (%s) AND status NOT IN "
+                    "('done','cancelled','unproven')" % ",".join("?" * len(QUIET_ORIGINS)),
+                    (str(why)[:500], time.time(), oid, *QUIET_ORIGINS)).rowcount
+    if n:
+        _log(con, oid, "unproven", why)
+    con.commit()
+    con.close()
+    return n == 1
+
+
+def _origin(oid):
+    try:
+        con = _db()
+        row = con.execute("SELECT origin FROM objectives WHERE id=?", (oid,)).fetchone()
+        con.close()
+        return (row[0] or "") if row else ""
+    except sqlite3.Error:
+        return ""
 
 
 def plan(oid, asker=None, settings=None, context=""):
@@ -452,7 +505,11 @@ def finish(oid, settings=None, asker=None):
     rows = con.execute("SELECT idx, title, result FROM steps WHERE objective_id=? ORDER BY idx", (oid,)).fetchall()
     con.close()
     body = "\n\n".join(f"Step {r['idx']} {r['title']}:\n{(r['result'] or '')[:2500]}" for r in rows)
-    report = _report(obj["goal"], body, s, asker) or ((rows[-1]["result"] or "Done.")[:1500] if rows else "Done.")
+    if obj["origin"] in QUIET_ORIGINS:  # the loop that started it reports; no model call for prose
+        report = "; ".join(f"step {r['idx']} {r['title']}: done" for r in rows)[:1500] or "Done."
+    else:
+        report = _report(obj["goal"], body, s, asker) or ((rows[-1]["result"] or "Done.")[:1500] if rows else
+                                                          "Done.")
     con = _db()
     won = con.execute("UPDATE objectives SET status='done', report=?, updated=?, error=NULL, deferred_until=NULL "
                       "WHERE id=? AND status!='done'", (report, time.time(), oid)).rowcount
@@ -475,6 +532,8 @@ def finish(oid, settings=None, asker=None):
 
 
 def _tell(oid, text, urgent=False):
+    if _origin(oid) in QUIET_ORIGINS:
+        return  # the autonomous loop reports through the evening note, never by its own message
     try:
         from .origin import objective_source  # developer/test objectives never reach the phone
         notify.send(text, urgent=urgent, source=objective_source(oid), origin="objective")
