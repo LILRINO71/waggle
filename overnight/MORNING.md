@@ -34,6 +34,7 @@ Each piece can be switched off on its own. To switch something off:
 | Every autonomy and objective run is recorded; if the last 4 did nothing useful the evening note says so in one line (`python -m waggle.session_records` lists them) | `session_records_enabled` |
 | New tools: CAD convert/measure, print estimate, notes/Office to PDF, video/image convert, GitHub portfolio audit, explain any file, FTC team stats | one `git rm` line per tool in `skills/README.md` ("Removing a tool pack") |
 | Google through gogcli (pinned v0.48.1): Docs create/read/append, Drive search, Calendar list/create (no guests), Tasks list/add/done, Classroom due dates; Gmail never. Chat tools `google_*`, `python -m waggle.google` (status, docs-new, tasks, classroom-due), one extra morning-brief line, a `Google` line in doctor. Does nothing until you sign in once (`docs/GOOGLE.md`, about 10 minutes, double-click `Waggle Google Login.bat`) | `"google_gog": false` |
+| Dead-man switch (needs you): a free Cloudflare Worker sends your reminders if the PC is off and says "Waggle is down" if it dies during the day (not when you switch the PC off at night). Does nothing until you do the steps in `docs/DEADMAN.md` (about 10 minutes, no card) | leave `deadman_url` empty; after setup, `npx wrangler delete` then `"deadman_url": ""` |
 
 ## Also fixed overnight (nothing to decide)
 
