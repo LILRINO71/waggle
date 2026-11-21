@@ -28,8 +28,8 @@ videos, locations, Hermes's own slash commands (/new /status /model ...), other 
 |---|---|
 | Mail watch (`waggle/mailwatch.py`) | Live. IMAP + app password (Windows Credential Manager `waggle-mail-imap:personal`), no Claude. Core timer `knowledge.mailwatch` every 5 min 06:00-23:00. Triage: rules + local model `mailwatch_local_model` = gemma4. Seen-store `~/.waggle/mailwatch.db`. Real-inbox dry run caught the college email correctly; school account is blocked by its admin. `python -m waggle.mailwatch status|run --dry-run|login` |
 | Drop folder (`waggle/dropbox_ingest.py`) | Live. Desktop shortcut "Feed Waggle" -> `WaggleVault/Drop`; files become `Sources/<YYYY-MM>/*.md` with local summaries; weekly tidy plan Sunday 10:00. No Claude |
-| Calendar watch (`waggle/calendar_watch.py`) | Deployed; idle until the owner runs `python -m waggle.calendar_watch login` (steps in USER_TESTS.md). Google Calendar's secret iCal address (Credential Manager `waggle-calendar-ics:<name>`), stdlib only, no Claude. Core timers `calendar.fetch` every 15 min 06:00-22:45 and `calendar.headsup` every 5 min: a text 30 min before each timed event, once. Today's events feed the morning brief (`brief.calendar_today`). `python -m waggle.calendar_watch login|status|today|run --dry-run` |
-| PC voice (`waggle/pcvoice.py`, task "Waggle PC Voice") | Live, untested with the owner's real voice. Hotkey Ctrl+Alt+` (Ctrl+Alt+Space is taken), wake word "Waggle" on, speaks Waggle's own messages when the owner is at the PC (`waggle/presence.py`) |
+| Calendar watch (`waggle/calendar_watch.py`) | Owner said 2026-11-21: they don't use Google Calendar, so this stays idle on purpose (do not ask them to log in). Deployed; idle until the owner runs `python -m waggle.calendar_watch login` (steps in USER_TESTS.md). Google Calendar's secret iCal address (Credential Manager `waggle-calendar-ics:<name>`), stdlib only, no Claude. Core timers `calendar.fetch` every 15 min 06:00-22:45 and `calendar.headsup` every 5 min: a text 30 min before each timed event, once. Today's events feed the morning brief (`brief.calendar_today`). `python -m waggle.calendar_watch login|status|today|run --dry-run` |
+| PC voice (`waggle/pcvoice.py`, task "Waggle PC Voice") | Live. Owner tested it with their real voice 2026-11-21 09:48: "good, a little slow" (turn 1 took 18 s from end of speech to answer, turn 2 4 s; intent judge logged fallback both times; speed work on rebuild/voice4). Hotkey Ctrl+Alt+` (Ctrl+Alt+Space is taken), wake word "Waggle" on, speaks Waggle's own messages when the owner is at the PC (`waggle/presence.py`) |
 | Test client (`tools/testclient/`, venv `~/.waggle-testclient`) | Logged in as the owner. `ask.py "question"` sends `[waggle-test] question` to the owner's normal bot chat (@hermes_t2pnnyl42gz3f5eu_bot) and prints every reply; the mark makes the owner's turn origin "canary": answered, delivered (reminders arrive), owner-authorised in the owner's own engine chat, never learned from. `--file x.png` sends a photo or document with the marked caption; `--raw "/waggle"` sends a slash command unmarked (in Git Bash set MSYS_NO_PATHCONV=1). No Waggle Lab group |
 | Local models | `local_model` = qwen3.6:35b-a3b (MoE, 75 tok/s), mail = gemma4. Eval 2026-11-20 22:40 against qwen3.8:27b (downloaded, kept on disk, unused): triage 15/16 vs 14/16 (the 27b missed the Google security alert), reasoning 7/8 vs 6/8, short answer 0.5 s vs 2.7 s, 3-step plan 8 s vs 72 s (the 27b does not fit the 12 GB GPU: 13 tok/s). Kept qwen3.6. Scripts: `tools/model_eval.py`, `tools/model_reason_eval.py` |
 | Real usage | Every stream-json `claude -p` run carries a `rate_limit_event` (five_hour utilization and resetsAt). `quota.note_real_usage` keeps it in `~/.waggle/real_usage.json`; `quota.status()` reports `source: real` with the true percent over the fixed window (the old rolling 5 h sum read about 2x: 75% when the real number was 54%). The cap is calibrated from readings |
@@ -51,8 +51,8 @@ videos, locations, Hermes's own slash commands (/new /status /model ...), other 
 2. Waggle proposing its own code changes (step 13): a gated worktree pipeline; the owner approves each merge.
 3. Autonomy on, with charters: the four seeded goals are disabled and `autonomy` is off. Add the money experiment goal
    (lawful, $0, honest, no outward channel without the owner's yes) and switch on with the step limit.
-4. Phone calls (Twilio): needs the owner's account; trial credit only, never paid.
-5. Calendar: the owner runs `python -m waggle.calendar_watch login` (USER_TESTS.md). Then `ingest.sync_upcoming` and
+4. Phone calls (Twilio): SKIPPED by the owner 2026-11-21 ("skip phone for now"); don't ask again unless they bring it up.
+5. Calendar: NOT USED by the owner (2026-11-21); skip. Was: the owner runs `python -m waggle.calendar_watch login` (USER_TESTS.md). Then `ingest.sync_upcoming` and
    the evening note should read `calendar_watch` instead of the Claude connector.
 6. Videos and locations still go the old path; `/waggle media clean` has no confirmation.
 
@@ -128,9 +128,9 @@ Lesson: run the full suite only while few agents run tests, or rerun failures al
    gateway plug-in obey (branch rebuild/offswitch; live proof steps in its commit message). A damaged OFF file
    counts as ON, on purpose.
 6. Four guard holes are kept as expected-failure tests in `tests/test_guard.py`.
-7. Not built: end-to-end test client (plan step 5; needs the owner's one-time Telegram login), the closed
-   learning loop (step 7), cron jobs moved to core timers (step 10), evaluation suites (11), autonomous work
-   (12), Waggle changing its own code (13). The README is out of date.
+7. Built since this was written: the test client (step 5), the learning loop (7), autonomy (12) and code
+   proposals (13). Cron jobs to core timers (10) and evaluation suites (11) were built 2026-11-21 (rebuild/cron2core,
+   rebuild/evals).
 8. The stray second gateway task "Hermes_Gateway" re-enables itself. It belongs to a second Hermes home,
    `%LOCALAPPDATA%\hermes` (the default home, so Hermes gives it the bare name; `~/.hermes` gets
    `Hermes_Gateway_<suffix>`). Hermes registers it (`hermes_cli/gateway_windows.py`: `install()` -> `_install_scheduled_task`,
