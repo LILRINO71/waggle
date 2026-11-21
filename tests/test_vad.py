@@ -1,6 +1,6 @@
 """Speech detection (Silero VAD) and end-of-turn detection (Smart Turn) for the PC voice: the model files and their
 checksums, the endpointers with fake models (no model file needed), the fallbacks, the settings, and, when the two
-official model files are available (WAGGLE_MODELS_DIR, or <home>/models), the real models on a few synthesised
+official model files are available (WAGGLE_TEST_MODELS=<folder>), the real models on a few synthesised
 sentences. Nothing here opens the microphone, plays a sound or touches the network."""
 import array
 import hashlib
@@ -365,9 +365,10 @@ def read_pcm(name):
 def real_models(monkeypatch):
     pytest.importorskip("numpy")
     pytest.importorskip("onnxruntime")
-    d = os.environ.get("WAGGLE_MODELS_DIR")
+    d = os.environ.get("WAGGLE_TEST_MODELS")  # a folder with the two official files; the other tests never see it
     if not d or not all(vad.verified_path(n, d) for n in vad.MODELS):
-        pytest.skip("the two official model files are not in WAGGLE_MODELS_DIR (python -m waggle.vad fetch)")
+        pytest.skip("set WAGGLE_TEST_MODELS to a folder with the two official model files (python -m waggle.vad fetch)")
+    monkeypatch.setenv("WAGGLE_MODELS_DIR", d)
     vad.reset()
     yield
     vad.reset()
