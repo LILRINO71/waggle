@@ -81,7 +81,11 @@ HOOK_CHECKED = ("waggle/__init__.py", "waggle/policy.py", "waggle/agent_hook.py"
 CLAUDE_SETTINGS = re.compile(r"(^|/)\.claude/settings(\.local)?\.json$")
 
 # Under the Waggle data folder (config.HOME and ~/.waggle). "prefix" also covers SQLite -wal / -journal / -shm.
-WAGGLE_HOME_PATHS = (("config.json", "file"), ("approvals.db", "prefix"), ("budget.db", "prefix"))
+# turns/ holds the engine's turn state (write_turn_state): what the owner said in the running turn. The engine writes
+# it; an agent may not, because owner_instruction coverage is decided from it.
+TURN_DIR = "turns"
+WAGGLE_HOME_PATHS = (("config.json", "file"), ("approvals.db", "prefix"), ("budget.db", "prefix"),
+                     (TURN_DIR, "dir"))
 HOLDOUT_DIR, HOLDOUT_PREFIX = "eval", "holdout"
 # Under the user's home. install.py copies the Hermes plugin here, so this copy is the one that runs.
 USER_HOME_PATHS = ((".waggle-guard", "dir"), (".hermes/plugins/waggle/__init__.py", "file"))
@@ -96,6 +100,7 @@ CONFIG_KEYS = (
     "background_downgrade_at", "interactive_yield_s", "max_verifications_per_day", "max_calls_per_day",
     "max_selfbuilds_per_day",
     "extra_write_roots", "vault", "jobs_dir", "self_emails",
+    "owner_instructions",  # false turns the owner-instruction rule off (policy.owner_rule)
 )
 CONFIG_KEY = "home:config.json#keys"
 
@@ -1381,6 +1386,134 @@ def shell_hit(command, cwd=None, shell=None):
                                         low):
             return REASON.format("Waggle's code, through a script")
     return None
+
+
+# ---- the owner's turn ----------------------------------------------------------------------------
+# The engine (chat_engine.run_turn) writes one small state file per chat at the start of every turn: who the turn
+# is from and, for the owner's own messages, what they said (a voice note: its transcript). The policy reads it in
+# the hook (path from the session's environment, fixed per chat) to tell whether the owner's message covers an
+# action that would otherwise ask (policy.owner_rule). The folder is in the protected set (path-protected, not
+# hashed), so an agent's tools cannot write it without the user's yes; anything wrong with the file (missing,
+# unreadable, another chat's, finished, too old, a link) means "no owner instruction", which is today's rules.
+
+TURN_STATE_ENV = "WAGGLE_TURN_STATE"
+TURN_STATE_VERSION = 1
+TURN_MAX_AGE_S = 3600  # ceiling, whatever the state says: a turn never lasts longer than this
+
+
+def _turn_name(chat):
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", str(chat or ""))[:80] or "chat"
+
+
+def turn_state_dir(home=None):
+    return Path(home or config.HOME) / TURN_DIR
+
+
+def turn_state_path(chat, home=None):
+    """Where the engine keeps one chat's turn state (fixed per chat, so the chat process's environment carries it)."""
+    return turn_state_dir(home) / f"{_turn_name(chat)}.json"
+
+
+def _write_state(path, state):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(state), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def write_turn_state(chat, turn_id, origin, text, voice=False, confident=True, max_age_s=900, now=None):
+    """Record the turn that is starting (called by the engine process, never by an agent's tools). origin "user" is
+    the owner's own message; text is what they said (a voice note: the transcript), never content a tool fetched.
+    confident=False: speech recognition was unsure of the words. Never raises: returns the path, or None."""
+    try:
+        now = time.time() if now is None else float(now)
+        state = {"version": TURN_STATE_VERSION, "chat": str(chat), "turn_id": str(turn_id),
+                 "origin": str(origin or ""), "text": str(text or "")[:4000], "voice": bool(voice),
+                 "confident": confident is not False, "started": now,
+                 "max_age_s": float(min(max(float(max_age_s or 900), 1.0), TURN_MAX_AGE_S)), "ended": None,
+                 "pid": os.getpid()}
+        path = turn_state_path(chat)
+        _write_state(path, state)
+        return path
+    except Exception:
+        return None
+
+
+def end_turn_state(chat, turn_id, now=None):
+    """Mark the turn finished, so nothing that runs after it can use what the owner said in it. Never raises."""
+    try:
+        path = turn_state_path(chat)
+        state = json.loads(path.read_text(encoding="utf-8"))
+        if state.get("turn_id") != str(turn_id):
+            return False
+        state["ended"] = time.time() if now is None else float(now)
+        _write_state(path, state)
+        return True
+    except Exception:
+        return False
+
+
+def read_turn_state(env=None, now=None):
+    """The running turn's state for the chat process this runs in, or None ("no owner instruction").
+
+    Accepted only when: WAGGLE_TURN_STATE names exactly this chat's file in the Waggle data folder's turns/ (not a
+    link, not a folder that resolves elsewhere), the process is the chat brain (WAGGLE_AGENT=chat, so a background
+    agent or objective that inherited the variable is not), the file says it is this chat's, the turn has not ended,
+    and it started no longer ago than its own limit (TURN_MAX_AGE_S at most). The result carries "owner": True only
+    for origin "user" in a chat process started for the user."""
+    env = os.environ if env is None else env
+    try:
+        raw = str(env.get(TURN_STATE_ENV) or "").strip()
+        chat = str(env.get("WAGGLE_SESSION") or "")
+        if not raw or not chat or env.get("WAGGLE_AGENT") != "chat":
+            return None
+        expected = turn_state_path(chat)
+        if _lex(raw, "/") != _lex(expected, "/") or os.path.islink(expected):
+            return None
+        real_dir = os.path.normcase(_real(turn_state_dir()))
+        if real_dir != os.path.normcase(os.path.join(_real(config.HOME), TURN_DIR)):
+            return None  # turns/ is a link or junction to somewhere else
+        if os.path.normcase(_real(expected)) != os.path.normcase(os.path.join(real_dir, expected.name)):
+            return None
+        state = json.loads(expected.read_text(encoding="utf-8"))
+        if not isinstance(state, dict) or state.get("version") != TURN_STATE_VERSION or state.get("chat") != chat:
+            return None
+        now = time.time() if now is None else float(now)
+        started = float(state.get("started"))
+        limit = min(float(state.get("max_age_s") or 0), TURN_MAX_AGE_S)
+        if state.get("ended") is not None or started > now + 5 or now - started > limit:
+            return None
+        proc_origin = str(env.get("WAGGLE_TURN_ORIGIN") or "user").lower()
+        state["owner"] = state.get("origin") == "user" and proc_origin == "user" and not env.get("WAGGLE_ORIGIN")
+        state["text"] = str(state.get("text") or "")
+        state["confident"] = state.get("confident") is not False
+        return state
+    except Exception:
+        return None
+
+
+def current_turn(env=None):
+    """The running turn's state for this process (the chat brain's tools: the policy hook and Waggle's own tool
+    server, which both inherit WAGGLE_TURN_STATE from the chat session), or None when there is no fresh one (no
+    turn running, finished, too old, another chat's, unreadable). Never raises. Fields:
+      turn_id (str), origin (str: "user" for the owner's own message, else test / canary / bench / agent / ...),
+      text (str: what the owner said; a voice note's transcript; never content a tool fetched),
+      voice (bool: the message was a voice note), confident (bool: speech recognition was sure of the words; True
+      for typed messages), started (float: epoch seconds when the turn began), chat (str), owner (bool: origin is
+      "user" in a chat process started for the user)."""
+    try:
+        st = read_turn_state(env)
+        if not st:
+            return None
+        return {k: st.get(k) for k in ("turn_id", "origin", "text", "voice", "confident", "started", "chat", "owner")}
+    except Exception:
+        return None
+
+
+def owner_rule_enabled(home=None):
+    """config.json "owner_instructions" (default on). A protected key: changing it needs `waggle.guard approve`."""
+    picked = _config_picked(home)
+    return not (isinstance(picked, dict) and picked.get("owner_instructions") is False)
 
 
 # ---- manifest ----------------------------------------------------------------------------------

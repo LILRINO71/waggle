@@ -35,6 +35,7 @@ from pathlib import Path
 
 from . import chat_store, claude_cli
 from .config import Settings, data_path
+from .guard import turn_state_path
 
 CHAT_SYSTEM = """You are Waggle, the user's personal AI assistant, talking with them in a chat (usually Telegram on
 their phone). You run on their Windows PC with real tools, and you remember this conversation.
@@ -103,7 +104,8 @@ def mcp_config(chat, settings=None, origin="user"):
                                      "args": [str(REPO / "waggle" / "waggle_mcp.py")],
                                      "env": {"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1",
                                              "WAGGLE_HOME": str(data_path(".")), "WAGGLE_CHAT": chat,
-                                             "WAGGLE_SESSION": chat, "WAGGLE_AGENT": "chat", **origin_env(origin)}}}}
+                                             "WAGGLE_SESSION": chat, "WAGGLE_AGENT": "chat", **origin_env(origin),
+                                             "WAGGLE_TURN_STATE": str(turn_state_path(chat))}}}}
     d = data_path("chat_mcp")
     d.mkdir(exist_ok=True)
     p = d / f"{safe_name(chat)}.json"
@@ -252,7 +254,7 @@ class ChatSession:
         env = claude_cli.clean_env()
         env.pop("WAGGLE_ORIGIN", None)
         env.update(WAGGLE_SESSION=self.chat, WAGGLE_CHAT=self.chat, WAGGLE_AGENT="chat", PYTHONIOENCODING="utf-8",
-                   **origin_env(self.origin))
+                   WAGGLE_TURN_STATE=str(turn_state_path(self.chat)), **origin_env(self.origin))
         self._proc_origin = self.origin
         cwd = s.agent_workdir or str(Path.home() / "Claude")
         self.proc = _Proc(cmd, cwd, env, self.popen)
