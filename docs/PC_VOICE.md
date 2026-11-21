@@ -82,6 +82,58 @@ hours still hold: nothing is said out loud during them.
 - **Measure the judge:** `python -m waggle.bench voice` (50 labelled cases in `bench/voice_intent.jsonl`; `--model-only`,
   `--no-model`, `--model NAME`).
 
+## Hearing you better: speech detection and the end of your turn
+
+Two small models, run on the CPU inside the PC voice process (onnxruntime, already installed), replace guesses:
+
+| Model | What it does | Licence | File (in `<home>\models`) |
+|---|---|---|---|
+| Silero VAD v6.2.3 | says for every 32 ms whether it is speech, so music, a fan, typing and thumps stop starting utterances and stop holding one open | MIT | `silero_vad.onnx`, 2,327,524 bytes |
+| Smart Turn v3.2 (pipecat, CPU int8) | listens to the last 8 s, pause included, and says whether you have finished or only stopped to think | BSD-2-Clause | `smart-turn-v3.2-cpu.onnx`, 8,679,182 bytes |
+
+Install: `python -m waggle.vad fetch` (only needed once; it downloads from the official repositories at a pinned tag or
+commit and refuses and deletes anything whose size and sha256 are not the pinned ones, see `waggle/vad.py`).
+`python -m waggle.vad status` shows what is present. Without the files, or without onnxruntime, the PC voice behaves as
+before (loudness gate, fixed silence) and writes one line to its log.
+
+- **Silero is on** (`pc_voice_vad`). It still needs the sound to be at least `pc_voice_min_level` loud, so it can only
+  remove false starts, never add new ones (a television in another room). With it you can lower `pc_voice_min_level`
+  (try 60) if the webcam microphone is too quiet for you.
+- **Smart Turn is built but off** (`pc_voice_endturn`: "silence"). Measured with synthesised speech it ended turns in
+  the middle of thinking pauses far too often (table below), so it stays off until it has been tried on a real voice.
+  One safe way to use it already: `"pc_voice_endturn": "smart", "pc_voice_endturn_pause_ms": 1200,
+  "pc_voice_endturn_max_s": 2.0` asks the model only after today's 1.2 s of silence and lets it wait up to 2.0 s when it
+  thinks you are not finished: it can only add waiting, never cut you off earlier than today.
+
+### Measured (no microphone; `python tools/endturn_eval.py synth|run|words|tune`)
+
+Kokoro (Waggle's own voice, 4 voices, 2 speeds) spoke the sentences; mixed with a quiet room, a quiet speaker, a fan
+(20 and 10 dB), pink noise, synthetic music (10 and 5 dB) and typing: 8 backgrounds, 4 endpointers run frame by frame as
+the PC voice runs them. A = loudness + 1.2 s (before), B = Silero + 1.2 s (now), C/D = Smart Turn with each gate.
+23 requests with a thinking pause of 0.5-1.5 s in the middle ("remind me to ... um ... call grandma"), the pause put in
+at the word boundary found by Whisper's word times and checked by re-transcribing both halves; 20 complete requests.
+
+| | A before | B Silero (default) | D Silero + Smart Turn | E Smart Turn, extend only |
+|---|---|---|---|---|
+| Complete requests: turn ended before the last word | 0 / 160 | 0 / 160 | 21 / 160 | 0 / 160 |
+| Complete requests: mean wait after the last word | 1.39 s (40 never ended in music) | 1.28 s | 0.29 s | 1.28 s |
+| Thinking pause shorter than 1.2 s: cut in half | 0 / 184 | 0 / 184 | 83 / 184 | 0 / 184 |
+| Thinking pause up to 1.5 s: cut in half | 52 / 184 | 63 / 184 (and 48 stuck in A) | 163 / 184 | 39 / 184 |
+| First words lost (capture starts late), missed turns | 0, 0 (1 in a stuck run) | 0, 0 | 0, 0 | 0, 0 |
+| Turn never ended 4 s after the last word (music kept the gate open) | 141 runs | 0 | 0 | 0 |
+| Utterances sent on per 10 min of music with nobody speaking | 20 | 0 | 0 | 0 |
+| ... of door thumps | 80 | 0 | 0 | 0 |
+
+Recogniser check of what was captured (Whisper small on the CPU; 32 sentences x 4 backgrounds): A kept the whole
+sentence in 92 of 96 runs (32 runs never ended because of the music), B in 127 of 128; every difference was Whisper
+spelling a word differently ("Waggle" as "wagle", "add" as "and"), and in each of them the capture began before the
+first word, so no word was lost by either gate.
+Smart Turn on its own published test data (25 English clips from the dataset it was trained with): 24 right, so the
+feature extraction is correct (it matches the reference extractor to 1e-7); on the synthesised pauses it calls most
+mid-sentence stops "finished". Synthesised speech has no hesitation in its voice, so this says Smart Turn is not safe to
+switch on here, not that it fails with people: try it with a real voice before changing the default.
+Costs: Silero under 1 ms per 30 ms, Smart Turn about 40 ms per check on one CPU thread.
+
 ## Switching things off
 
 
@@ -102,6 +154,9 @@ All settings go in `config.json` in the Waggle home. They are read when the PC v
 | Silence that ends what you say | `"pc_voice_end_silence_s": 1.2` | 1.2 s |
 | What counts as "away" | `"pc_presence_idle_s": 300` | 5 minutes without input |
 | How loud sound must be to count as speech | `"pc_voice_min_level": 120` | 120 (frame RMS of 16-bit samples) |
+| Which gate finds speech | `"pc_voice_vad": "energy"` (loudness only) or `"silero"` (a small neural model) | silero (energy when the model file is missing) |
+| When your turn is over | `"pc_voice_endturn": "silence"` (the fixed silence above) or `"smart"` (Smart Turn) | silence |
+| Smart Turn: first check after a pause of, longest silence, how sure | `"pc_voice_endturn_pause_ms": 200`, `"pc_voice_endturn_max_s": 1.6`, `"pc_voice_endturn_min_p": 0.5` | 200 ms, 1.6 s, 0.5 |
 
 - Stop it now: `python -m waggle.pcvoice stop` (it starts again at the next logon).
 - See what it is doing: `python -m waggle.pcvoice status` (hotkey, wake word, microphone, counters, last error).

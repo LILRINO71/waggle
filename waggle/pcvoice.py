@@ -53,6 +53,17 @@ pc_voice_max_s (30), pc_voice_start_timeout_s (6), pc_voice_min_level (120, the 
 speech), pc_voice_speak_messages (true), pc_voice_smart (true: the master switch of the two paragraphs above),
 pc_voice_judge (true), pc_voice_stream (true), pc_voice_question_s (10), pc_voice_judge_model ("": settings.local_model),
 pc_voice_judge_timeout_s (3), pc_voice_judge_min (0.5, how sure the judge must be that it was said to Waggle).
+
+Hearing (waggle/vad.py, two small ONNX models in <home>/models, fetched with `python -m waggle.vad fetch`):
+  * pc_voice_vad ("silero", the default | "energy"): which gate finds speech. Silero VAD judges the sound itself, so
+    music, thumps and typing stop starting utterances (and stop holding one open); "energy" is the old loudness gate.
+  * pc_voice_endturn ("silence", the default | "smart"): when the utterance is over. "silence" is the fixed
+    pc_voice_end_silence_s (1.2). "smart" asks Smart Turn v3 at every pause of pc_voice_endturn_pause_ms (200)
+    whether the speaker has finished; yes ends the turn at once, no keeps listening up to pc_voice_endturn_max_s
+    (1.6) of silence; pc_voice_endturn_min_p (0.5) is how sure the model must be. Off by default: on the measured
+    set it ended turns in the middle of thinking pauses (docs/PC_VOICE.md). Set pc_voice_endturn_pause_ms 1200 and
+    pc_voice_endturn_max_s 2.0 to use it only to wait LONGER than today (never to end earlier).
+  A missing model file, a file that is not the pinned one, or a missing onnxruntime means the old behaviour.
 A change is read when the process starts."""
 import argparse
 import hashlib
@@ -89,6 +100,11 @@ DEFAULTS = {
     "pc_voice_max_s": 30.0,
     "pc_voice_start_timeout_s": 6.0,
     "pc_voice_min_level": 120.0,
+    "pc_voice_vad": "silero",
+    "pc_voice_endturn": "silence",
+    "pc_voice_endturn_max_s": 1.6,
+    "pc_voice_endturn_pause_ms": 200.0,
+    "pc_voice_endturn_min_p": 0.5,
     "pc_voice_speak_messages": True,
     "pc_voice_smart": True,
     "pc_voice_judge": True,
@@ -529,6 +545,7 @@ class PcVoice:
         self.asked = False  # Waggle's last words were a question
         self._sink = None
         self._warmed = 0.0
+        self._gate_notes = set()
         self.stats.update(ignored=0, echoes=0, stops=0, judged=0, judge_fallbacks=0, streamed_turns=0)
 
     # -- signals
@@ -617,12 +634,33 @@ class PcVoice:
         return item.cut
 
     # -- listening
+    def new_endpointer(self, end_silence_s, max_s):
+        """The endpointer the settings ask for (Silero VAD, Smart Turn), or the energy gate with the fixed silence
+        when a model is not available; each fallback is logged once."""
+        def note(text):
+            if text not in self._gate_notes:
+                self._gate_notes.add(text)
+                log.warning("hearing: %s", text)
+        ep = mic.make_endpointer(
+            end_silence_s, max_s, min_on=setting("pc_voice_min_level"), min_off=setting("pc_voice_min_level") * 2 / 3,
+            vad=setting("pc_voice_vad").lower(), endturn=setting("pc_voice_endturn").lower(),
+            turn_max_silence_s=max(end_silence_s, setting("pc_voice_endturn_max_s")),
+            turn_pause_ms=setting("pc_voice_endturn_pause_ms"), turn_min_p=setting("pc_voice_endturn_min_p"), note=note)
+        self.stats["hearing"] = ep.mode
+        return ep
+
+    def warm_hearing(self):
+        """Load the models the settings ask for now (onnxruntime and the two sessions take a few hundred ms), so the
+        first utterance does not wait for them."""
+        try:
+            self.new_endpointer(setting("pc_voice_end_silence_s"), setting("pc_voice_max_s"))
+        except Exception as e:  # noqa: BLE001
+            log.warning("hearing: warm-up failed (%s: %s)", type(e).__name__, e)
+
     def listen(self, src, start_timeout_s, *, end_silence_s=None, max_s=None):
         """One utterance from `src`: (pcm, info) or (None, info) when nobody spoke in time. A hotkey press while
         recording ends it at once (and sends what there is)."""
-        ep = mic.Endpointer(end_silence_s=end_silence_s or setting("pc_voice_end_silence_s"),
-                            max_s=max_s or setting("pc_voice_max_s"), min_on=setting("pc_voice_min_level"),
-                            min_off=setting("pc_voice_min_level") * 2 / 3)
+        ep = self.new_endpointer(end_silence_s or setting("pc_voice_end_silence_s"), max_s or setting("pc_voice_max_s"))
         t0 = time.monotonic()
         info = {"ended_by": "", "speech_ms": 0}
         last_loud = None
@@ -637,12 +675,12 @@ class PcVoice:
                     break
                 continue
             r = ep.feed(f)
-            if ep.in_speech and mic.level(f)[0] >= ep.off_bar():
+            if ep.in_speech and ep.voiced:
                 last_loud = time.monotonic()
             if r == "start":
                 self._event("speech_start")
             if r == "end":
-                info["ended_by"] = "silence" if ep._silent_ms >= ep.end_silence_s * 1000 else "max length"
+                info["ended_by"] = ep.ended_by or "silence"
                 break
             if not ep.in_speech and time.monotonic() - t0 > start_timeout_s:
                 info["ended_by"] = "no speech"
@@ -898,8 +936,7 @@ class PcVoice:
                     f = src.read(0.5)
                     if f is None:
                         continue
-                    ep = ep or mic.Endpointer(WAKE_END_SILENCE_S, WAKE_MAX_S, min_on=setting("pc_voice_min_level"),
-                                              min_off=setting("pc_voice_min_level") * 2 / 3)
+                    ep = ep or self.new_endpointer(WAKE_END_SILENCE_S, WAKE_MAX_S)
                     if ep.feed(f) == "end":
                         done, ep = ep, None
                         self.heard(src, done)
@@ -990,6 +1027,7 @@ def cmd_run(args):
         except ValueError as e:
             pv._error(str(e))
     threading.Thread(target=sounds.prepare, daemon=True, name="waggle-pcvoice-lines").start()
+    threading.Thread(target=pv.warm_hearing, daemon=True, name="waggle-pcvoice-hearing").start()
     stop_file = home() / STOP_FILE
     stop_file.unlink(missing_ok=True)
     if args.seconds:
