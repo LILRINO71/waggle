@@ -143,7 +143,7 @@ class Local:
 
 def counselor(n=1, when=None):
     return mail(n, "Ms. Rivera <rivera@lincoln-high.example.edu>", "Course requests",
-                "Hi, which electives do you want to request for next term? Please reply by Friday, I am away "
+                "Hi, which electives do you want to request for next term? Please reply by Friday, Nov 20, I am away "
                 "next week.", when or at(11, 30))
 
 
