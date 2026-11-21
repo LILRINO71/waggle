@@ -165,18 +165,45 @@ def code_route(sent):
     return CODE_ROUTES.get(kind, f"by an unknown route ({kind})")
 
 
-async def run_login(client, ask, ask_secret, out, password_needed_exc, d=None):
+async def qr_authorize(client, ask_secret, out, password_needed_exc, show_qr, secrets, tries=4, wait_s=60):
+    """Log in by scanning a QR code with the Telegram app (Settings > Devices > Link Desktop Device): no login code.
+    The QR token is a secret while it is valid, so it is only drawn, never printed as text."""
+    qr = await client.qr_login()
+    for attempt in range(tries):
+        show_qr(qr.url)
+        out("Scan it with your phone: Telegram > Settings > Devices > Link Desktop Device. Waiting 60 s...")
+        try:
+            await qr.wait(timeout=wait_s)
+            return
+        except password_needed_exc:
+            pw = ask_secret("2FA password: ")
+            secrets.append(pw)
+            await client.sign_in(password=pw)
+            return
+        except Exception as e:  # asyncio.TimeoutError: the token expired, draw a fresh one
+            if "Timeout" not in type(e).__name__:
+                raise
+            out("Not scanned in time; here is a fresh code.")
+            await qr.recreate()
+    raise RuntimeError("the QR code was not scanned")
+
+
+async def run_login(client, ask, ask_secret, out, password_needed_exc, d=None, show_qr=None):
     """Interactive login on an already built client. Returns 0 on success.
     ask / ask_secret / out are injected so a test can drive it with a fake client."""
-    phone = normalize_phone(ask("Phone number (international format, e.g. +15551234567): "))
-    if not phone:
-        out("That does not look like an international phone number.")
-        return 1
+    phone = None
+    if show_qr is None:
+        phone = normalize_phone(ask("Phone number (international format, e.g. +15551234567): "))
+        if not phone:
+            out("That does not look like an international phone number.")
+            return 1
     typed_bot = ask("Waggle bot @username (Enter to auto-detect from the group): ")
-    secrets = [phone]
+    secrets = [phone] if phone else []
     await client.connect()
     try:
-        if not await client.is_user_authorized():
+        if not await client.is_user_authorized() and show_qr is not None:
+            await qr_authorize(client, ask_secret, out, password_needed_exc, show_qr, secrets)
+        elif not await client.is_user_authorized():
             sent = await client.send_code_request(phone)
             out(f"Telegram sent the code {code_route(sent)}.")
             code = ask_secret("Login code (press Enter alone if nothing came, to have it sent another way): ").strip()

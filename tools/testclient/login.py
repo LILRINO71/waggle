@@ -1,6 +1,7 @@
 """One-time Telegram login for the test client. Run with the test venv's python:
     %USERPROFILE%\\.waggle-testclient\\venv\\Scripts\\python.exe tools\\testclient\\login.py
-Asks for api_id, api_hash, phone, the login code and the 2FA password (if any). Nothing secret is printed."""
+Default: log in by scanning a QR code with the Telegram app (no login code needed). `--code` uses the phone number
+and a login code instead. Asks for api_id, api_hash and the 2FA password (if any). Nothing secret is printed."""
 import asyncio
 import getpass
 import sys
@@ -25,7 +26,29 @@ def main():
     api_hash = api.get("api_hash") or getpass.getpass("api_hash (hidden): ").strip()
     tclib.save_json(tclib.api_path(d), {"api_id": api_id, "api_hash": api_hash})
     client = TelegramClient(tclib.session_base(d), api_id, api_hash)
-    return asyncio.run(tclib.run_login(client, input, getpass.getpass, print, SessionPasswordNeededError, d))
+    show = None if "--code" in sys.argv[1:] else show_qr
+    try:
+        return asyncio.run(tclib.run_login(client, input, getpass.getpass, print, SessionPasswordNeededError, d,
+                                           show_qr=show))
+    finally:
+        (tclib.state_dir() / "login-qr.svg").unlink(missing_ok=True)  # the picture holds a short-lived login token
+
+
+def show_qr(url):
+    """Draw the login QR in the terminal and also open it as a picture (easier to scan)."""
+    import os
+    import qrcode
+    import qrcode.image.svg
+    qr = qrcode.QRCode(border=2)
+    qr.add_data(url)
+    qr.make(fit=True)
+    qr.print_ascii(invert=True)
+    path = tclib.state_dir() / "login-qr.svg"
+    qrcode.make(url, image_factory=qrcode.image.svg.SvgPathFillImage).save(str(path))
+    try:
+        os.startfile(str(path))
+    except OSError:
+        pass
 
 
 if __name__ == "__main__":
