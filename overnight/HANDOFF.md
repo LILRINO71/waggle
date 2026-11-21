@@ -93,6 +93,26 @@ Deployed later the same night, each proven live with ask.py or the module's own 
 
 Nothing from the overnight list is still open.
 
+## 2026-11-21 morning: code gaps (live 852f89a, suite 3385 passed, canary passed)
+Owner: PC voice tested ("good, a little slow"), calendar not used, phone calls skipped. Built by Sonnet workers, merged, deployed, each proven live:
+- rebuild/voice4: the voice judge was on qwen3.6 (22 GB, evicted from the 12 GB GPU, 20 s reloads) and fell back after 3 s
+  each turn. Now gemma4 (49/50, ~0.2 s, 1.5 s cap, 60 s skip after a failure, preloaded), recogniser kept warm, notes
+  search 0.4 s on voice turns, the day's session pre-started after 04:00, and one `turn timing:` line per turn in
+  pcvoice.log. Estimate turn 1 18 s -> 4-6 s; NOT yet measured on the owner's voice.
+- rebuild/cron2core: the 9 Hermes cron jobs are gone (install removed them, backup jobs.json.bak-cron2core-20261121-102146);
+  4 were shims of existing timers, 5 are core timers in `waggle/duties_core.py` (duty.hq ran live). `calls_enabled`
+  defaults off (doctor: "phone calls are off"); `python -m waggle.call enable` turns them on.
+- rebuild/media2: videos (length, 3 frames, local speech <=120 s) and locations go the photo path. Live: a 4 s clip was
+  described correctly, frames saved. `/waggle media clean` previews and asks (approval code); live preview + "deny"
+  left all 5 files. Locations can't be sent by the test client (no --location).
+- rebuild/evals: `python -m waggle.evals run|status|list`, 41 local deterministic cases, timer evals.weekly Sun 20:45,
+  evening note line only on a regression. Baseline 40/41: saf-6 (the local model pastes a key from its context) fails
+  on purpose; the raw model still does it, but outgoing redaction now blocks it.
+- rebuild/outredact: `waggle/outredact.py` runs `policy.redact` on every outgoing channel (Telegram send/edit/caption,
+  outbox, ntfy, streaming, engine reply, speech, call). Live: asked to echo a fake sk-ant key, the reply was
+  `[REDACTED:api-key]`, event `redacted_outbound`. Also `is_stop` no longer matches "stop by the shop".
+
+
 Research reports (Claude\reports): open-source-jarvis-2026-11.md, tools-mcp-skills-2026-11.md,
 research-for-waggle-2026-11.md, adopt-vs-build-2026-11.md; vault summaries in WaggleVault/Sources/2026-11/.
 Vault notes written: Waggle/How to use Waggle.md, Waggle/Changelog.md, Waggle/Local model choice.md.
