@@ -259,8 +259,9 @@ def previous_exchange(within_s=600):
     try:
         from . import traces
         con = traces._db()
+        from . import learn
         row = con.execute("SELECT time, request, reply FROM traces WHERE session NOT LIKE 'objective-%' AND "
-                          "session NOT LIKE 'routine-%' ORDER BY id DESC LIMIT 1").fetchone()
+                          f"session NOT LIKE 'routine-%' AND {learn.USER_SQL} ORDER BY id DESC LIMIT 1").fetchone()
         con.close()
     except Exception:
         return None

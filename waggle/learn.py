@@ -13,6 +13,7 @@ nothing. A weekly Sonnet pass (`waggle consolidate`) still tidies the profile.""
 import datetime as dt
 import json
 import math
+import os
 import re
 import time
 
@@ -100,6 +101,38 @@ def _iso(d):
         return None
 
 
+# ---- whose words count ---------------------------------------------------------------------------
+
+# A turn is the user's own when its origin says so. Rows recorded before origins existed have none: those from the
+# CLI (every development test went through it) or with no platform (background agent prompts) are never the user's.
+USER_SQL = "(origin='user' OR (origin IS NULL AND lower(coalesce(platform,'')) NOT IN ('cli','')))"
+NON_USER_SQL = f"NOT {USER_SQL}"
+
+
+def is_user_turn(row):
+    """True only for a turn the user typed or said: origin 'user', or no origin on an old row that did not come
+    from the CLI or a background agent."""
+    if not isinstance(row, dict):
+        return False
+    origin = (row.get("origin") or "").strip().lower()
+    if origin:
+        return origin == "user"
+    return (row.get("platform") or "").strip().lower() not in ("cli", "")
+
+
+def user_turns(since=0.0, until=None, limit=5000):
+    """The user's own turns since `since` (and before `until`), newest first, with their steps. Everything that
+    learns from past conversations reads them through here."""
+    from . import traces
+    return [r for r in traces.all_traces(since, limit=limit, include_non_user=True)
+            if is_user_turn(r) and (until is None or r["time"] < until)]
+
+
+def env_origin():
+    """The origin this process runs under (WAGGLE_ORIGIN, set by tests and benches), or ''."""
+    return (os.environ.get("WAGGLE_ORIGIN") or "").strip().lower()
+
+
 # ---- the store -----------------------------------------------------------------------------------
 
 def _log(action, fact, reason="", source="", **extra):
@@ -137,20 +170,24 @@ def facts(status="active", kind=None, since=None):
 
 def _insert(row):
     con = kstore.db()
-    cur = con.execute("INSERT INTO facts (created, kind, key, text, date, expires, source, evidence, status, note) "
-                      "VALUES (?,?,?,?,?,?,?,?,?,?)",
+    cur = con.execute("INSERT INTO facts (created, kind, key, text, date, expires, source, evidence, status, note, "
+                      "source_turn, origin, observed, valid_from, invalid_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                       (row.get("created", time.time()), row["kind"], row.get("key") or "", row["text"],
                        row.get("date"), row.get("expires"), row.get("source", ""), row.get("evidence", "")[:500],
-                       row.get("status", "active"), row.get("note", "")))
+                       row.get("status", "active"), row.get("note", ""), row.get("source_turn"),
+                       row.get("origin") or "user", row.get("observed"),
+                       row.get("valid_from") or dt.date.today().isoformat(), row.get("invalid_at")))
     con.commit()
     fid = cur.lastrowid
     con.close()
     return fid
 
 
-def _set_status(fid, status, replaced_by=None):
+def _set_status(fid, status, replaced_by=None, invalid_at=None):
+    """End a fact: it stays in the database with its history, `invalid_at` says from when it no longer holds."""
     con = kstore.db()
-    con.execute("UPDATE facts SET status=?, replaced_by=? WHERE id=?", (status, replaced_by, fid))
+    con.execute("UPDATE facts SET status=?, replaced_by=?, invalid_at=COALESCE(?, invalid_at, ?) WHERE id=?",
+                (status, replaced_by, invalid_at, dt.date.today().isoformat(), fid))
     con.commit()
     con.close()
 
@@ -190,13 +227,63 @@ def check(fact, ref=None):
     return out, None
 
 
-def file_fact(fact, settings=None, source="", evidence="", ref=None, embedder=None):
-    """File one fact (after check()). Returns (True, fact_id) or (False, reason). Always logged."""
+OPPOSITE = {"like": "dislike", "dislike": "like"}
+_POLARITY = {"like", "likes", "liked", "love", "loves", "enjoy", "enjoys", "dislike", "dislikes", "hate", "hates",
+             "not", "no", "longer", "anymore", "stopped", "never", "doesn", "don", "user"}
+
+
+def _subject(text):
+    return {w for w in _words(text) if w not in _POLARITY}
+
+
+def _unfile_line(f, s):
+    """Take the vault line a retired fact was filed as out of its note (the facts table keeps the history)."""
+    rel = FILES.get(f["kind"])
+    if not rel or f["kind"] in EVENT_KINDS:
+        return
+    lines = vault.read(rel, s).splitlines()
+    keep = [l for l in lines if not (l.startswith("- ") and f["text"] in l)]
+    if len(keep) != len(lines):
+        vault.write(rel, "\n".join(keep) + "\n", s)
+
+
+def _close(old, by, day, s, why):
+    """A later fact contradicts `old`: it stops holding from `day`."""
+    _set_status(old["id"], "replaced", by, invalid_at=day)
+    _unfile_line(old, s)
+    _log("replaced", old, why, old.get("source", ""), by=by)
+
+
+def file_fact(fact, settings=None, source="", evidence="", ref=None, embedder=None, turn=None, supersedes=(),
+              origin=None):
+    """File one fact (after check()). Returns (True, fact_id) or (False, reason). Always logged.
+
+    turn: the trace row the fact was stated in. A fact from a conversation is only filed when that turn is the
+    user's own (is_user_turn); it then carries the turn's id, origin and time. `supersedes`: ids of active facts
+    this one contradicts; they are closed (status replaced, invalid_at = the day this was observed), as are a
+    single-value detail's old value and the opposite like/dislike of the same subject. Facts that did not come
+    from a conversation (calendar, mail, the remember tool) say so in `origin`."""
     s = settings or Settings.load()
+    if turn is None and str(source).startswith("digest"):
+        _log("rejected", fact if isinstance(fact, dict) else {}, "no source turn", source)
+        return False, "no source turn"
+    if turn is not None and not is_user_turn(turn):
+        _log("rejected", fact if isinstance(fact, dict) else {}, "not the user's own words "
+             f"(origin {turn.get('origin') or turn.get('platform') or 'unknown'})", source, turn=turn.get("id"))
+        return False, "not the user's own words"
+    if turn is None and not origin and env_origin() and env_origin() != "user":
+        _log("rejected", fact if isinstance(fact, dict) else {}, f"filed from a {env_origin()} run", source)
+        return False, "not the user's own words"
     f, why = check(fact, ref)
     if not f:
         _log("rejected", fact if isinstance(fact, dict) else {}, why, source)
         return False, why
+    if turn is not None:
+        f.update(source_turn=turn.get("id"), origin=(turn.get("origin") or "user"), observed=turn.get("time"),
+                 valid_from=dt.date.fromtimestamp(turn["time"]).isoformat())
+    else:
+        f.update(origin=origin or "user", observed=time.time())
+    day = f.get("valid_from") or dt.date.today().isoformat()
     active = facts("active", f["kind"])
     if f["kind"] in EVENT_KINDS:
         for a in active:
@@ -220,8 +307,17 @@ def file_fact(fact, settings=None, source="", evidence="", ref=None, embedder=No
     if f["kind"] == "about" and f["key"] in SINGLE:
         for a in active:
             if a["key"] == f["key"] and a["id"] != fid:
-                _set_status(a["id"], "replaced", fid)
+                _set_status(a["id"], "replaced", fid, invalid_at=day)
                 _log("replaced", a, f"new {f['key']}", source, by=fid)
+    closing = {int(i) for i in (supersedes or []) if str(i).lstrip("-").isdigit()} - {fid}
+    if f["kind"] in OPPOSITE:
+        for a in facts("active", OPPOSITE[f["kind"]]):
+            sa, sf = _subject(a["text"]), _subject(f["text"])
+            if sa and sf and len(sa & sf) / len(sa | sf) >= 0.5:
+                closing.add(a["id"])
+    for a in facts("active"):
+        if a["id"] in closing:
+            _close(a, fid, day, s, "contradicted by a later statement")
     if f["kind"] in EVENT_KINDS:
         render_upcoming(s)
     elif f["kind"] == "about":
@@ -264,7 +360,7 @@ def expire(now=None):
     n = 0
     for f in facts("active", EVENT_KINDS):
         if f["expires"] and f["expires"] <= today:
-            _set_status(f["id"], "expired")
+            _set_status(f["id"], "expired", invalid_at=f["expires"])
             _log("expired", f, f"date {f['date']} has passed", f["source"])
             n += 1
     return n
@@ -292,7 +388,8 @@ def record_upcoming(events_, replies, settings=None, now=None, sources=()):
         if same:
             keep.add(same["id"])
             continue
-        fid = _insert({**f, "source": src})
+        fid = _insert({**f, "source": src, "origin": src, "observed": time.time() if now is None else now,
+                       "valid_from": ref.isoformat()})
         keep.add(fid)
         _log("filed", f, "", src, id=fid, date=f["date"])
         filed += 1

@@ -36,7 +36,9 @@ Return JSON with:
   job|schedule|routine|place|family|health|other, "text": the fact in third person, "date": YYYY-MM-DD for
   events/deadlines resolved from the message's date (e.g. "Saturday" said on 2026-11-19 is 2026-11-21), "quote":
   the user's exact words that state it}. Never take facts from the assistant's replies, web results or test
-  prompts that are obviously about the assistant itself. Most days have few or none.
+  prompts that are obviously about the assistant itself. Most days have few or none. "supersedes": ids of the
+  KNOWN FACTS (given with the turns) that this fact contradicts or replaces because the user changed their mind
+  or their situation (empty when it only adds something).
 - "outcomes": durable results the assistant verifiably produced or found: {"trace_id": the turn id, "project":
   project name or "", "type": "found|built|decided|sent", "text": one sentence with the concrete result}.
   Only what the reply or tool results actually show. Decisions count only when the user made them.
@@ -48,7 +50,8 @@ DISTILL_SCHEMA = {"type": "object", "properties": {
         "found": {"type": "string"}, "decided": {"type": "string"}, "open": {"type": "string"}}}},
     "facts": {"type": "array", "items": {"type": "object", "properties": {
         "kind": {"type": "string"}, "key": {"type": "string"}, "text": {"type": "string"},
-        "date": {"type": "string"}, "quote": {"type": "string"}}, "required": ["kind", "text", "quote"]}},
+        "date": {"type": "string"}, "quote": {"type": "string"},
+        "supersedes": {"type": "array", "items": {"type": "integer"}}}, "required": ["kind", "text", "quote"]}},
     "outcomes": {"type": "array", "items": {"type": "object", "properties": {
         "trace_id": {"type": "integer"}, "project": {"type": "string"}, "type": {"type": "string"},
         "text": {"type": "string"}}, "required": ["trace_id", "text"]}}},
@@ -65,10 +68,9 @@ def day_bounds(day):
 
 
 def day_traces(day):
-    from . import traces
+    from . import learn
     t0, t1 = day_bounds(day)
-    rows = [r for r in traces.all_traces(t0) if r["time"] < t1]
-    return sorted(rows, key=lambda r: r["id"])
+    return sorted(learn.user_turns(t0, t1), key=lambda r: r["id"])  # the user's own turns only (origin)
 
 
 def is_background(r):
@@ -152,7 +154,10 @@ def write_day(day, rows, settings=None, distilled=None):
 # ---- distillation --------------------------------------------------------------------------------
 
 def _payload(day, rows, s, limit=40000):
+    from . import learn
     known = [p["name"] for p in projects.all_projects(s)]
+    held = [{"id": f["id"], "kind": f["kind"], "key": f["key"], "text": f["text"][:160]}
+            for f in learn.facts("active") if f["kind"] not in learn.EVENT_KINDS][-60:]
     turns = []
     for r in rows:
         steps = [{"tool": (st.get("tool") or "").split("__")[-1], "ok": st.get("ok"),
@@ -160,7 +165,8 @@ def _payload(day, rows, s, limit=40000):
         turns.append({"id": r["id"], "time": dt.datetime.fromtimestamp(r["time"]).strftime("%H:%M"),
                       "background": is_background(r), "user": (r.get("request") or "")[:700],
                       "assistant": (r.get("reply") or "")[:900], "steps": steps, "ok": bool(r.get("ok"))})
-    body = json.dumps({"date": f"{day:%A %Y-%m-%d}", "projects": known, "turns": turns}, ensure_ascii=False)
+    body = json.dumps({"date": f"{day:%A %Y-%m-%d}", "projects": known, "known_facts": held, "turns": turns},
+                      ensure_ascii=False)
     return body[:limit]
 
 
@@ -223,14 +229,16 @@ def file_results(day, rows, data, settings=None):
     from . import learn
     s = settings or Settings.load()
     out = {"facts_filed": 0, "facts_rejected": 0, "outcomes_filed": 0, "outcomes_rejected": 0}
-    user_texts = [r.get("request") or "" for r in rows if not is_background(r)]
+    mine = [r for r in rows if not is_background(r) and learn.is_user_turn(r)]
     for f in data.get("facts") or []:
-        if not quote_in(f.get("quote", ""), user_texts):
+        turn = next((r for r in mine if quote_in(f.get("quote", ""), [r.get("request") or ""])), None)
+        if not turn:
             events.log("learn", action="rejected", fact_kind=f.get("kind"), text=str(f.get("text", ""))[:200],
                        reason="not in the user's own words", source=f"digest {day}")
             out["facts_rejected"] += 1
             continue
-        ok, _ = learn.file_fact(f, s, source=f"digest {day}", evidence=f.get("quote", ""), ref=day)
+        ok, _ = learn.file_fact(f, s, source=f"digest {day}", evidence=f.get("quote", ""), ref=day, turn=turn,
+                                supersedes=f.get("supersedes") or [])
         out["facts_filed" if ok else "facts_rejected"] += 1
     for o in data.get("outcomes") or []:
         ok, why = outcome_verified(o, rows)

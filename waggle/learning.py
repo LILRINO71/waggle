@@ -26,7 +26,7 @@ import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from . import claude_cli, events, prompts, quota, router, skills, traces, vault
+from . import claude_cli, events, learn, prompts, quota, router, skills, traces, vault
 from .config import Settings, data_path
 
 BENCH = Path(__file__).resolve().parent.parent / "bench"
@@ -41,7 +41,7 @@ def _short_tool(name):
 
 def analyze(since_days=7, rows=None):
     since = time.time() - since_days * 86400
-    rows = rows if rows is not None else traces.all_traces(since)
+    rows = rows if rows is not None else learn.user_turns(since)
     out = {"window_days": since_days, "turns": len(rows)}
     if not rows:
         return out
@@ -97,7 +97,7 @@ def _sequence(r):
 
 def discover_skills(rows=None, min_freq=3, min_len=2, max_len=4, since_days=30):
     """Recurring tool sequences in successful agent turns, plus clusters of similar successful requests."""
-    rows = rows if rows is not None else traces.all_traces(time.time() - since_days * 86400)
+    rows = rows if rows is not None else learn.user_turns(time.time() - since_days * 86400)
     good = [r for r in rows if r["ok"] and r.get("feedback", 0) >= 0 and r.get("steps")]
     grams = defaultdict(list)
     for r in good:
@@ -423,7 +423,7 @@ def growth_today(settings=None, now=None, quiz_result=None, signals=None):
     mirrored = sum(((e.get("jobs") or {}).get("memory") or {}).get("added", 0)
                    + ((e.get("jobs") or {}).get("memory") or {}).get("updated", 0) for e in ingests)
     proj = {e.get("project") for e in _today_events("project_update", since)}
-    rows = [r for r in traces.all_traces(since) if r["time"] >= since]
+    rows = [r for r in learn.user_turns(since) if r["time"] >= since]
     skills_used = sum(1 for r in rows if r.get("skills"))
     inj = memory.retrieval_log(since, mode="inject")
     data = {"notes": len(notes), "facts_active": len(learn.facts("active")),
@@ -519,7 +519,7 @@ def daily(settings=None, now=None, embedder=None):
     s = settings or Settings.load()
     now = now or time.time()
     since = _day_start(now)
-    rows = [r for r in traces.all_traces(since) if r["time"] >= since]
+    rows = [r for r in learn.user_turns(since) if r["time"] >= since]
     sig = implicit_signals(rows)
     try:
         qr = quiz.run(s, embedder=embedder, now=now)

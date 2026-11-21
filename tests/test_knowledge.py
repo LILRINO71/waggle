@@ -262,7 +262,7 @@ def test_follow_up_searches_with_the_last_exchange(s):
     q2, follow2 = memory.query_for("tell me about the chemistry class schedule this term please",
                                    previous=("x", "y"))
     assert not follow2 and q2.startswith("tell me")
-    traces.record("what does the hive scale weigh", session="t1", reply="Honey flow, hourly.")
+    traces.record("what does the hive scale weigh", session="t1", platform="telegram", reply="Honey flow, hourly.")
     used, follow = memory.query_for("and how often?")
     assert follow and "hive scale" in used
 

@@ -16,7 +16,8 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS state (k TEXT PRIMARY KEY, v TEXT, time REAL);
 CREATE TABLE IF NOT EXISTS facts (id INTEGER PRIMARY KEY AUTOINCREMENT, created REAL, kind TEXT, key TEXT,
     text TEXT, date TEXT, expires TEXT, source TEXT, evidence TEXT, status TEXT DEFAULT 'active',
-    replaced_by INTEGER, note TEXT);
+    replaced_by INTEGER, note TEXT, source_turn INTEGER, origin TEXT, observed REAL, valid_from TEXT,
+    invalid_at TEXT);
 CREATE INDEX IF NOT EXISTS facts_status ON facts(status, kind);
 CREATE TABLE IF NOT EXISTS retrieval (id INTEGER PRIMARY KEY AUTOINCREMENT, time REAL, session TEXT, mode TEXT,
     query TEXT, used_query TEXT, follow_up INTEGER, paths TEXT, top REAL, cutoff REAL, candidates INTEGER);
@@ -25,10 +26,21 @@ CREATE TABLE IF NOT EXISTS growth (day TEXT PRIMARY KEY, time REAL, data TEXT);
 """
 
 
+# source_turn: id of the trace the fact came from; origin: that turn's origin (user, or calendar/mail/tool for facts
+# that did not come from a conversation); observed: when that turn happened; valid_from / invalid_at: the dates
+# the fact holds (invalid_at stays empty while it is true; a later contradiction or the passing of its day sets it).
+FACT_COLUMNS = [("source_turn", "INTEGER"), ("origin", "TEXT"), ("observed", "REAL"), ("valid_from", "TEXT"),
+                ("invalid_at", "TEXT")]
+
+
 def db():
     con = sqlite3.connect(data_path("knowledge.db"), timeout=20)
     con.row_factory = sqlite3.Row
     con.executescript(SCHEMA)
+    have = {r[1] for r in con.execute("PRAGMA table_info(facts)")}
+    for col, typ in FACT_COLUMNS:  # a database made before facts carried their source
+        if col not in have:
+            con.execute(f"ALTER TABLE facts ADD COLUMN {col} {typ}")
     return con
 
 
