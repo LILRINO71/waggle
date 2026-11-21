@@ -110,8 +110,9 @@ def _vault_text(s):
     return "\n".join(parts)
 
 
-def run(settings=None, embedder=None, dirs=None, now=None, bank=None):
-    """Score retrieval on the bank. Returns {'items', 'answered', 'score', 'known', 'misses': [...]}."""
+def run(settings=None, embedder=None, dirs=None, now=None, bank=None, max_misses=20):
+    """Score retrieval on the bank. Returns {'items', 'answered', 'score', 'known', 'misses': [...]}; each miss
+    carries its item id (the learning loop's signal key)."""
     s = settings or Settings.load()
     items = bank if bank is not None else build_bank(s, dirs, now)
     if not items:
@@ -130,10 +131,10 @@ def run(settings=None, embedder=None, dirs=None, now=None, bank=None):
         if any(ans in h["text"].lower() for h in hits):
             answered += 1
         else:
-            misses.append({"note": it["note"], "question": it["question"][:160], "answer": it["answer"],
-                           "in_vault": has})
+            misses.append({"id": it["id"], "note": it["note"], "question": it["question"][:160],
+                           "answer": it["answer"], "in_vault": has})
     n = len(items)
     if errors == n:  # retrieval itself is down (no embedder): a score of 0 would be a lie, not a baseline
         raise RuntimeError(f"retrieval unavailable: all {n} quiz items failed to search")
     return {"items": n, "answered": answered, "score": round(answered / n, 3), "known": round(known / n, 3),
-            "misses": misses[:20]}
+            "misses": misses[:max_misses]}

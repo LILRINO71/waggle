@@ -522,7 +522,14 @@ def daily(settings=None, now=None, embedder=None):
     rows = [r for r in learn.user_turns(since) if r["time"] >= since]
     sig = implicit_signals(rows)
     try:
-        qr = quiz.run(s, embedder=embedder, now=now)
+        qr = quiz.run(s, embedder=embedder, now=now, max_misses=quiz.MAX_ITEMS)
+        # the whole miss list, for the learning loop (waggle/learnloop.py): it fixes what the quiz missed
+        try:
+            kstore.put("quiz.last", {"time": now, "day": dt.date.fromtimestamp(now).isoformat(),
+                                     "items": qr["items"], "answered": qr["answered"], "score": qr["score"],
+                                     "misses": qr["misses"]})
+        except Exception as e:
+            events.log("learning", action="quiz_last_failed", error=f"{type(e).__name__}: {e}"[:200])
     except Exception as e:
         qr = {"error": f"{type(e).__name__}: {e}"[:200]}
     growth_today(s, now, qr if "error" not in qr else None, sig)

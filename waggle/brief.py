@@ -159,6 +159,13 @@ def evening_note(settings=None, now=None, activity=None):
                                                            "message)") + ".")
     learned = _learned(now)
     lines.append("Learned: " + ("; ".join(learned) if learned else "nothing new recorded today") + ".")
+    try:  # the learning loop's changes, one line each with its undo code (waggle/learnloop.py)
+        from . import learnloop
+        fixes = learnloop.evening_lines(now, settings=s)
+    except Exception:  # noqa: BLE001
+        fixes = ""
+    if fixes:
+        lines.append(fixes)
     if activity is None:
         try:
             activity = watchers.repo_activity(s, start.timestamp(), now)
