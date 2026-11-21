@@ -77,10 +77,14 @@ Deployed later the same night, each proven live with ask.py or the module's own 
   `cascade_local`; `python -m waggle.cascade status|try "..."`; live try answered locally, 1 Claude call avoided) and
   checklist judging (`waggle/checklist.py`, `checklist_judge`). Suite 3116 passed before deploy; canary passed.
 - Owner's keep-or-delete list with every off switch: overnight/MORNING.md.
+- 8127b88 (about 01:30): proposal 7XJP's fix (traces.CORRECTION skips "no thanks/worries/problem", "no, that's
+  fine"). Its own merge (1afd175) failed the deploy canary with "database is locked" because an ask.py run still held
+  the Telethon session; the proposal rolled itself back (67b6a1b) correctly. Fix: tools/testclient/tclib.SessionLock
+  (ask/canary/ping/login hold it while connected, wait up to 180 s; canary child timeout includes it), then the
+  revert was reverted. Proven live: canary started during an ask.py run waited 27 s and passed. Suite 3138 passed.
+  The stale "reply merge 7XJP" text (outbox id 22) was expired as superseded.
 
-Still open at the time of writing: rebuild/voice3 (Silero VAD + Smart Turn v3 for PC voice; Sonnet worker), and
-proposal 7XJP (p20261121-ac40, retry of 33HN: polite "no thanks" counted as a correction), built and waiting for the
-suite lock; `python -m waggle.proposals advance` runs one pass.
+Still open at the time of writing: rebuild/voice3 (Silero VAD + Smart Turn v3 for PC voice; Sonnet worker).
 
 Research reports (Claude\reports): open-source-jarvis-2026-11.md, tools-mcp-skills-2026-11.md,
 research-for-waggle-2026-11.md, adopt-vs-build-2026-11.md; vault summaries in WaggleVault/Sources/2026-11/.

@@ -26,6 +26,14 @@ Each piece can be switched off on its own. To switch something off:
 | Nightly backup of Waggle's data at 3:30 AM to `C:\Users\hiheo\WaggleBackups` (14 kept) | remove `"waggle.backup"` from `MODULES` in `waggle/core/plugins.py`, then delete the folder |
 | New tools: CAD convert/measure, print estimate, notes/Office to PDF, video/image convert, GitHub portfolio audit, explain any file, FTC team stats | one `git rm` line per tool in `skills/README.md` ("Removing a tool pack") |
 
+## Also fixed overnight (nothing to decide)
+
+- **Polite replies**: "no thanks", "no worries", "no, that's fine" no longer count as corrections that Waggle tries
+  to learn from ("no, that's wrong" still does). This was Waggle's own self-fix proposal 7XJP. Its first deploy
+  failed the live check because my test client was still using the Telegram login, so Waggle rolled itself back,
+  as it should. I fixed that clash (test runs now take turns on the login) and deployed it again (8127b88).
+  You may see an old "7XJP rolled back" note in the proposals history; it is live now.
+
 ## Things only you can do (each optional)
 
 1. **Calendar**: one-time Google login, steps in `overnight/USER_TESTS.md` (Calendar section). Until then the
