@@ -1453,6 +1453,15 @@ def end_turn_state(chat, turn_id, now=None):
         return False
 
 
+def _owner_engine_chats():
+    """The owner's engine chats as chat keys ("telegram:<id>", settings.engine_chats). Empty on any error."""
+    try:
+        s = config.Settings.load()
+        return {f"telegram:{str(c).strip()}" for c in (getattr(s, "engine_chats", None) or []) if str(c).strip()}
+    except Exception:
+        return set()
+
+
 def read_turn_state(env=None, now=None):
     """The running turn's state for the chat process this runs in, or None ("no owner instruction").
 
@@ -1460,7 +1469,8 @@ def read_turn_state(env=None, now=None):
     link, not a folder that resolves elsewhere), the process is the chat brain (WAGGLE_AGENT=chat, so a background
     agent or objective that inherited the variable is not), the file says it is this chat's, the turn has not ended,
     and it started no longer ago than its own limit (TURN_MAX_AGE_S at most). The result carries "owner": True only
-    for origin "user" in a chat process started for the user."""
+    for origin "user" in a chat process started for the user, or origin "canary" (the owner's test-marked message)
+    in a chat process started for it, in one of the owner's engine chats: only the owner's account can write there."""
     env = os.environ if env is None else env
     try:
         raw = str(env.get(TURN_STATE_ENV) or "").strip()
@@ -1484,7 +1494,13 @@ def read_turn_state(env=None, now=None):
         if state.get("ended") is not None or started > now + 5 or now - started > limit:
             return None
         proc_origin = str(env.get("WAGGLE_TURN_ORIGIN") or "user").lower()
-        state["owner"] = state.get("origin") == "user" and proc_origin == "user" and not env.get("WAGGLE_ORIGIN")
+        origin = state.get("origin")
+        if origin == "user":
+            state["owner"] = proc_origin == "user" and not env.get("WAGGLE_ORIGIN")
+        else:  # a test-marked message the owner sent in their own engine chat (the end-to-end test client)
+            state["owner"] = (origin == "canary" and proc_origin == "canary"
+                              and str(env.get("WAGGLE_ORIGIN") or "canary").lower() == "canary"
+                              and chat in _owner_engine_chats())
         state["text"] = str(state.get("text") or "")
         state["confident"] = state.get("confident") is not False
         return state

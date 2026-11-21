@@ -353,6 +353,30 @@ def test_state_is_bound_to_the_chat_process(home, tmp_path):
     assert guard.read_turn_state(chat_env())["owner"] is False
 
 
+def _engine_chats(home, chats):
+    config.HOME.mkdir(parents=True, exist_ok=True)
+    (config.HOME / "config.json").write_text(json.dumps({"engine_chats": chats}), encoding="utf-8")
+
+
+def test_the_owners_test_marked_message_in_their_own_chat_is_the_owner(home):
+    """The end-to-end test client writes from the owner's account into the owner's engine chat: origin "canary",
+    owner authority (so a test proves the owner-permission rule), and nothing learns from it."""
+    _engine_chats(home, ["42"])
+    canary = chat_env(WAGGLE_TURN_ORIGIN="canary", WAGGLE_ORIGIN="canary")
+    guard.write_turn_state(CHAT, "t1", "canary", "create a file on my desktop")
+    assert guard.read_turn_state(canary)["owner"] is True
+    assert guard.read_turn_state(chat_env())["owner"] is False  # a chat process started for the user: mismatch
+    assert guard.read_turn_state(chat_env(WAGGLE_TURN_ORIGIN="canary", WAGGLE_ORIGIN="bench"))["owner"] is False
+
+
+def test_a_canary_outside_the_owners_engine_chats_is_not_the_owner(home):
+    _engine_chats(home, ["7"])
+    guard.write_turn_state(CHAT, "t1", "canary", "delete sim-bench")
+    assert guard.read_turn_state(chat_env(WAGGLE_TURN_ORIGIN="canary", WAGGLE_ORIGIN="canary"))["owner"] is False
+    _engine_chats(home, [])
+    assert guard.read_turn_state(chat_env(WAGGLE_TURN_ORIGIN="canary", WAGGLE_ORIGIN="canary"))["owner"] is False
+
+
 def test_an_agent_cannot_point_the_hook_at_its_own_state(home, tmp_path):
     forged = tmp_path / "forged.json"
     guard.write_turn_state(CHAT, "t1", "user", "delete everything")

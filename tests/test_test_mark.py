@@ -1,10 +1,11 @@
 from waggle import chat_engine
 
 
-def test_mark_demotes_owner_message_to_test():
+def test_mark_demotes_owner_message_to_canary():
     assert chat_engine.test_marked("[waggle-test] what time is it") == (True, "what time is it")
     assert chat_engine.test_marked("  [WAGGLE-TEST]hi") == (True, "hi")
-    assert chat_engine.origin_for_message("telegram", "[waggle-test] ping", env={}) == "test"
+    assert chat_engine.origin_for_message("telegram", "[waggle-test] ping", env={}) == "canary"
+    assert chat_engine.origin_for_message("cli", "[waggle-test] ping", env={}) == "test"  # never raised
 
 
 def test_unmarked_and_mid_text_marks_stay_user():
@@ -25,4 +26,4 @@ def test_on_inbound_strips_mark_and_marks_test(monkeypatch):
                                 "platform": "telegram", "origin": "user"})
     except Exception:
         pass  # only what reached handle_inbound matters here
-    assert seen == {"text": "ping", "origin": "test"}
+    assert seen == {"text": "ping", "origin": "canary"}

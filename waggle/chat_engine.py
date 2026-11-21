@@ -78,16 +78,23 @@ TEST_MARK = re.compile(r"^\s*\[waggle-test\]\s*", re.I)
 
 def test_marked(text):
     """(is_test, text without the mark). The owner's own account may prefix a message with "[waggle-test]" (the
-    end-to-end test client does) so it is answered normally but recorded as origin "test": nothing learns from it.
-    The mark can only lower trust, never raise it."""
+    end-to-end test client does) so it is answered normally but recorded as origin "canary": nothing learns from it,
+    and what it sets up (a reminder) is still delivered to that chat, so the test proves delivery. The mark can only
+    lower trust, never raise it: only the owner's own message ("user") becomes "canary"."""
     m = TEST_MARK.match(text or "")
     return (True, (text or "")[m.end():]) if m else (False, text)
 
 
 def origin_for_message(platform, text, env=None):
-    """origin_for(platform), demoted to "test" when the text carries the test mark."""
+    """origin_for(platform), demoted when the text carries the test mark (see marked_origin)."""
     origin = origin_for(platform, env)
-    return "test" if test_marked(text)[0] else origin
+    return marked_origin(origin) if test_marked(text)[0] else origin
+
+
+def marked_origin(origin):
+    """The origin of a test-marked message: the owner's own message becomes "canary" (an end-to-end check from the
+    owner's account: answered, delivered, never learned from); any other origin stays as it is."""
+    return "canary" if origin == "user" else origin
 
 
 def origin_for(platform, env=None):
@@ -762,7 +769,7 @@ def on_inbound(msg):
         origin = "test"  # an unknown origin never counts as the user's own words
     marked, stripped = test_marked(msg.get("text") or "")
     if marked:
-        origin, msg = "test", {**msg, "text": stripped}
+        origin, msg = marked_origin(origin), {**msg, "text": stripped}
     address = str(msg.get("address") or "")
     chat = msg.get("chat") or (f"{platform}:{address}" if address else "")
     if not chat:
