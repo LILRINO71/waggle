@@ -422,7 +422,8 @@ def repo_activity(settings, since=None, now=None):
     """{repo: [commit subjects]} for commits since `since` (default: today 00:00) across watch_roots + extra_repos."""
     from . import proactive
     now = now or time.time()
-    since = since or dt.datetime.fromtimestamp(now).replace(hour=0, minute=0, second=0).timestamp()
+    if since is None:
+        since = dt.datetime.fromtimestamp(now).replace(hour=0, minute=0, second=0).timestamp()
     out = {}
     for repo in proactive.find_repos(settings):
         log = proactive._git_refs(repo, "log", f"--since=@{int(since)}", "--no-merges", "--format=%s", "-n", "30")
