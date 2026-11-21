@@ -84,7 +84,7 @@ CLAUDE_SETTINGS = re.compile(r"(^|/)\.claude/settings(\.local)?\.json$")
 # turns/ holds the engine's turn state (write_turn_state): what the owner said in the running turn. The engine writes
 # it; an agent may not, because owner_instruction coverage is decided from it.
 TURN_DIR = "turns"
-WAGGLE_HOME_PATHS = (("config.json", "file"), ("approvals.db", "prefix"), ("budget.db", "prefix"),
+WAGGLE_HOME_PATHS = (("config.json", "file"), ("approvals.db", "prefix"), ("budget.db", "prefix"), ("autonomy.db", "prefix"),
                      (TURN_DIR, "dir"))
 HOLDOUT_DIR, HOLDOUT_PREFIX = "eval", "holdout"
 # Under the user's home. install.py copies the Hermes plugin here, so this copy is the one that runs.
