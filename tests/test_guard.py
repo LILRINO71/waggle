@@ -1606,7 +1606,8 @@ def test_the_plugin_sends_every_hermes_tool_call_through_check_tool_call():
 CONFIG_WRITERS = {("install.py", "main"), ("waggle/budget.py", "set_limit"), ("waggle/chat_engine.py", "set_engine_chat"),
                   ("waggle/cli.py", "main"), ("waggle/live.py", "remember_city"), ("waggle/live.py", "weather"),
                   ("waggle/notify.py", "ntfy_topic"), ("waggle/comfort.py", "_write"),
-                  ("waggle/call.py", "set_enabled")}
+                  ("waggle/call.py", "set_enabled"),
+                  ("waggle/deadman.py", "seturl")}  # the owner's one-time setup script; deploy re-approves after it
 
 
 # `.save(` calls that are not Settings.save (each checked by hand; the inventory stays explicit).
