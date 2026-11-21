@@ -426,7 +426,8 @@ def repo_activity(settings, since=None, now=None):
         since = dt.datetime.fromtimestamp(now).replace(hour=0, minute=0, second=0).timestamp()
     out = {}
     for repo in proactive.find_repos(settings):
-        log = proactive._git_refs(repo, "log", f"--since=@{int(since)}", "--no-merges", "--format=%s", "-n", "30")
+        bound = (f"--since=@{int(since)}",) if since > 0 else ()  # git reads --since=@0 unreliably: no bound at all
+        log = proactive._git_refs(repo, "log", *bound, "--no-merges", "--format=%s", "-n", "30")
         if log:
             out[repo.name] = [line[:100] for line in log.splitlines() if line.strip()]
     return out

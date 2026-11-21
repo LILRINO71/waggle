@@ -1605,7 +1605,7 @@ def test_the_plugin_sends_every_hermes_tool_call_through_check_tool_call():
 
 CONFIG_WRITERS = {("install.py", "main"), ("waggle/budget.py", "set_limit"), ("waggle/chat_engine.py", "set_engine_chat"),
                   ("waggle/cli.py", "main"), ("waggle/live.py", "remember_city"), ("waggle/live.py", "weather"),
-                  ("waggle/notify.py", "ntfy_topic")}
+                  ("waggle/notify.py", "ntfy_topic"), ("waggle/comfort.py", "_write")}
 
 
 def test_every_code_path_that_writes_config_json_is_known():
@@ -1661,6 +1661,9 @@ def test_waggles_own_config_writes_keep_the_manifest_clean(world, monkeypatch):
     s.save()
     live.weather("Springfield", fetch=lambda url: {})
     notify.ntfy_topic()
+    from waggle import comfort  # the owner's comfort settings by chat (only allowlisted keys)
+    comfort._write("voice_note_speed", 1.2)
+    comfort._write("quiet_hours", [22, 7])
     assert cli.main(["init"]) in (None, 0)
     s = Settings.load()  # what install.py does
     s.router_model, s.ollama_url, s.claude_bin = "haiku", "http://127.0.0.1:11434", "claude.exe"
