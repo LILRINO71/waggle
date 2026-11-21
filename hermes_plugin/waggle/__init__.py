@@ -172,7 +172,7 @@ class HermesDelivery:
     def send_file(self, path, caption=""):
         return False  # files go through send_to_me (hermes send) from the brain
 
-    def send_voice(self, path, caption=""):
+    def send_voice(self, path, caption="", duration=None):
         return False
 
     def typing(self):
@@ -974,13 +974,16 @@ def _start_bridge():
 # ---- admission: typed Telegram text in an engine chat goes to the core's turn engine ----------------------
 # Hermes fires post_gateway_admission once per admitted message, before it starts a turn. For a chat listed in
 # settings.engine_chats (off by default) Waggle posts a plain typed text message to the core's /turn and returns
-# {"action": "handled"} only when the core answers 202, so the gateway never starts its own turn. Everything
-# else (other chats and platforms, groups, topics, voice notes, photos, files, /commands, approval replies,
-# feedback and objective commands), and any failure to reach the core, returns None: the old path answers as
-# before. The admission payload has no message type, so pre_gateway_dispatch records each event's type and media
-# first; a message without that record is never routed.
+# {"action": "handled"} only when the core answers 202, so the gateway never starts its own turn. A voice note
+# of the owner's direct chat goes the same way (kind "voice", the downloaded audio file as media): Hermes
+# transcribes AFTER this hook, so the engine transcribes the file itself (waggle/stt.py, the same local model).
+# Everything else (other chats and platforms, groups, topics, music files, photos, documents, /commands,
+# approval replies, feedback and objective commands), and any failure to reach the core, returns None: the old
+# path answers as before. The admission payload has no message type, so pre_gateway_dispatch records each
+# event's type and media first; a message without that record is never routed.
 
 _seen_types = {}  # message id -> (message type, has media), from pre_gateway_dispatch
+_seen_audio = {}  # message id -> the audio file paths of that event (voice notes)
 _seen_lock = threading.Lock()
 SEEN_MAX = 500
 CORE_POST_TIMEOUT_S = 2.0
@@ -993,11 +996,14 @@ def on_pre_gateway_dispatch(event=None, **kwargs):
         if mid is None:
             return None
         mtype = getattr(getattr(event, "message_type", None), "value", None) or str(getattr(event, "message_type", ""))
-        media = bool(getattr(event, "media_urls", None))
+        paths = [str(p) for p in (getattr(event, "media_urls", None) or []) if p]
         with _seen_lock:
-            _seen_types[str(mid)] = (str(mtype).lower(), media)
+            _seen_types[str(mid)] = (str(mtype).lower(), bool(paths))
+            _seen_audio[str(mid)] = paths
             while len(_seen_types) > SEEN_MAX:
                 _seen_types.pop(next(iter(_seen_types)))
+            while len(_seen_audio) > SEEN_MAX:
+                _seen_audio.pop(next(iter(_seen_audio)))
     except Exception as e:
         log.warning("waggle pre_gateway_dispatch record failed: %s", e)
     return None
@@ -1019,11 +1025,20 @@ def engine_route(platform, source, message_id, text, settings=None):
         return "old", "sender is not the chat's owner"
     with _seen_lock:
         seen = _seen_types.pop(str(message_id), None)
+        paths = _seen_audio.pop(str(message_id), None) or []
     if seen is None:
         return "old", "message type unknown"
+    t = (text or "").strip()
+    if seen[0] == "voice":
+        if t or len(paths) != 1:
+            return "old", "voice note with a caption or several files"
+        if not _is_audio_file(paths[0]):
+            return "old", "voice file missing"
+        with _seen_lock:
+            _seen_audio[str(message_id)] = paths  # the admission hook takes it from here
+        return "engine", "voice"
     if seen[0] != "text" or seen[1]:
         return "old", f"not typed text ({seen[0]}{', media' if seen[1] else ''})"
-    t = (text or "").strip()
     if not t:
         return "old", "empty"
     if t.startswith("/"):
@@ -1040,6 +1055,14 @@ def engine_route(platform, source, message_id, text, settings=None):
     return "engine", ""
 
 
+def _is_audio_file(path):
+    try:
+        from waggle import stt
+        return stt.audio_file_problem(path) == ""
+    except Exception:
+        return False
+
+
 def _engine_owns_approval(chat_key, text):
     """True when this approval reply answers an approval the engine's chat asked for (its session is the chat
     key): "approve CODE" for one of them, or a plain yes while one of them is pending."""
@@ -1054,8 +1077,9 @@ def _engine_owns_approval(chat_key, text):
         return False
 
 
-def post_turn(chat_id, text, message_id, timeout=CORE_POST_TIMEOUT_S):
-    """POST the message to the core's /turn. (accepted, detail): accepted only on HTTP 202."""
+def post_turn(chat_id, text, message_id, timeout=CORE_POST_TIMEOUT_S, audio=None):
+    """POST the message to the core's /turn. (accepted, detail): accepted only on HTTP 202. `audio`: the file
+    of a voice note (sent as kind "voice" with an empty text; the engine transcribes it)."""
     import urllib.error
     import urllib.request
     from waggle.core import settings as core_settings
@@ -1065,7 +1089,8 @@ def post_turn(chat_id, text, message_id, timeout=CORE_POST_TIMEOUT_S):
         return False, "no core token (core not running?)"
     if not token:
         return False, "empty core token"
-    body = {"chat": f"telegram:{chat_id}", "address": str(chat_id), "text": text, "kind": "text", "media": [],
+    body = {"chat": f"telegram:{chat_id}", "address": str(chat_id), "text": "" if audio else text,
+            "kind": "voice" if audio else "text", "media": [{"path": str(audio), "kind": "audio"}] if audio else [],
             "platform": "telegram", "origin": "user", "dedupe_key": f"telegram:{chat_id}:{message_id}"}
     req = urllib.request.Request(f"http://127.0.0.1:{core_settings.port()}/turn", method="POST",
                                  data=json.dumps(body).encode("utf-8"),
@@ -1095,9 +1120,15 @@ def on_gateway_admission(session_key="", platform="", source=None, message_id=No
             if why not in ("not telegram", "engine off for this chat"):
                 events.log("engine_admission", routed="old", reason=why, platform=platform)
             return None
-        ok, detail = post_turn(str((source or {}).get("chat_id")), text, message_id)
+        audio = None
+        if why == "voice":
+            with _seen_lock:
+                audio = (_seen_audio.pop(str(message_id), None) or [None])[0]
+            if not audio:
+                return None
+        ok, detail = post_turn(str((source or {}).get("chat_id")), text, message_id, audio=audio)
         events.log("engine_admission", routed="engine" if ok else "old", reason=detail, platform=platform,
-                   ms=round((time.time() - t0) * 1000))
+                   ms=round((time.time() - t0) * 1000), voice=bool(audio))
         return {"action": "handled"} if ok else None
     except Exception as e:  # never block a message: the old path answers
         log.warning("waggle admission hook failed: %s", e)

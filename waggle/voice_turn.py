@@ -32,6 +32,15 @@ FAILED_REPLY = ("I couldn't make out that voice message: speech recognition fail
                 "(a bit closer to the mic helps) or type it?")
 
 
+AUDIO = re.compile(r"\[User sent audio: ([^\]\n]*)\]")
+
+
+def audio_path(message):
+    """The audio file named in a transcript's media marker, or "" (it belongs in the turn record, not the prompt)."""
+    m = AUDIO.search(message or "")
+    return m.group(1).strip() if m else ""
+
+
 def fix(text, fixes=None):
     for pat, repl in {**DEFAULT_FIXES, **(fixes or {})}.items():
         try:
