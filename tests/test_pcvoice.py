@@ -135,13 +135,13 @@ def test_hotkeys_parse():
 
 def test_settings_have_the_documented_defaults_and_read_config(settings):
     assert pcvoice.setting("pc_voice_hotkey") == "ctrl+alt+backquote"
-    assert pcvoice.setting("pc_voice_wake") is False and pcvoice.setting("pc_voice_wake_names") == ["Waggle"]
+    assert pcvoice.setting("pc_voice_wake") is True and pcvoice.setting("pc_voice_wake_names") == ["Waggle"]
     assert pcvoice.setting("pc_voice_end_silence_s") == 1.2 and pcvoice.setting("pc_voice_max_s") == 30.0
     from waggle import config
     data = json.loads(config.CONFIG_FILE.read_text(encoding="utf-8"))
-    data.update(pc_voice_wake_names="Jarvis", pc_voice_wake="on", pc_voice_followup_s="x")
+    data.update(pc_voice_wake_names="Jarvis", pc_voice_wake="off", pc_voice_followup_s="x")
     config.CONFIG_FILE.write_text(json.dumps(data), encoding="utf-8")
-    assert pcvoice.setting("pc_voice_wake_names") == ["Jarvis"] and pcvoice.setting("pc_voice_wake") is True
+    assert pcvoice.setting("pc_voice_wake_names") == ["Jarvis"] and pcvoice.setting("pc_voice_wake") is False
     assert pcvoice.setting("pc_voice_followup_s") == 6.0
 
 

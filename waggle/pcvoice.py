@@ -24,7 +24,8 @@ How a conversation goes
   4. When the core is down or the request fails, a short pre-made spoken line says so (made once by the local
      speech server and kept on disk); if even that cannot be made, two low tones play. Never silence.
 
-The wake word (pc_voice_wake, see docs/PC_VOICE.md for the measurement behind its default): the microphone is
+The wake word (pc_voice_wake, on by default after the measurement in docs/PC_VOICE.md: 10 minutes of room sound
+and 31 played sentences, no false trigger, 0.16% of the machine's CPU, no measurable GPU): the microphone is
 read all the time; an energy gate cuts out each utterance, which the core transcribes (POST /voice/transcribe,
 same token). When the words begin with a wake name (pc_voice_wake_names, default ["Waggle"]; "Hey Waggle" works
 too) the rest is the request, or Waggle answers "Sir?" and listens when it was only the name. Audio that does not
@@ -36,7 +37,7 @@ PC: the core's sender drops a small JSON file into <home>/pcvoice/say/ (waggle/p
 it between conversations.
 
 Settings (config.json in the Waggle home, all optional): pc_voice_hotkey ("ctrl+alt+backquote"), pc_voice_wake
-(false), pc_voice_wake_names (["Waggle"]), pc_voice_followup_s (6), pc_voice_end_silence_s (1.2),
+(true), pc_voice_wake_names (["Waggle"]), pc_voice_followup_s (6), pc_voice_end_silence_s (1.2),
 pc_voice_max_s (30), pc_voice_start_timeout_s (6), pc_voice_min_level (120, the lowest frame RMS that can start
 speech), pc_voice_speak_messages (true). A change is read when the process starts."""
 import argparse
@@ -67,7 +68,7 @@ SPOOL = "say"
 
 DEFAULTS = {
     "pc_voice_hotkey": "ctrl+alt+backquote",
-    "pc_voice_wake": False,
+    "pc_voice_wake": True,
     "pc_voice_wake_names": ["Waggle"],
     "pc_voice_followup_s": 6.0,
     "pc_voice_end_silence_s": 1.2,
@@ -423,14 +424,15 @@ class PcVoice:
 
     # -- sounds
     def tone(self, key, wait=True):
-        return self.spk.say(self.sounds.tones[key]) if not wait else self.spk.play_now(self.sounds.tones[key])
+        t = self.sounds.tones[key]
+        return self.spk.play_now(t, label=f"tone:{key}") if wait else self.spk.say(t, label=f"tone:{key}")
 
     def say_line(self, key):
         p = self.sounds.line(key)
         if p:
-            return self.spk.say(p)
-        self.spk.say(self.sounds.tones["err1"])
-        return self.spk.say(self.sounds.tones["err2"])
+            return self.spk.say(p, label=f"line:{key}")
+        self.spk.say(self.sounds.tones["err1"], label="tone:err1")
+        return self.spk.say(self.sounds.tones["err2"], label="tone:err2")
 
     def wait_speech(self, item):
         """Wait for `item` to finish playing. True when the hotkey cut it off."""
@@ -595,7 +597,7 @@ class PcVoice:
     # -- the loop
     def run(self, stop_file=None, status=None):
         status = status or (lambda: None)
-        last_status = 0.0
+        last_status = last_spool = 0.0
         src = None
         ep = None
         try:
@@ -606,7 +608,8 @@ class PcVoice:
                 if time.monotonic() - last_status > 5:
                     status()
                     last_status = time.monotonic()
-                if not self.spk.speaking and not self.in_conversation:
+                if time.monotonic() - last_spool > 0.5 and not self.spk.speaking and not self.in_conversation:
+                    last_spool = time.monotonic()
                     self.speak_spooled()
                 if self.wake:
                     if src is None:
@@ -744,8 +747,12 @@ def cmd_once(args):
         if name == "reply":
             marks["reply_status"] = info.get("status")
 
-    started = {}
-    spk = speaker.Speaker(on_start=lambda it: started.setdefault(it.label, time.monotonic())).start()
+    started, played = {}, []
+
+    def on_start(item):
+        started.setdefault(item.label, time.monotonic())
+        played.append(item.label)
+    spk = speaker.Speaker(on_start=on_start).start()
     sounds = Sounds()
     pv = PcVoice(mic_factory=lambda: mic.FileSource(args.inject, realtime=True, lead_s=0.5, trail_s=8.0),
                  spk=spk, sounds=sounds, wake=False, on_event=on_event)
@@ -754,7 +761,8 @@ def cmd_once(args):
     pv.conversation(src, "hotkey")
     spk.wait_idle(60)
     spk.close()
-    out = {"reply_status": marks.get("reply_status"), "errors": pv.stats["errors"], "last_error": pv.stats["last_error"]}
+    out = {"reply_status": marks.get("reply_status"), "played": played, "errors": pv.stats["errors"],
+           "last_error": pv.stats["last_error"]}
     if "reply" in started and "last_loud" in marks:
         out["end_of_speech_to_voice_s"] = round(started["reply"] - marks["last_loud"], 2)
         out["endpoint_wait_s"] = round(marks.get("request_sent", 0) - marks["last_loud"], 2)
