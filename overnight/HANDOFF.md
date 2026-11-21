@@ -65,20 +65,22 @@ marker on every trace + canary `context` check), fact ordering (`learn._stale_ag
 (`waggle/vault_git.py`, `/waggle memory`, `restore <sha>` = new commit; off: `vault_git` false), learnloop fix (a
 regex held literal backspaces instead of \b). All proven live with ask.py.
 
-Merged on overnight, suite pending, NOT yet deployed at the time of writing: rebuild/voice2 (PC voice intent judge
-49/50 on bench/voice_intent.jsonl, echo rejection, stop phrases, sentence streaming `/voice/stream`, spoken reminder;
-off: `pc_voice_smart` false) and rebuild/tools (8 tools: cad_convert, cad_measure (FreeCAD), print_estimate
-(PrusaSlicer), doc_to_pdf (Chrome/Office), media_convert, image_convert (ffmpeg/Pillow), portfolio_audit (gh,
-read-only), explain_file (REA); removal lines in skills/README.md; deploy needs install.py).
+Deployed later the same night, each proven live with ask.py or the module's own CLI:
+- 7ca9e39: voice2 (PC voice intent judge 49/50, echo rejection, stop phrases, sentence streaming; off `pc_voice_smart`),
+  tools (cad_convert, cad_measure, print_estimate, doc_to_pdf, media_convert, image_convert, portfolio_audit,
+  explain_file; removal lines in skills/README.md), smallwins (Wolfram MCP `wolfram_mcp`, FTCScout tool, seven-day
+  usage stop `seven_day_stop_at` 0.85, nightly backups 03:30 to %USERPROFILE%\WaggleBackups, proposals flake guard),
+  memory2 (FTS5 hybrid search `memory_hybrid`, Mem0-style add/update/replace/skip `memory_fact_decide`; nomic-embed-text
+  kept after the embedding A/B), outreach2 (natural-break hold `hold_for_breaks`, per-kind welcome odds
+  `outreach_ev_enabled`, Ollama JSON schemas).
+- 5c8df60 (about 03:10): cascade (`waggle/cascade.py`: background answers local -> Haiku -> Sonnet, `cascade_enabled`,
+  `cascade_local`; `python -m waggle.cascade status|try "..."`; live try answered locally, 1 Claude call avoided) and
+  checklist judging (`waggle/checklist.py`, `checklist_judge`). Suite 3116 passed before deploy; canary passed.
+- Owner's keep-or-delete list with every off switch: overnight/MORNING.md.
 
-Building (Sonnet, worktrees): rebuild/memory2 (FTS5 hybrid search measured on own eval, Mem0-style fact decisions,
-embedding A/B), rebuild/outreach2 (natural-break hold, per-kind welcome odds, Ollama JSON schemas), rebuild/smallwins
-(Wolfram MCP, FTCScout tool, seven-day usage + defer, nightly local backups to %USERPROFILE%\WaggleBackups,
-proposals flake guard).
-
-Proposal 33HN (polite "no thanks" counted as a correction) failed verification only because the full suite hit 30
-load-related failures while many agents ran (all passed on a quiet re-run). Re-run it after smallwins lands:
-`python -m waggle.proposals file ...` again (the old one is closed) or `run`.
+Still open at the time of writing: rebuild/voice3 (Silero VAD + Smart Turn v3 for PC voice; Sonnet worker), and
+proposal 7XJP (p20261121-ac40, retry of 33HN: polite "no thanks" counted as a correction), built and waiting for the
+suite lock; `python -m waggle.proposals advance` runs one pass.
 
 Research reports (Claude\reports): open-source-jarvis-2026-11.md, tools-mcp-skills-2026-11.md,
 research-for-waggle-2026-11.md, adopt-vs-build-2026-11.md; vault summaries in WaggleVault/Sources/2026-11/.
