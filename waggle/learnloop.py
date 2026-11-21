@@ -498,7 +498,8 @@ def _refile(f, s):
 def apply_fact(fact, s, *, turn=None, source, evidence, origin=None, replace=True):
     """File one fact through learn.file_fact and close the fact it contradicts. Returns (change dict, why not)."""
     f, why = learn.check(fact)
-    if not f and ("passing state" in str(why) or "no resolvable date" in str(why))             and not re.search(r"(today|tonight|tomorrow|this|next|now)", fact["text"], re.I):
+    if not f and ("passing state" in str(why) or "no resolvable date" in str(why)) \
+            and not re.search(r"\b(today|tonight|tomorrow|this|next|now)\b", fact["text"], re.I):
         # a recurring statement ("meets Tuesday and Thursday") has no date: keep it as a routine, not an event
         fact = {"kind": "about", "key": "routine", "text": fact["text"]}
         f, why = learn.check(fact)
