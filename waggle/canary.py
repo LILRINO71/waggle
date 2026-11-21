@@ -10,6 +10,8 @@ prints and records the result:
                       not, and a success only counts for 36 h, so a check that stops running turns red by itself)
   event               `canary.ok` / `canary.failed`
   meta                `canary.last` (the whole result, for `python -m waggle.canary status`)
+After a passing round trip a third check, `context`, asks whether the chat turn it caused carried the injected
+context block (context_alive.py, "hooks alive"; ledger `canary.context`); it is left out when no turn was recorded.
 When a check fails, or cannot run (no venv, no saved login, the script crashed, it ran too long), the owner gets one
 plain-words text AND one ntfy push (the phone alarm does not depend on Telegram), at most once a day for the same
 failure. Nothing is sent when the check passes.
@@ -42,7 +44,7 @@ SETUP_S = 90  # connecting, logging in, deleting the messages: headroom on top o
 ALERT_ORIGIN = "canary-alert"
 LAST_KEY = "canary.last"
 ALERT_KEY = "canary.alert"
-LEDGER = {"roundtrip": "canary.roundtrip", "reminder": "canary.reminder"}
+LEDGER = {"roundtrip": "canary.roundtrip", "reminder": "canary.reminder", "context": "canary.context"}
 METHOD = "daily Telegram round trip through the test client"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)  # no console flash when run under pythonw
 SCRIPT = Path(__file__).resolve().parent.parent / "tools" / "testclient" / "canary.py"
@@ -234,12 +236,37 @@ def alert(result, settings, now):
     return {"sent": True, "text": ids["text"], "push": ids["push"]}
 
 
+def add_context_check(result, since):
+    """Hooks alive: the round trip just caused a chat turn, so a turn from after `since` must exist and carry the
+    injected context block (context_alive.py). Added as a third check; a failure makes the whole result fail. Left
+    out when there is nothing to judge (the round trip did not run, or no turn was recorded here)."""
+    rt = next((c for c in result["checks"] if c["name"] == "roundtrip"), None)
+    if rt is None or not rt["ok"]:
+        return
+    try:
+        from . import context_alive
+        r = context_alive.check(since=since - 5, min_turns=1, strict=True)
+    except Exception as e:  # noqa: BLE001  (a broken check must not hide the round trip's own result)
+        events.log("canary", action="context_check_failed", error=f"{type(e).__name__}: {e}"[:200])
+        return
+    if not r["evaluated"]:
+        return
+    ok = r["status"] == "ok"
+    result["checks"].append({"name": "context", "ok": ok, "seconds": 0.0,
+                             "detail": r["detail"] if ok else "The daily check found the chat's context block "
+                             f"missing: {r['detail']}."})
+    if not ok:
+        result["ok"] = False
+
+
 def run_check(settings=None, now=None, *, reminder=True, alert_owner=True, **spawn_args):
     """The whole daily check: run the child, record the result, alert on a failure. Returns the result dict plus
     "alert" (what was sent). `spawn_args` (base, script, python, timeout) are for tests."""
     s = settings or Settings.load()
     now = now or time.time()
+    t_start = time.time()
     result = execute(reminder, **spawn_args)
+    add_context_check(result, t_start)
     record(result, reminder=reminder, now=now)
     result["alert"] = {"sent": False, "why": "passed" if result["ok"] else "alerts off"}
     if not result["ok"] and alert_owner:

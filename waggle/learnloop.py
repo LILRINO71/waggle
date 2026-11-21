@@ -17,6 +17,11 @@ Diagnosis (cheap) and fix
                         filed as a fact (origin "memory").
   retrieval miss        the answer is in the vault but retrieval does not bring it back: re-index first (free,
                         silent when it helps); otherwise a retrieval hint is recorded and the row waits for code.
+  behaviour rule        the owner told Waggle how to act ("no, use gh and include private repos"), about the same
+                        subject as the question: it is written as a keyword lesson (lessons.py: the owner's own
+                        words, keywords taken from the words the question and the correction share), re-checked
+                        (the lesson fires on that question, and on no more than 3 of the owner's last 40 other
+                        messages), kept or removed, with the same ledger row and the same undo.
   style / tool failure  needs code: the ledger row says "needs_code" and carries the evidence (title, evidence,
                         origin) for the code-proposal pipeline. Nothing here edits code.
 The claim to file is taken from the owner's own words. When the words are not enough on their own (pronouns), the
@@ -45,7 +50,7 @@ import re
 import sqlite3
 import time
 
-from . import events, kstore, learn
+from . import events, kstore, learn, lessons
 from .config import Settings
 
 KIND = "learnloop.run"
@@ -514,7 +519,11 @@ def apply_fact(fact, s, *, turn=None, source, evidence, origin=None, replace=Tru
 
 
 def revert_change(change, s):
-    """Undo one change: take the new fact's line out, reactivate and refile what it replaced. Idempotent."""
+    """Undo one change: take the new fact's line out, reactivate and refile what it replaced; or delete the lesson
+    a correction wrote. Idempotent."""
+    if change and change.get("kind") == "lesson":
+        lessons.remove(change.get("lesson_id"))
+        return "reverted"
     if not change or change.get("kind") != "fact":
         return "nothing to revert"
     con = kstore.db()
@@ -698,6 +707,59 @@ def _fact_route(ctx, row, fact, query, *, turn=None, source, evidence, origin=No
     return _finish(row, status, reason, change=change, checks=checks, summary=summary)
 
 
+LESSON_FALSE_TRIGGERS = 3  # a lesson that would fire on more of the owner's last 40 other messages is too broad
+LESSON_SAMPLE = 40
+
+
+def _other_requests(ctx, skip):
+    """The owner's last messages (not the two turns of this correction): what a new lesson must not fire on."""
+    from . import traces
+    try:
+        rows_ = traces.all_traces(ctx.now - 14 * 86400, limit=400)
+    except Exception:  # noqa: BLE001
+        return []
+    return [r.get("request") or "" for r in rows_ if r["id"] not in skip and r.get("request")][:LESSON_SAMPLE]
+
+
+def _lesson_route(ctx, row, prop, turn, prev):
+    """Write the keyword lesson a behaviour correction asks for, re-check it, keep or remove it. Returns the result
+    dict, or None when no lesson can be written (the correction then takes the normal route)."""
+    if ctx.changes >= MAX_CHANGES:
+        return {"id": row["id"], "status": "open", "reason": "change limit for tonight reached"}
+    lid = f"l{row['id']}-{prop['match'][0]}"[:60]
+    try:
+        lessons.add(prop["match"], prop["body"], why=prop["why"], source=f"learnloop L{row['id']}", lesson_id=lid,
+                    now=ctx.now)
+    except lessons.LessonError as e:
+        if str(e).startswith("already a lesson"):
+            return _finish(row, "noted", str(e))
+        return None
+    ctx.changes += 1
+    asked = prev.get("request") or ""
+    others = _other_requests(ctx, {turn["id"], prev["id"]})
+    fires = lessons.matched_keywords({"match": prop["match"]}, asked)
+    n, broad = lessons.too_broad(prop["match"], others, LESSON_FALSE_TRIGGERS)
+    change = {"kind": "lesson", "lesson_id": lid, "text": prop["body"], "match": prop["match"], "closed": [],
+              "closed_text": []}
+    checks = {"recheck": ("the lesson fires on the question: " + ", ".join(fires)) if fires
+              else "the lesson does not fire on the question", "recheck_passed": bool(fires),
+              "held_out_n": len(others), "false_triggers": n, "held_out_lost": []}
+    why = ""
+    if not fires:
+        why = "the lesson does not fire on the question it came from"
+    elif broad:
+        why = f"too broad: it would fire on {n} of the owner's last {len(others)} other messages"
+    claim = _short(prop["body"].split("): ", 1)[-1].rstrip("."), 70)
+    said = f"Lesson for {', '.join(prop['match'])}: {claim}"
+    status = "kept"
+    if why:
+        revert_change(change, ctx.s)
+        status = "reverted"
+    events.log("learnloop", action=status, id=row["id"], text=prop["body"][:200], reason=why[:200])
+    return _finish(row, status, why, kind="lesson", change=change, checks=checks,
+                   summary=f"{said} (you corrected me)" if status == "kept" else f"{said} (you corrected me; I put it back)")
+
+
 def handle_correction(ctx, row):
     ev = row["evidence"] or {}
     turn = _turn(ev.get("trace_id") or row["trace_id"])
@@ -705,6 +767,11 @@ def handle_correction(ctx, row):
     if not turn or not prev:
         return _finish(row, "noted", "the turns are gone from the records")
     verdict = {"kind": ev.get("verdict") or "wrong", "claim": ev.get("claim") or ""}
+    prop = lessons.from_correction(prev.get("request"), verdict["claim"], turn.get("request"))
+    if prop and verdict["kind"] in ("wrong", "misread"):
+        done = _lesson_route(ctx, row, prop, turn, prev)  # a rule about behaviour: no model needed, no fact filed
+        if done:
+            return done
     kind, fact, why, via = word_claim(turn, prev, verdict, ctx.s, chat=ctx.chat, claude=ctx.claude)
     ev = {**ev, "claim_via": via}
     if kind == "deferred":
@@ -845,6 +912,11 @@ def preview(ctx, c):
         return ({"would": "re-index, then record a hint (needs_code) if it still fails", "in": where} if where else
                 {"would": "file the note's sentence as a fact", "fact": (ev.get("question") or "").replace(
                     "___", ev.get("answer", ""), 1)})
+    prop = lessons.from_correction(c["prev"].get("request"), ev["claim"], ev["said"])
+    if prop and ev["verdict"] in ("wrong", "misread"):
+        return {"said": ev["said"], "answered": ev["answered"][:120], "verdict": "lesson", "via": "words",
+                "would": "write a keyword lesson, re-check, keep or remove", "match": prop["match"],
+                "lesson": prop["body"]}
     kind, fact, why, via = word_claim(c["turn"], c["prev"], {"kind": ev["verdict"], "claim": ev["claim"]}, ctx.s,
                                       chat=ctx.chat, claude=None)
     out = {"said": ev["said"], "answered": ev["answered"][:120], "verdict": kind, "via": via}
@@ -941,11 +1013,15 @@ def undo(row_id, settings=None):
         return False, f"I have no change L{row_id}. Nothing was done."
     st = row["status"]
     if st == "kept":
+        ch = row["change"] or {}
         revert_change(row["change"], s)
-        reindex_quietly(Gate(s))
+        if ch.get("kind") != "lesson":
+            reindex_quietly(Gate(s))
         update(row["id"], status="undone", reason="the owner undid it")
         events.log("learnloop", action="undone", id=row["id"])
-        ch = row["change"] or {}
+        if ch.get("kind") == "lesson":
+            return True, (f"Undone L{row['id']}: I removed the lesson for {', '.join(ch.get('match') or [])}. "
+                          "I won't try that fix again.")
         back = f" and put back '{_short(ch['closed_text'][0], 70)}'" if ch.get("closed_text") else ""
         return True, f"Undone L{row['id']}: I removed '{_short(ch.get('text'), 80)}'{back}. I won't try that fix again."
     if st in ("reverted", "undone"):
