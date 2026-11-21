@@ -537,7 +537,24 @@ def _text_of(msg):
     except Exception:  # noqa: BLE001
         pass
     text = plain or html.unescape(re.sub(r"(?is)<(script|style).*?</\1>|<[^>]+>", " ", html_))
-    return " ".join(text.split())[:BODY_CHARS]
+    return " ".join(strip_quoted(text).split())[:BODY_CHARS]
+
+
+_QUOTE_START = re.compile(
+    r"(?is)(\n[ \t>]*On (?:mon|tue|wed|thu|fri|sat|sun)\w*,?[^\n]{0,120}(?:\n[^\n]{0,120}){0,2}?wrote:"
+    r"|\n[ \t]*-{2,}\s*Original Message\s*-{2,}"
+    r"|\n[ \t]*From:[^\n]{0,200}\n[ \t]*(?:Sent|Date):"
+    r"|\n[ \t]*>)")
+
+
+def strip_quoted(text):
+    """The new part of a reply: everything before the first quoted earlier message ("On Mon, ... wrote:",
+    "-----Original Message-----", a From:/Sent: header block, or "> " lines). Without this the model summarises the
+    owner's own quoted words instead of what the sender is asking now."""
+    text = "\n" + (text or "")
+    m = _QUOTE_START.search(text)
+    cut = text[:m.start()] if m else text
+    return (cut if len(cut.strip()) >= 20 else text).strip()
 
 
 def _read_message(imap, meta, acct):
@@ -644,10 +661,14 @@ _SCHOOL = re.compile(r"(?i)(\.edu$|\.gov$|\.k12\.|\.mil$|school|college|universi
 _NOREPLY = re.compile(r"(?i)^(no-?reply|do-?not-?reply|notifications?|mailer-daemon|bounce)")
 
 
+def _trusted_domains():
+    """Extra domains treated like school/government (config `mail_trusted_domains`, e.g. a school district's)."""
+    return {str(d).strip().lower() for d in (_config("mail_trusted_domains", []) or []) if str(d).strip()}
+
 def rule_facts(m):
     domain = m["address"].rsplit("@", 1)[-1] if "@" in m["address"] else ""
     return {"known_sender": bool(m.get("known_sender")), "owner_in_thread": bool(m.get("owner_in_thread")),
-            "school_or_government": bool(_SCHOOL.search(domain)), "gmail_important": bool(m.get("important")),
+            "school_or_government": bool(_SCHOOL.search(domain)) or domain in _trusted_domains(), "gmail_important": bool(m.get("important")),
             "asks_something": bool(_ASKS.search(f"{m['subject']} {m['body'][:1500]}")),
             "bulk_mail": bool(m.get("bulk")), "no_reply": bool(_NOREPLY.match(m["address"]))}
 
@@ -719,7 +740,7 @@ def triage(m, local, models, state):
         m.update(importance=rules_verdict(f), want="", deadline="", summarised=False)
     else:
         imp = str(got["importance"]).lower()
-        if imp == "high" and f["bulk_mail"] and not trusted:
+        if imp == "high" and f["bulk_mail"] and not (f["known_sender"] or f["owner_in_thread"]):
             imp = "normal"  # a promotion that sounds urgent is not texted
         if imp == "skip" and trusted and f["asks_something"]:
             imp = "normal"  # someone the user deals with asking something is never thrown away

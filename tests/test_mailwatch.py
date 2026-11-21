@@ -671,3 +671,21 @@ def test_intake_reports_skipped_sources_and_why_instead_of_ran(settings, monkeyp
         "intake": "another ingest is running"}}
     monkeypatch.setattr(ingest, "run_due", lambda **k: {"upcoming": {"skipped": "no Gmail or Calendar connector"}})
     assert knowledge_core.intake({}, now=at(12))["ran"] == []  # a skip alone is not a failure
+
+
+def test_strip_quoted_keeps_only_the_new_part():
+    from waggle import mailwatch
+    body = ("Hi, which course(s) did you want to request? I'm out next week.\n"
+            "         On Wed, Nov 18 3:25 PM\n          , Student <s@example.com> wrote:\n"
+            "Please reopen the term so I can submit my requests.")
+    out = mailwatch.strip_quoted(body)
+    assert "which course" in out and "reopen the term" not in out
+    gmail = "Sounds good, see you then.\n\nOn Thu, Nov 19, 2026 at 4:01 PM Coach <c@example.com> wrote:\n> old"
+    assert mailwatch.strip_quoted(gmail) == "Sounds good, see you then."
+    assert mailwatch.strip_quoted("> only quoted text here and nothing new at all") .startswith(">")
+
+
+def test_bulk_mail_from_a_college_domain_is_not_texted(monkeypatch):
+    from waggle import mailwatch
+    f = mailwatch.rule_facts({"address": "news@e.collegeboard.org", "bulk": True, "subject": "Deadline", "body": "Act now"})
+    assert f["school_or_government"] and f["bulk_mail"]
