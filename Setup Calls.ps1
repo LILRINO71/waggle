@@ -56,6 +56,7 @@ if ($missing.Count -eq 0) {
 
 Write-Host "Placing a test call now..."
 Push-Location $PSScriptRoot
+python -m waggle.call enable
 python -m waggle.call "Calls are working. I will only ring for things that matter."
 Pop-Location
 Write-Host "If your phone rang: done. On the trial a short Twilio notice plays first; press any key to hear Waggle."

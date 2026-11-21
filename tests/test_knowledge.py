@@ -488,9 +488,7 @@ def test_cleanup_is_a_dry_run_until_applied_and_reversible(s):
     assert vault.safe_path("Objectives/test-objective", s).exists()
 
 
-def test_cron_entry_is_thin():
+def test_ingest_runs_from_the_core_intake_timer_not_hermes_cron():
     import install
-    names = [j[0] for j in install.CRON_JOBS]
-    assert "waggle-ingest" in names
-    job = [j for j in install.CRON_JOBS if j[0] == "waggle-ingest"][0]
-    assert job[4] == "ingest" and job[3] == ""
+    assert "waggle-ingest" in install.RETIRED_CRON  # install removes the old entry
+    assert "knowledge.intake" in install.RETIRED_CRON["waggle-ingest"][1]

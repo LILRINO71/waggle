@@ -162,6 +162,7 @@ class Resp(io.BytesIO):
 
 
 def test_configured_is_false_without_a_number(s, monkeypatch, tmp_path):
+    monkeypatch.setattr(call, "enabled", lambda settings=None: True)  # calls are off by default
     assert call.configured() is False and "Setup Calls" in call.provisioned()["missing"]
     env = tmp_path / "t.env"
     env.write_text("TWILIO_ACCOUNT_SID=AC1\nTWILIO_AUTH_TOKEN=x\nTWILIO_FROM=+15550001111\nTWILIO_TO=+15552223333\n")

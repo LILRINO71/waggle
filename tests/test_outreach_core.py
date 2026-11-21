@@ -191,6 +191,7 @@ def test_readiness_is_the_ledger(s):
 
 def test_a_provisioned_twilio_account_never_makes_calls_ready(s, tmp_path, monkeypatch):
     from waggle.core import ledger
+    monkeypatch.setattr(call, "enabled", lambda settings=None: True)  # calls are off by default
     env = tmp_path / "t.env"
     env.write_text("TWILIO_ACCOUNT_SID=AC1\nTWILIO_AUTH_TOKEN=x\nTWILIO_FROM=+15550001111\nTWILIO_TO=+15552223333\n")
     monkeypatch.setattr(call, "env_path", lambda: env)

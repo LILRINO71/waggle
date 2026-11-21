@@ -559,10 +559,17 @@ def main():
     from . import budget
     budget.set_background("learning")
     out = run(optimize="optimize" in sys.argv)
+    if summary_line(out):
+        print(summary_line(out))
+
+
+def summary_line(out):
+    """The one line sent after a weekly run, or "" when nothing was learned."""
     if out["drafted"] or (out["optimize"] or {}).get("deployed"):
-        print(f"Waggle learned this week: {len(out['drafted'])} new skill(s)"
-              + (f", router prompt v{out['optimize']['deployed']}" if (out['optimize'] or {}).get('deployed') else "")
-              + ". Report: Waggle/Learning in your vault.")
+        return (f"Waggle learned this week: {len(out['drafted'])} new skill(s)"
+                + (f", router prompt v{out['optimize']['deployed']}" if (out['optimize'] or {}).get('deployed') else "")
+                + ". Report: Waggle/Learning in your vault.")
+    return ""
 
 
 # ---- MCP -----------------------------------------------------------------------------------------

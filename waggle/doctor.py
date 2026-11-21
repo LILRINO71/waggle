@@ -14,8 +14,11 @@ from .config import Settings, data_path
 
 HERMES = Path.home() / ".hermes"
 MOJIBAKE = ("Ã¢", "Ã©", "â€™", "â€œ", "Ã°Å¸", "ðŸ")
-NEEDED_CRON = ["waggle-proactive", "waggle-digest", "waggle-calls", "waggle-hq", "waggle-brief", "waggle-learn",
-               "waggle-routines", "waggle-graph"]
+# Waggle's scheduled work runs from core timers; none of these may be in Hermes cron any more (it would run twice).
+RETIRED_CRON = ["waggle-proactive", "waggle-digest", "waggle-consolidate", "waggle-calls", "waggle-hq", "waggle-brief",
+                "waggle-learn", "waggle-routines", "waggle-graph", "waggle-ingest"]
+NEEDED_TIMERS = ["outreach.look", "outreach.brief", "knowledge.intake", "duty.hq", "duty.routines", "duty.graph",
+                 "duty.consolidate", "duty.learn"]
 
 
 def _http_ok(url, timeout=1.5):
@@ -104,15 +107,24 @@ def check_claude():
 
 
 def check_cron():
+    """Scheduled work = core timers; a Waggle job left in Hermes cron would run it a second time."""
     try:
         jobs = json.loads((HERMES / "cron" / "jobs.json").read_text(encoding="utf-8")).get("jobs", [])
         names = {j.get("name") for j in (jobs if isinstance(jobs, list) else jobs.values())}
     except (OSError, ValueError):
-        return "fail", "can't read Hermes cron jobs", "Run reload-waggle.ps1."
-    missing = [n for n in NEEDED_CRON if n not in names]
+        names = set()  # no Hermes cron file: nothing there to run twice
+    left = [n for n in RETIRED_CRON if n in names]
+    if left:
+        return "warn", f"still in Hermes cron (runs twice): {', '.join(left)}", "Run python install.py (it removes them)."
+    try:
+        from waggle.core import timers
+        have = {t["id"] for t in timers.list(enabled=True)}
+    except Exception as e:  # noqa: BLE001
+        return "warn", f"can't read the core timers ({type(e).__name__})", "Run python -m waggle.core status."
+    missing = [t for t in NEEDED_TIMERS if t not in have]
     if missing:
-        return "warn", f"missing: {', '.join(missing)}", "Run reload-waggle.ps1 (it installs Waggle's cron jobs)."
-    return "ok", f"{len(NEEDED_CRON)} Waggle jobs scheduled", ""
+        return "warn", f"core timers missing: {', '.join(missing)}", "Restart the core: python -m waggle.core restart."
+    return "ok", f"{len(have)} core timers, none left in Hermes cron", ""
 
 
 def check_vault(s):
@@ -196,6 +208,8 @@ def check_disk():
 
 def check_phone():
     from . import call
+    if not call.enabled():
+        return "ok", "phone calls are off (Telegram + iPhone push still work)", ""
     if call.configured():
         return "ok", "Twilio calls configured", ""
     return "warn", "phone calls not set up (Telegram + iPhone push still work)", \
@@ -215,7 +229,7 @@ def check_background(s):
         return "warn", detail + "; background Claude use is off", "python -m waggle.cli budget set 4"
     if stale:
         return ("warn", detail + f"; {len(stale)} objective(s) idle over an hour with no worker",
-                "the waggle-routines cron restarts them every 5 min; check it runs (Scheduled jobs)")
+                "the duty.routines core timer restarts them every 5 min; check it runs (Scheduled jobs)")
     if o["blocked"]:
         return "warn", detail, "say 'objective status' and resume or cancel the blocked ones"
     return "ok", detail, ""

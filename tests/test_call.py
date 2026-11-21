@@ -14,6 +14,7 @@ def twilio_env(tmp_path, monkeypatch):
     p.write_text("TWILIO_ACCOUNT_SID=AC123\nTWILIO_AUTH_TOKEN=secret\nTWILIO_FROM=+15550001111\n"
                  "TWILIO_TO=+15552223333\n", encoding="utf-8")
     monkeypatch.setattr(call, "env_path", lambda: p)
+    monkeypatch.setattr(call, "enabled", lambda settings=None: True)  # calls are off by default
     return p
 
 
