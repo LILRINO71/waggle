@@ -33,6 +33,7 @@ Each piece can be switched off on its own. To switch something off:
 | `python -m waggle.usage_view` shows the usage window plus tokens by 5-hour block and by session (ccusage, offline, read-only) | `ccusage_enabled` |
 | Every autonomy and objective run is recorded; if the last 4 did nothing useful the evening note says so in one line (`python -m waggle.session_records` lists them) | `session_records_enabled` |
 | New tools: CAD convert/measure, print estimate, notes/Office to PDF, video/image convert, GitHub portfolio audit, explain any file, FTC team stats | one `git rm` line per tool in `skills/README.md` ("Removing a tool pack") |
+| Google through gogcli (pinned v0.48.1): Docs create/read/append, Drive search, Calendar list/create (no guests), Tasks list/add/done, Classroom due dates; Gmail never. Chat tools `google_*`, `python -m waggle.google` (status, docs-new, tasks, classroom-due), one extra morning-brief line, a `Google` line in doctor. Does nothing until you sign in once (`docs/GOOGLE.md`, about 10 minutes, double-click `Waggle Google Login.bat`) | `"google_gog": false` |
 
 ## Also fixed overnight (nothing to decide)
 
@@ -46,6 +47,8 @@ Each piece can be switched off on its own. To switch something off:
 
 1. **Calendar**: one-time Google login, steps in `overnight/USER_TESTS.md` (Calendar section). Until then the
    calendar watch stays quiet.
+   **Google (Docs, Tasks, Classroom, calendar writes)**: the different, bigger login in `docs/GOOGLE.md`; it is what lets
+   Waggle create a Google Doc, which the claude.ai Drive connector cannot.
 2. **Phone calls**: a free Twilio trial, then double-click `Setup Calls.bat`. Skip it if texts are enough.
 3. **PC voice**: say "Waggle, what time is it?" with the TV on, then with music playing; say "stop" while it
    talks; pause to think mid-sentence once. Tell me if it reacts to the TV, misses you, or cuts you off.

@@ -258,6 +258,9 @@ WAGGLE_TOOLS = {
     "cad_convert": (ALLOW, _NEW_FILE), "doc_to_pdf": (ALLOW, _NEW_FILE), "media_convert": (ALLOW, _NEW_FILE),
     "image_convert": (ALLOW, _NEW_FILE),
     "ftc_team": (ALLOW, "reads one FTC team's public FTCScout page (read-only)"),
+    # Google through gogcli (waggle/google.py): reads only look; the five below change the owner's own account
+    "google_status": (ALLOW, _READS), "google_docs_read": (ALLOW, _READS), "google_drive_search": (ALLOW, _READS),
+    "google_calendar_list": (ALLOW, _READS), "google_tasks_list": (ALLOW, _READS), "google_classroom_due": (ALLOW, _READS),
     # Waggle's own memory, skills, routines and agents (agent work goes through this policy again)
     "remember": (ALLOW, _OWN), "project_update": (ALLOW, _OWN), "rate_finding": (ALLOW, _OWN),
     "skill_create": (ALLOW, _OWN), "skill_update": (ALLOW, _OWN), "agent_note": (ALLOW, _OWN),
@@ -270,9 +273,15 @@ WAGGLE_TOOLS = {
     "routine_remove": (ASK, "deletes a routine"),
     "skill_install": (ASK, "installs community code"),
     "hermes_tool": (ASK, "runs a Hermes tool"),  # decided as the Hermes tool it names (decide() below)
+    "google_doc_new": (ASK, "creates a Google Doc in your Drive"),  # owner turn only (owner_acts); the tool refuses the rest
+    "google_doc_append": (ASK, "adds text to one of your Google Docs"),
+    "google_event_new": (ASK, "adds an event to your own Google Calendar (no guests)"),
+    "google_task_add": (ASK, "adds a task to your Google Tasks"),
+    "google_task_done": (ASK, "marks one of your Google Tasks done"),
     "settings": (ASK, "changes Waggle's comfort settings (voice, speed, quiet hours...)"),  # owner turn only (owner_acts)
     "file_proposal": (ASK, "files a proposal to change Waggle's own code"),  # owner turn only (owner_acts); the owner still approves every merge
 }
+GOOGLE_WRITES = {"google_doc_new", "google_doc_append", "google_event_new", "google_task_add", "google_task_done"}
 WAGGLE_SAFE = {name for name, (action, _why) in WAGGLE_TOOLS.items() if action == ALLOW}
 
 
@@ -1089,6 +1098,8 @@ def owner_acts(tool_name, args, base, settings=None, cwd=None):
             return [_Act("destroy", ("delete",), _arg_targets(args), "deleting a routine")]
         if b == "settings":  # comfort settings only (waggle/comfort.py allowlist); the tool refuses the rest itself
             return [_Act("free", free="your own comfort settings (voice, speed, quiet hours)")]
+        if b in GOOGLE_WRITES:  # one new doc / event / task, or one append, in the owner's own Google; nothing is deleted or shared
+            return [_Act("free", free="your request to change your own Google account")]
         if b == "file_proposal":  # only queues a proposal (waggle/proposals.py); nothing merges without the owner's reply
             return [_Act("free", free="your request to fix Waggle's own code")]
         if b == "skill_install":

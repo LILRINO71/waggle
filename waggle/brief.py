@@ -56,6 +56,13 @@ def facts(settings=None, now=None):
     cal = calendar_today(s)
     if cal:
         out.append("Calendar today: " + cal)
+    try:  # Classroom due dates + open tasks, one line; only once signed in to Google (waggle.google)
+        from . import google
+        gline = google.brief_line(s, now=now)
+        if gline:
+            out.append(gline)
+    except Exception:  # noqa: BLE001
+        pass
     pending = notify.unseen(mark=False)
     if pending:
         out.append(f"{len(pending)} update(s) waiting: " + "; ".join(n["text"][:80] for n in pending[:3]))
