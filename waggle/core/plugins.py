@@ -13,7 +13,7 @@ import traceback
 from waggle.core import events, ledger
 
 MODULES = ["waggle.core.transports", "waggle.chat_jobs", "waggle.tick", "waggle.knowledge_core", "waggle.autonomy_core",
-           "waggle.dropbox_ingest", "waggle.canary"]
+           "waggle.dropbox_ingest", "waggle.canary", "waggle.calendar_watch"]
 
 log = logging.getLogger("waggle.core.plugins")
 

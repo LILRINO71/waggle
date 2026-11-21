@@ -69,9 +69,15 @@ def facts(settings=None, now=None):
 
 
 def calendar_today(settings=None, asker=None):
-    """Today's events from the user's Google Calendar connector (one Haiku call), or '' when not connected."""
-    from . import claude_cli, quota
+    """Today's events. Once a calendar is set up (waggle.calendar_watch, the secret iCal address) they come from its
+    store with no Claude call; otherwise from the Google Calendar connector (one Haiku call), or '' when neither."""
+    from . import calendar_watch, claude_cli, quota
     s = settings or Settings.load()
+    try:
+        if calendar_watch.configured():
+            return calendar_watch.today_line(s)
+    except Exception:  # noqa: BLE001
+        return ""
     try:
         if "Google_Calendar" not in claude_cli.available_connectors(()):
             return ""
