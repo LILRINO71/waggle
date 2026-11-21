@@ -90,21 +90,36 @@ READ_ONLY = {"ls", "cat", "head", "tail", "grep", "rg", "find", "echo", "pwd", "
              "uniq", "dir", "type", "which", "where", "du", "date", "sleep", "cd", "true", "test", "printf",
              "git status", "git log", "git diff", "git show", "git branch", "git rev-parse", "git remote",
              "git ls-files", "get-content", "get-childitem", "select-string", "test-path", "write-output",
-             "select-object", "measure-object", "get-item", "get-date", "resolve-path", "python -c", "set-location"}
+             "select-object", "measure-object", "get-item", "get-date", "resolve-path", "python -c", "set-location",
+             "cut", "tr", "xargs", "jq", "basename", "dirname", "realpath", "diff", "cmp", "md5sum", "sha256sum",
+             "file", "less", "more", "tree", "nl", "column", "paste", "join", "comm", "xxd", "od", "env", "id",
+             "whoami", "hostname", "uname", "ps", "tasklist", "netstat", "findstr", "get-process", "get-service",
+             "get-command", "get-scheduledtask", "format-list", "format-table", "out-string", "sort-object",
+             "where-object", "foreach-object", "convertfrom-json"}
 WRAPPERS = ("timeout", "time", "sudo", "&", "env", "nohup")
 TOOLS_WITH_SUBCOMMANDS = ("git", "gh", "npm", "npx", "pip", "node", "cargo", "dotnet", "docker", "hermes", "claude",
                           "uv")
 OPTS_WITH_VALUE = ("-C", "-c", "--git-dir", "--work-tree", "-R", "--repo", "--prefix")
 
 
+QUOTED = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"", re.S)
+SHELL_WORDS = {"for", "do", "done", "while", "until", "if", "then", "else", "elif", "fi", "case", "esac",
+               "function", "{", "}", "[", "[[", "export", "set", "source", ".", "read", "local", "return", "exit",
+               "break", "continue", "true", "false", ":", "wait", "trap", "shift", "eval", "foreach", "%", "_"}
+
+
 def _segments(cmd):
     cmd = (cmd or "").split("<<", 1)[0]
+    # a quoted message, path or inline script is one token, whatever lines or separators it holds
+    cmd = QUOTED.sub(lambda m: re.sub(r"[\s;&|]+", "_", m.group(0)[1:-1]) or "_", cmd)
     parts = re.split(r"&&|\|\||;|\||\n", cmd)
     return [p.strip() for p in parts if p.strip()]
 
 
 def _segment_shape(seg):
     toks = seg.replace("(", " ").replace(")", " ").split()
+    while toks and toks[0] in ("do", "then", "else", "if", "while", "until", "!", "{", "elif"):
+        toks = toks[1:]  # 'do git push' runs git push; 'for x in ...' itself is dropped below
     while toks and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", toks[0]) or toks[0] in WRAPPERS
                     or re.fullmatch(r"\d+[smh]?", toks[0])):
         toks = toks[1:]
@@ -112,6 +127,8 @@ def _segment_shape(seg):
         return ""
     prog = toks[0].strip("'\"&").replace("\\", "/").rsplit("/", 1)[-1].lower()
     prog = re.sub(r"\.(exe|cmd|bat)$", "", prog)
+    if prog in SHELL_WORDS or not re.fullmatch(r"[a-z0-9][a-z0-9._+-]*", prog):
+        return ""  # shell syntax or not a program at all
     if re.fullmatch(r"(python3?|py)(\.?\d+)*", prog):
         prog = "python"
     rest = toks[1:]
@@ -132,7 +149,8 @@ def _segment_shape(seg):
             if t in OPTS_WITH_VALUE:
                 skip_next = True
                 continue
-            if t.startswith("-") or "/" in t or "\\" in t or "=" in t or t.startswith(("'", '"')):
+            if (t.startswith("-") or "/" in t or "\\" in t or "=" in t or t.startswith(("'", '"'))
+                    or re.fullmatch(r"\d*[<>].*|\d+", t)):  # options, paths, literals, redirections
                 continue
             subs.append(t.lower())
             if len(subs) >= (2 if prog == "gh" else 1):

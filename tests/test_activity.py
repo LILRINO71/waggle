@@ -70,6 +70,13 @@ def test_command_shapes_keep_programs_and_drop_literals():
     assert activity.command_shape("C:/Python/python.exe tools/build.py --fast") == "python build.py"
     assert activity.command_shape('gh pr create --title "x" --body "y"') == "gh pr create"
     assert activity.command_shape("git -C C:/repo status") == "git status"
+    multi_line_message = 'git commit -m "fix\n\nCo-Authored-By: X <x@y>" && git push'
+    assert activity.command_shape(multi_line_message) == "git commit > git push"  # the message is one literal
+    assert activity.command_shape('python -c "\nfrom x import y\nfor i in y:\n    print(i)\n"') == "python -c"
+    assert activity.command_shape("for f in *.py; do wc -l $f; done") == "wc"
+    assert activity.command_shape('"C:/Program Files/Py/python.exe" -m pytest -q') == "python -m pytest"
+    assert activity.command_shape('git commit -m "a; b && c" && git push') == "git commit > git push"
+    assert activity.command_shape("node tools/x.js 2>&1 | tail -5") == "node > tail"
     assert activity.is_read_only("git status > ls")
     assert not activity.is_read_only("git status > git push")
 

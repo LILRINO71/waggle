@@ -82,34 +82,48 @@ def _sessions(settings=None):
     return [d for d in rows if d and not d.get("machine")]
 
 
+# Ad-hoc commands: an inline script, a heredoc, a folder or a file being written. They are how work gets done,
+# not a repeatable step, so they never form part of a sequence (and neither do read-only commands).
+AD_HOC = {"python", "python -c", "python -", "node", "bash", "sh", "powershell", "pwsh", "cmd", "mkdir", "cat",
+          "tee", "touch", "echo", "printf", "start-sleep", "sleep"}
+
+
+def actionable(shape):
+    """The parts of a command shape worth automating: not read-only, not ad hoc."""
+    return [p for p in (shape or "").split(" > ") if p and p not in AD_HOC and not activity.is_read_only(p)]
+
+
 def command_sequences(sessions):
-    """{sequence label: [occurrence {ts, session, ws}]}"""
+    """{sequence label: [occurrence {ts, session, ws}]}: chains typed as one command, and two or three consecutive
+    commands within GAP_S of each other, reduced to their actionable parts (at least two, at most four)."""
     found = {}
     for d in sessions:
         sid = d.get("session") or ""
-        cmds = sorted(d.get("cmds") or [], key=lambda c: c[0])
         units = []
-        for ts, shape, ws in cmds:
-            parts = shape.split(" > ")
-            if len(parts) >= 2 and not activity.is_read_only(shape):
-                found.setdefault(shape, []).append({"ts": ts, "session": sid, "ws": ws})
-            units.append((ts, shape, ws))
+        for ts, shape, ws in sorted(d.get("cmds") or [], key=lambda c: c[0]):
+            parts = actionable(shape)
+            if not parts:
+                continue
+            if 2 <= len(parts) <= 4:
+                found.setdefault(" > ".join(parts), []).append({"ts": ts, "session": sid, "ws": ws})
+            units.append((ts, parts, ws))
         for n in (2, 3):
             for i in range(len(units) - n + 1):
                 win = units[i:i + n]
                 if win[-1][0] - win[0][0] > GAP_S * (n - 1):
                     continue
                 parts = []
-                for _, sh, _ in win:
-                    for p in sh.split(" > "):
+                for _, ps, _ in win:
+                    for p in ps:
                         if not parts or parts[-1] != p:
                             parts.append(p)
-                if len(parts) < 2 or len(parts) > 4:
+                if not 2 <= len(parts) <= 4:
                     continue
                 label = " > ".join(parts)
-                if activity.is_read_only(label):
-                    continue
-                found.setdefault(label, []).append({"ts": win[0][0], "session": sid, "ws": win[-1][2] or win[0][2]})
+                occ = found.setdefault(label, [])
+                if occ and occ[-1]["session"] == sid and win[0][0] - occ[-1]["ts"] < GAP_S:
+                    continue  # the same run of commands seen through a longer window
+                occ.append({"ts": win[0][0], "session": sid, "ws": win[-1][2] or win[0][2]})
     return found
 
 
@@ -164,8 +178,10 @@ def mine(sessions=None, chat=None, now=None, settings=None):
         ev = _evidence(occ)
         if qualifies(ev):
             steps = label.split(" > ")
+            # a git recipe starts by reading the repository's state: the one step a shadow run really runs
+            pre = [{"shape": "git status", "class": "SAFE"}] if any(x.startswith("git ") for x in steps) else []
             out.append({"key": _key("commands", label), "kind": "commands", "label": label, "evidence": ev,
-                        "recipe": [{"shape": s, "class": classify(s)} for s in steps],
+                        "recipe": pre + [{"shape": x, "class": classify(x)} for x in steps],
                         "value": ev["count"] * len(steps)})
     turns = [{"ts": t[0], "keywords": t[2], "ws": t[1], "session": d.get("session"), "source": "claude_code"}
              for d in sessions if not d.get("agent") for t in d.get("turns") or [] if t[0] >= since]
@@ -280,8 +296,10 @@ def _git_read(shape, folder):
     sub = shape.split(" ", 1)[1]
     args = {"git log": ["log", "-n", "5", "--oneline"], "git diff": ["diff", "--stat"],
             "git branch": ["branch", "--list"], "git status": ["status", "--short"]}.get(shape, sub.split())
-    p = subprocess.run(["git", "-C", str(folder), *args], capture_output=True, text=True, encoding="utf-8",
-                       errors="replace", timeout=60, stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
+    # --no-optional-locks: a shadow run must not even refresh the repository's index file
+    p = subprocess.run(["git", "--no-optional-locks", "-C", str(folder), *args], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", timeout=60, stdin=subprocess.DEVNULL,
+                       creationflags=NO_WINDOW)
     return p.returncode
 
 
@@ -314,7 +332,7 @@ def shadow_run(key, settings=None, executor=None, target=None, allow_tests=False
             code = executor(st, folder) if executor else default_executor(st, folder, allow_tests)
         except Exception as e:  # noqa: BLE001 - a crashed step fails the run
             code = f"{type(e).__name__}: {e}"[:120]
-        run["steps"].append({"shape": st["shape"], "class": cls, "ran": True, "exit": code})
+        run["steps"].append({"shape": st["shape"], "class": cls, "ran": True, "would_run": False, "exit": code})
         if code != 0:
             run["ok"] = False
     log = (c.get("shadow_log") or [])[-9:] + [run]

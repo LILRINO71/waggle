@@ -32,8 +32,16 @@ def test_a_sequence_repeated_in_three_sessions_on_two_days_is_a_candidate():
     c = labels["git add > git commit > git push"]
     assert c["evidence"]["count"] == 3 and c["evidence"]["sessions"] == 3 and c["evidence"]["days"] == 2
     assert c["evidence"]["workstreams"] == ["alpha"]
-    assert [st["class"] for st in c["recipe"]] == ["LOCAL_WRITE", "LOCAL_WRITE", "OUTWARD"]
+    assert [st["class"] for st in c["recipe"]] == ["SAFE", "LOCAL_WRITE", "LOCAL_WRITE", "OUTWARD"]
     assert all(not miner.activity.is_read_only(lab) for lab in labels)  # status/ls chains are never candidates
+
+
+def test_ad_hoc_and_read_only_commands_never_form_a_sequence():
+    noisy = [session(f"s{i}", i % 2, cmds=["python", "cat", "sed", "python", "mkdir > cat", "grep > python"])
+             for i in range(4)]
+    assert miner.mine(noisy, chat=[], now=T0 + 3 * DAY) == []
+    assert miner.actionable("python -m pytest > tail > git add > git commit") == ["python -m pytest", "git add",
+                                                                                  "git commit"]
 
 
 def test_below_the_thresholds_nothing_is_proposed():
@@ -80,7 +88,7 @@ def test_proof_then_three_shadow_runs_then_the_owner_switches_it_on(settings, tm
         run = miner.shadow_run(key, executor=spy, target=folder)
         assert run["ok"] and run["shadow_runs"] == i
         assert {s["shape"] for s in run["steps"] if s["would_run"]} == {"git add", "git commit", "git push"}
-    assert ran == []  # every step of this recipe writes or acts outward: none was executed
+    assert ran == ["git status"] * 3  # only the read-only preflight ran; add, commit and push never did
     assert miner.get(key)["status"] == "proposed"
     assert "skipped" in miner.shadow_run(key, executor=spy)  # proposed: waits for the owner, no more runs
     with pytest.raises(KeyError):
@@ -93,7 +101,7 @@ def test_shadow_mode_runs_only_read_only_steps_for_real(settings, tmp_path):
     repo = tmp_path / "beta"
     repo.mkdir()
     subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True, creationflags=NO_WINDOW)
-    sess = [session(f"s{i}", i % 2, cmds=["git status > git push"], ws="beta") for i in range(3)]
+    sess = [session(f"s{i}", i % 2, cmds=["git add > git push"], ws="beta") for i in range(3)]
     miner.save(miner.mine(sess, chat=[], now=T0 + 3 * DAY))
     key = miner.candidates()[0]["key"]
     assert miner.prove(key, target=repo)[0]
@@ -101,6 +109,7 @@ def test_shadow_mode_runs_only_read_only_steps_for_real(settings, tmp_path):
     by = {s["shape"]: s for s in run["steps"]}
     assert by["git status"]["ran"] and by["git status"]["exit"] == 0
     assert not by["git push"]["ran"] and by["git push"]["would_run"]
+    assert not by["git add"]["ran"] and by["git add"]["would_run"]
     assert run["ok"] and run["shadow_runs"] == 1
 
 
@@ -110,8 +119,6 @@ def test_a_failing_shadow_run_does_not_count_and_proof_needs_a_folder(settings, 
     assert miner.get(key)["status"] == "found"
     assert miner.prove(key, target=folder)[0]
     c = miner.get(key)
-    c_recipe = [{"shape": "git status", "class": "SAFE"}, *c["recipe"]]
-    miner._set(key, recipe=c_recipe)
     run = miner.shadow_run(key, executor=lambda st, f: 1, target=folder)
     assert not run["ok"] and run["shadow_runs"] == 0 and miner.get(key)["status"] == "shadow"
 
