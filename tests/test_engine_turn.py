@@ -80,9 +80,18 @@ def test_missing_cli_is_an_honest_failure(settings, no_local):
 
 
 def test_quota_block_skips_claude(settings, monkeypatch, no_local):
-    monkeypatch.setattr(quota, "can_escalate", lambda model, s=None: (False, "Claude limit reached"))
+    import time as _t
+    monkeypatch.setattr(quota, "_state", lambda: {"blocked_until": _t.time() + 600})
     rec, d, fake = turn(settings)
     assert fake.procs == [] and rec.outcome == "failed" and "usage limit" in rec.reply
+
+
+def test_window_estimate_never_turns_the_owner_away(settings, monkeypatch, no_local):
+    """The estimate said 97% while the real window was 51%: chat must still try Claude."""
+    monkeypatch.setattr(quota, "can_escalate", lambda model, s=None: (False, "Pro window at 97% of estimated limit"))
+    monkeypatch.setattr(quota, "_state", lambda: {})
+    chat_engine._available.clear()
+    assert chat_engine.claude_available(settings) == (True, "")
 
 
 def test_local_model_only_when_asked_and_then_labelled(settings):
@@ -243,11 +252,14 @@ def test_slow_notes_search_is_left_out_of_the_context_not_waited_for(settings, m
     assert "A NOTE" in chat_engine.build_context("telegram:5", "hello", False, settings)
 
 
-def test_the_usage_check_is_made_once_per_half_minute(settings, monkeypatch):
+def test_chat_never_consults_the_window_estimate_only_a_recorded_block(settings, monkeypatch):
+    import time as _t
     calls = []
-    monkeypatch.setattr(quota, "can_escalate", lambda m, s: calls.append(m) or (True, ""))
-    assert chat_engine.claude_available(settings) == (True, "") and chat_engine.claude_available(settings) == (True, "")
-    assert len(calls) == 1
-    monkeypatch.setattr(quota, "can_escalate", lambda m, s: (False, "budget"))
+    monkeypatch.setattr(quota, "can_escalate", lambda m, s=None: calls.append(m) or (False, "estimate"))
+    monkeypatch.setattr(quota, "_state", lambda: {})
     chat_engine._available.clear()
-    assert chat_engine.claude_available(settings) == (False, "limit: budget")
+    assert chat_engine.claude_available(settings) == (True, "") and calls == []
+    monkeypatch.setattr(quota, "_state", lambda: {"blocked_until": _t.time() + 120})
+    chat_engine._available.clear()
+    ok, why = chat_engine.claude_available(settings)
+    assert not ok and why.startswith("limit: Claude limit reached")

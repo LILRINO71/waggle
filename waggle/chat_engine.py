@@ -316,12 +316,15 @@ def claude_available(settings):
     cached = _available.get(key)
     if cached and time.time() - cached < AVAILABLE_TTL_S:
         return True, ""
-    ok, why = quota.can_escalate(key, settings)
-    if ok:
-        _available[key] = time.time()
-        return True, ""
-    _available.pop(key, None)
-    return False, f"limit: {why}"
+    # The owner's own chat is refused only after Claude itself said the limit is reached (a recorded block).
+    # Waggle's estimate of the window is for background work: it read 97% while the real window was 51%
+    # (2026-11-20) and turned the owner away. A wrong "yes" costs one failed call, then the local model answers.
+    blocked = float((quota._state() or {}).get("blocked_until") or 0)
+    if blocked > time.time():
+        _available.pop(key, None)
+        return False, f"limit: Claude limit reached; retry in about {int((blocked - time.time()) / 60)} min"
+    _available[key] = time.time()
+    return True, ""
 
 
 def local_answer(chat, text, context, settings):
@@ -762,7 +765,7 @@ def on_inbound(msg):
     kind, text, media, audio = msg.get("kind") or "text", msg.get("text") or "", msg.get("media"), None
     if kind == "voice" and not text.strip():
         audio, media = _audio_path(media), None  # the note's file is transcribed in the turn, not shown to the brain
-    rec = handle_inbound(chat, text, kind=kind, media=media, audio=audio,
+    rec = handle_inbound(chat, text, kind=kind, media=media, audio=audio, local=local_answer,
                          platform=platform, origin=origin, delivery=delivery_for(chat, platform, address),
                          t0=msg.get("received_ts"), turn_id=msg.get("turn_id"), attempt=int(msg.get("attempt") or 1),
                          address=address)
