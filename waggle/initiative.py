@@ -32,7 +32,9 @@ import uuid
 from . import notify
 from .config import Settings, data_path
 
-ACTIONS = ("none", "text", "voice", "call", "evening", "automate")
+ACTIONS = ("none", "text", "voice", "call", "evening", "later", "automate")
+MAX_DEFERRALS = 3      # a finding can be put off this many times; the next time it is told or dropped
+URGENT_LATER_MAX_MIN = 30
 SEND_ACTIONS = ("text", "voice", "call")
 
 SYSTEM = """You are Waggle, the user's personal assistant, deciding what to tell them unprompted. They are a busy
@@ -43,6 +45,7 @@ For EACH signal decide one action:
   voice    worth saying out loud (only for something personal and timely, e.g. a check-in or an event soon)
   call     only if it is urgent AND time-critical (minutes to hours) and a text could be missed
   evening  useful but not now: it goes into tonight's evening note
+  later    not yet, but worth looking at again at a given time (set look_again_minutes): it comes back to you then
   automate (only for kind=automation) Waggle should set this automation up now
 Judge by what matters to THIS user today: deadlines, broken builds on projects they are actively working on,
 things they said they would do, people waiting on them. Don't repeat what they were already told. Silence is
@@ -51,7 +54,8 @@ check-in on something they said they'd do, ask how it went. Return JSON only."""
 
 SCHEMA = {"type": "object", "properties": {"decisions": {"type": "array", "items": {"type": "object", "properties": {
     "key": {"type": "string"}, "action": {"type": "string", "enum": list(ACTIONS)},
-    "message": {"type": "string"}, "topic": {"type": "string"}, "reason": {"type": "string"}},
+    "message": {"type": "string"}, "topic": {"type": "string"}, "reason": {"type": "string"},
+    "look_again_minutes": {"type": "integer"}},
     "required": ["key", "action", "message", "reason"]}}}, "required": ["decisions"]}
 
 
@@ -67,6 +71,8 @@ def _db():
         topic TEXT, model_action TEXT, action TEXT, message TEXT, reason TEXT, guard TEXT, decided_by TEXT,
         outbox_id TEXT, urgent INTEGER)""")
     con.execute("CREATE TABLE IF NOT EXISTS responses (outbox_id INTEGER PRIMARY KEY, responded_at REAL)")
+    con.execute("""CREATE TABLE IF NOT EXISTS deferrals (key TEXT PRIMARY KEY, count INTEGER, next_at REAL,
+        ready INTEGER, reason TEXT, timer_id TEXT)""")
     con.execute("""CREATE TABLE IF NOT EXISTS followups (id TEXT PRIMARY KEY, kind TEXT, created REAL, trace INTEGER,
         said TEXT, said_at REAL, what TEXT, due REAL, status TEXT, closed REAL, outbox TEXT, reason TEXT, chat TEXT,
         origin TEXT, timer_id TEXT)""")
@@ -157,6 +163,64 @@ def track_responses(settings=None, now=None, window_s=6 * 3600, turns=None):
     con.commit()
     con.close()
     return marked
+
+
+# ---- "look again at": deferrals -------------------------------------------------------------------------------
+
+def deferral(key):
+    """{count, next_at, ready, reason} of a finding that was put off (count 0 when it never was)."""
+    con = _db()
+    row = con.execute("SELECT * FROM deferrals WHERE key=?", (key,)).fetchone()
+    con.close()
+    return dict(row) if row else {"key": key, "count": 0, "next_at": None, "ready": 0, "reason": "", "timer_id": None}
+
+
+def defer(sig, minutes, reason, now):
+    """Put a finding off: a one-shot core timer (catch-up "all", so a look-again that fell while the PC was off still
+    happens) turns it back into a pending signal. Returns the timer id."""
+    from waggle.core import timers
+    n = deferral(sig["key"])["count"] + 1
+    try:
+        minutes = int(minutes)
+    except (TypeError, ValueError):
+        minutes = 60
+    minutes = max(10, min(minutes, 24 * 60))
+    if sig.get("urgent"):
+        minutes = min(minutes, URGENT_LATER_MAX_MIN)
+    tid = timers.once(now + minutes * 60, "outreach.recheck", {"key": sig["key"]}, timer_id=f"recheck:{sig['key']}:{n}",
+                      catch_up="all", origin="outreach")
+    con = _db()
+    con.execute("INSERT OR REPLACE INTO deferrals VALUES (?,?,?,?,?,?)",
+                (sig["key"], n, now + minutes * 60, 0, str(reason or "")[:300], tid))
+    con.commit()
+    con.close()
+    return tid
+
+
+def recheck(key, now=None):
+    """The look-again time has come: a deferred signal is pending again (and due() will decide it at once)."""
+    con = _db()
+    cur = con.execute("UPDATE signals SET status='pending' WHERE key=? AND status='deferred'", (key,))
+    if cur.rowcount:
+        con.execute("UPDATE deferrals SET ready=1 WHERE key=?", (key,))
+    con.commit()
+    con.close()
+    return bool(cur.rowcount)
+
+
+def _settle(keys):
+    con = _db()
+    for k in keys:
+        con.execute("UPDATE deferrals SET ready=0 WHERE key=?", (k,))
+    con.commit()
+    con.close()
+
+
+def _ready_keys():
+    con = _db()
+    out = {r[0] for r in con.execute("SELECT key FROM deferrals WHERE ready=1")}
+    con.close()
+    return out
 
 
 # ---- guard rails -------------------------------------------------------------------------------------------
@@ -273,8 +337,15 @@ def template(sig):
 
 def _ask_claude(sigs, settings, now, asker=None, activity=None):
     from . import budget, claude_cli
-    payload = [{"key": x["key"], "kind": x["kind"], "title": x["title"], "detail": x.get("detail", ""),
-                "urgent": bool(x["urgent"]), "topic": x["topic"]} for x in sigs]
+    payload = []
+    for x in sigs:
+        item = {"key": x["key"], "kind": x["kind"], "title": x["title"], "detail": x.get("detail", ""),
+                "urgent": bool(x["urgent"]), "topic": x["topic"]}
+        d = deferral(x["key"])
+        if d["count"]:
+            item.update({"deferred_before": d["count"], "why_deferred": d["reason"]})
+        item["can_defer"] = d["count"] < MAX_DEFERRALS
+        payload.append(item)
     prompt = (context(settings, now, activity) + "\n\nNew signals:\n" + json.dumps(payload, indent=1) +
               f"\n\nUnprompted messages already sent today: {sent_today(now, settings)} of {settings.daily_text_cap}.")
     with budget.background("initiative"):
@@ -302,10 +373,12 @@ def due(settings, now):
         return True
     if notify.in_quiet_hours(settings, now):
         return False
+    if _ready_keys() & {x["key"] for x in p}:
+        return True  # a finding whose look-again time came: decided now, not at the next two-hourly run
     return now - float(store.get_meta(LAST_DECISION_META, 0) or 0) >= settings.initiative_every_min * 60
 
 
-def decide(settings=None, now=None, asker=None, activity=None, only_urgent=False):
+def decide(settings=None, now=None, asker=None, activity=None, only_urgent=False, turns=None):
     """One decision run over the pending signals. Returns the decision rows."""
     s = settings or Settings.load()
     now = now or time.time()
@@ -322,7 +395,7 @@ def decide(settings=None, now=None, asker=None, activity=None, only_urgent=False
         decided_by = f"rules (Claude unavailable: {str(e)[:80]})"
         by_model = None
     state = {"topics": recent_topics(now, max(s.topic_repeat_hours, 2)), "cap_used": sent_today(now, s),
-             "automations": _automations_today(now)}
+             "automations": _automations_today(now), "activity": activity, "turns": turns}
     out = []
     for sig in sigs:
         if by_model is None:
@@ -349,7 +422,12 @@ def _automations_today(now):
 
 def _apply(sig, d, s, now, state, decided_by):
     model_action = str(d.get("action", "none"))
-    action, note = guard(sig, model_action, s, now, state)
+    wanted, note0 = _settle_later(sig, model_action, s, now, state)
+    action, note = guard(sig, wanted, s, now, state)
+    if note0:
+        note = (note0 + "; " + note) if note else note0
+    if sig["kind"] == "followup" and action == "none" and not note0.startswith("closed:"):
+        action, note = "evening", (note + "; " if note else "") + "a check-in is never dropped silently"
     msg = " ".join(str(d.get("message") or "").split())[:900].lstrip("🐝 ")  # the bee is added once, below
     if action in SEND_ACTIONS and not msg:
         msg = template(sig).lstrip("🐝 ")
@@ -371,6 +449,8 @@ def _apply(sig, d, s, now, state, decided_by):
             note = (note + "; " if note else "") + "calls not possible: urgent push + voice note instead"
             notify.deliver("push", msg, title="Waggle", **kw)
             outbox_id = notify.voice(msg, caption=f"📞 {msg}", **kw)["id"]
+    elif action == "later":
+        defer(sig, d.get("look_again_minutes"), d.get("reason", ""), now)
     elif action == "automate":
         from . import scout
         res = scout.build(sig, msg, s)
@@ -383,7 +463,7 @@ def _apply(sig, d, s, now, state, decided_by):
             state["cap_used"] += 1
     if action == "automate":
         state["automations"] += 1
-    status = {"none": "dropped", "evening": "evening"}.get(action, "decided")
+    status = {"none": "dropped", "evening": "evening", "later": "deferred"}.get(action, "decided")
     con = _db()
     con.execute("INSERT INTO decisions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (did, now, sig["key"], sig["kind"], topic, model_action, action, msg,
@@ -393,8 +473,13 @@ def _apply(sig, d, s, now, state, decided_by):
     con.close()
     if sig["kind"] == "followup":
         from . import followups
+        closed = note0.startswith("closed:")
         followups.mark(sig["key"].split(":", 1)[1], "asked" if action in SEND_ACTIONS else
-                       "evening" if action == "evening" else "dropped", now, outbox_id, d.get("reason", ""))
+                       "evening" if action == "evening" else "deferred" if action == "later" else
+                       "closed" if closed else "dropped", now, outbox_id,
+                       note0[len("closed: "):] if closed else d.get("reason", ""))
+    if action != "later":
+        _settle([sig["key"]])
     from . import events
     events.log("decision", id=did, signal=sig["key"], signal_kind=sig["kind"], model_action=model_action, action=action,
                reason=str(d.get("reason", ""))[:200], guard=note[:160], by=decided_by[:60])
@@ -402,12 +487,35 @@ def _apply(sig, d, s, now, state, decided_by):
             "message": msg, "reason": d.get("reason", ""), "guard": note, "outbox_id": outbox_id}
 
 
+def _settle_later(sig, model_action, s, now, state):
+    """(the action to run through guard(), a note). Two rules sit between the model and the guard rails:
+    a check-in on something the user said they would do is never dropped: with no record that it was done it
+    becomes a look-again (closed, with the evidence, when the records show it was done); and a finding that was
+    put off MAX_DEFERRALS times cannot be put off again: it is told (check-ins and urgent ones) or dropped."""
+    is_followup = sig["kind"] == "followup"
+    count = deferral(sig["key"])["count"]
+    note = ""
+    if is_followup and model_action in ("none", "later"):
+        from . import followups
+        item = followups.get(sig["key"].split(":", 1)[1])
+        ev = followups.done_evidence(item, now, s, turns=state.get("turns"), activity=state.get("activity")) if item else ""
+        if ev:
+            return "none", f"closed: {ev}"
+        if model_action == "none":
+            model_action, note = "later", "check-in not dropped: nothing in the records shows it was done"
+    if model_action == "later" and count >= MAX_DEFERRALS:
+        if is_followup or sig.get("urgent"):
+            return "text", f"deferred {count} times: told now" + (f" ({note})" if note else "")
+        return "none", f"deferred {count} times: dropped, nothing new came up"
+    return model_action, note
+
+
 def evening_items(now, settings=None):
     """Signals kept for tonight's note (decided 'evening' today, or pending since this morning)."""
     start = dt.datetime.fromtimestamp(now).replace(hour=0, minute=0, second=0).timestamp()
     con = _db()
     rows = [dict(r) for r in con.execute(
-        "SELECT * FROM signals WHERE (status='evening' AND decided_at>=?) OR (status='pending' AND time>=?)",
+        "SELECT * FROM signals WHERE (status IN ('evening','deferred') AND decided_at>=?) OR (status='pending' AND time>=?)",
         (start - 6 * 3600, start))]
     con.close()
     return rows

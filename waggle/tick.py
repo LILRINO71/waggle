@@ -13,6 +13,7 @@ It registers
   reminder:<id>      once (followups.add)           all                              outreach.reminder
   checkin:<id>       once (followups.capture)       all                              outreach.checkin
   call:<id>          once (call.schedule_at)        all                              outreach.call
+  recheck:<key>:<n>  once (initiative.defer)        all                              outreach.recheck
 
 outreach.look, each step guarded so one failing step never stops the others:
   calls       how placed calls ended (the "call" ledger evidence)
@@ -36,7 +37,7 @@ LOOK_EVERY = "5m"
 SCOUT_CRON = "0 17 * * *"
 SCOUT_MAX_LATE_S = 7 * 3600
 JOB_KINDS = ("outreach.look", "outreach.brief", "outreach.evening", "outreach.scout", "outreach.reminder",
-             "outreach.checkin", "outreach.call")
+             "outreach.checkin", "outreach.call", "outreach.recheck")
 LOOK_STEPS = ("calls", "followups", "watchers", "responses", "decide")
 
 
@@ -190,6 +191,14 @@ def checkin_due(payload, *, now=None):
     return {"signals": n}
 
 
+def recheck_due(payload, *, now=None):
+    """Job outreach.recheck: a finding the decision step put off ("look again at ...") comes back as pending."""
+    from . import initiative
+    key = payload.get("key") or ""
+    back = initiative.recheck(key, now or time.time())
+    return {"key": key, "back": back, "deferred": initiative.deferral(key)["count"], "late": _late(payload)}
+
+
 def call_due(payload):
     from . import call
     return call.call_due(payload)
@@ -197,7 +206,7 @@ def call_due(payload):
 
 HANDLERS = {"outreach.look": look, "outreach.brief": brief_due, "outreach.evening": evening_due,
             "outreach.scout": scout_due, "outreach.reminder": reminder_due, "outreach.checkin": checkin_due,
-            "outreach.call": call_due}
+            "outreach.call": call_due, "outreach.recheck": recheck_due}
 
 
 # ---- registration --------------------------------------------------------------------------------------------
