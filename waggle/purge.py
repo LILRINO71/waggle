@@ -36,15 +36,20 @@ from . import kstore, learn, memory, vault
 from .config import Settings, data_path
 
 SHINGLE = 5  # words in a row that make a quote
-MIN_TOKENS = 4  # distinctive words a line needs before it can be a summary
-OVERLAP = 0.8  # share of those words a non-user turn must contain
+QUOTE_SHARE = 0.35  # a line is a quote when this share of its words comes from a non-user turn's own words
+MIN_TOKENS = 5  # distinctive words a line needs before it can be a summary
+MIN_SOURCE_TOKENS = 6  # and the non-user message it summarises needs at least this many
+OVERLAP = 0.6  # share of those words a non-user turn must contain (a paraphrase keeps most, not all, of them)
+MIN_SHARED = 4  # and at least this many words in common
 _STOP = memory.STOP | {"user", "users", "asked", "found", "decided", "open", "turn", "turns", "wants", "have", "has",
                        "with", "that", "this", "from", "their", "they", "about", "like"}
 _HEADER = re.compile(r"^\s*- \d{1,2}:\d{2} \(")  # a digest line "- 16:40 (telegram, 2 turns)" heading its turns
 _CLI_HEADER = re.compile(r"^\s*- \d{1,2}:\d{2} \(cli\b", re.I)
 _MARK = re.compile(r"<!--\s*waggle:[^>]*-->")
 _SOURCE_REF = re.compile(r"chat (\S*) (\d{4}-\d\d-\d\d \d\d:\d\d)")
-HISTORY = ("Me/History/", "Archive/", "Quarantine/", ".trash/", "_archive/")
+HISTORY = memory.HISTORY_PREFIXES
+MIRROR = "Knowledge/Claude Code/"
+PROTECTED_NODES = ("project", "profile")
 
 
 def _words(text):
@@ -84,10 +89,15 @@ class Matcher:
                 continue
             self.bad_ids.add(r["id"])
             self.bad_keys.add(key)
-            self.bad_grams |= _grams(req) | _grams(rep)
+            # Only what a non-user turn STATED counts. Its replies echo the user's own notes back, and a
+            # background agent's step prompts carry the user's own goal text: neither is a claim to remove.
             background = (r.get("session") or "").startswith(("objective-", "routine-"))
-            if not background and len(req) <= 700:
-                self.bad_sets.append(_tokens(req))
+            if background or not req.strip():
+                continue
+            self.bad_grams |= _grams(req)
+            toks = _tokens(req)
+            if len(req) <= 700 and len(toks) >= MIN_SOURCE_TOKENS:
+                self.bad_sets.append(toks)
         self.bad_keys -= self.user_keys
         self.fact_texts = []  # texts of purged facts: their filed lines go too
 
@@ -100,15 +110,27 @@ class Matcher:
         for t in self.fact_texts:
             if t in low:
                 return "filed from a purged fact"
-        hit = _grams(text) & self.bad_grams
-        if hit - self.user_grams:
+        if self._quoted_share(text) >= QUOTE_SHARE:
             return "quotes a turn that was not the user's"
-        toks = _tokens(text)
+        toks = _tokens(re.sub(r"\*\*[^*]{1,30}:\*\*", " ", text))  # not the "**Other:**" label of a profile line
         if len(toks) >= MIN_TOKENS:
-            if any(len(toks & b) / len(toks) >= OVERLAP for b in self.bad_sets if b):
+            if any(len(toks & b) >= MIN_SHARED and len(toks & b) / len(toks) >= OVERLAP for b in self.bad_sets):
                 if not any(len(toks & u) / len(toks) >= OVERLAP for u in self.user_sets if u):
                     return "summarises a turn that was not the user's"
         return None
+
+    def _quoted_share(self, text):
+        """The share of the text's words that sit inside five-word runs stated by a non-user turn and by no user
+        turn. A path or a name that merely appears in a long line covers little of it; a quote covers most."""
+        w = _words(text)
+        if len(w) < SHINGLE:
+            return 0.0
+        covered = set()
+        for i in range(len(w) - SHINGLE + 1):
+            g = " ".join(w[i:i + SHINGLE])
+            if g in self.bad_grams and g not in self.user_grams:
+                covered.update(range(i, i + SHINGLE))
+        return len(covered) / len(w)
 
     def ref_is_bad(self, ref):
         m = _SOURCE_REF.search(ref or "")
@@ -174,6 +196,9 @@ def _plan_vault(s, matcher):
     plan = []
     for p in sorted(vault.notes(s)):
         rel = p.relative_to(root).as_posix()
+        if not (memory.indexable(rel) or rel.startswith(HISTORY)) or rel.startswith(MIRROR):
+            continue  # Objectives, Inbox, Jobs and Waggle's own pages are test-artefact areas for `ingest cleanup`;
+            # the Claude Code mirror is the user's own notes, copied as they are
         try:
             raw = p.read_bytes().decode("utf-8", errors="replace")
         except OSError:
@@ -246,6 +271,8 @@ def _plan_graph(matcher):
         return {"nodes": [], "edges": [], "aliases": []}
     bad = []
     for n in nodes:
+        if n.get("type") in PROTECTED_NODES:  # a real project or the profile stays, whoever first mentioned it
+            continue
         texts = [n.get("name"), n.get("summary"), n.get("quote")] if "quote" in cols else [n.get("name"),
                                                                                            n.get("summary")]
         if matcher.ref_is_bad(n.get("source_ref")) or any(matcher.match(t) for t in texts if t):

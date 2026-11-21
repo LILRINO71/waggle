@@ -232,3 +232,36 @@ def test_the_graph_extractor_reads_only_the_users_turns(s):
     traces.record("let's decide the quokka ramp for the robot build today", session="tg", platform="telegram")
     graph.extract_from_traces(since=0, settings=s, chat=lambda m: seen.append(m) or {})
     assert len(seen) == 1
+
+
+def test_a_paraphrase_is_caught_but_a_short_line_that_shares_a_few_words_is_not(s, world):
+    vault.write("Me/Profile", "# Profile\n\n- **Other:** Prepare for quokka meet and zebra test this week\n"
+                "- **School:** zebra test review sheet is due\n", s)  # the second shares only 2 distinctive words
+    files = {f["path"]: f for f in purge.purge(s)["vault"]["files"]}
+    assert files["Me/Profile.md"]["lines"] == 1 and "Prepare" in files["Me/Profile.md"]["examples"][0]
+
+
+def test_working_areas_and_real_projects_are_left_to_the_cleanup_not_the_purge(s, world):
+    vault.write("Objectives/test-objective", f"# t\n\n**Goal:** {STATED}\n", s)
+    vault.write("Inbox/a note", f"# t\n\n{STATED}\n", s)
+    con = graph._db()
+    graph.upsert_node(con, "Robot Build", "project", "", "chat", source_ref="chat dev " + time.strftime(
+        "%Y-%m-%d %H:%M"))
+    con.commit()
+    con.close()
+    r = purge.purge(s)
+    assert not {"Objectives/test-objective.md", "Inbox/a note.md"} & {f["path"] for f in r["vault"]["files"]}
+    purge.purge(s, apply=True, embedder=word_embed)
+    con = graph._db()
+    assert con.execute("SELECT COUNT(*) FROM nodes WHERE name='Robot Build'").fetchone()[0] == 1
+    con.close()
+
+
+def test_archived_notes_do_not_come_back_into_the_graph(s):
+    vault.write("Archive/cleanup-1/Objectives/old-test", "# old\n\nSee [[Some Thing]].\n", s)
+    vault.write("Projects/Real", "# Real\n\nA real project.\n", s)
+    graph.build_from_vault(s)
+    con = graph._db()
+    names = {r["name"] for r in con.execute("SELECT name FROM nodes")}
+    con.close()
+    assert "old-test" not in names and "Some Thing" not in names and "Real" in names

@@ -32,7 +32,7 @@ from .config import Settings, data_path
 
 FOLDER_TYPE = {"Projects": "project", "People": "person", "Ideas": "idea", "Objectives": "objective",
                "Research": "research", "Me": "profile", "Jobs": "build", "Routines": "routine", "Agents": "agent"}
-SKIP_FOLDERS = {"Journal", "Inbox", ".obsidian", "Waggle"}
+SKIP_FOLDERS = {"Journal", "Inbox", ".obsidian", "Waggle", "Archive", "Quarantine"}  # archives are not knowledge
 TYPES = {"person", "project", "decision", "idea", "objective", "research", "profile", "build", "routine", "agent",
          "tool", "place", "org", "topic", "event", "note"}
 
