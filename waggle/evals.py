@@ -188,6 +188,11 @@ class Ctx:
         self.ollama_up = ollama_up
         self.asker = asker  # Claude cases only (None: the real claude_cli.ask under the background budget)
         self.embedder = embedder
+        self.real = False  # True in a run against the real Ollama: each case's own model is loaded before it runs
+        self.current = None  # the model loaded last by prepare()
+        self.used = set()  # every model prepare() tried to load, for the re-warm of the voice model afterwards
+        self.failed = {}  # model -> why it did not load (its cases are skipped, not tried again)
+        self.notes = []
         import waggle
         self.package = Path(waggle.__file__).resolve().parent.parent.as_posix()
 
@@ -205,6 +210,39 @@ class Ctx:
     def need_llm(self):
         if not self.ollama_up:
             raise Skip("Ollama is not reachable")
+
+    def case_model(self, case):
+        """The model the live caller of this case uses: mail triage its mail model, the voice routes the voice judge's
+        model (or the --model override), everything else local_model."""
+        if case["kind"] == "mail_triage":
+            return self.mail_model()
+        if case["kind"] == "voice_route" and not self.override:
+            from . import voice_fast
+            return voice_fast.model_for(self.settings)
+        return self.model
+
+    def prepare(self, case):
+        """Before a local case in a real run: load its model, the way its live caller keeps it loaded. A voice route
+        goes through voice_intent.warm (same keep_alive, no num_ctx), so the voice's own call finds it loaded."""
+        if not self.real or case["needs"] != "local" or (case["kind"] == "mail_triage" and self.mail_chat):
+            return
+        model = self.case_model(case)
+        if model in self.failed:
+            raise Skip(self.failed[model])
+        if model == self.current:
+            return
+        self.used.add(model)
+        if case["kind"] == "voice_route":
+            from . import voice_intent
+            ok = voice_intent.warm(model, url=self.settings.ollama_url, timeout=LLM_TIMEOUT_S)
+            if not ok:
+                self.notes.append(f"the voice model {model} did not load: its cases were skipped")
+        else:
+            ok = _warm(self, self.notes, model)
+        if not ok:
+            self.failed[model] = f"the local model {model} did not load"
+            raise Skip(self.failed[model])
+        self.current = model
 
 
 def _note_text(ctx, rel):
@@ -471,11 +509,9 @@ def run_case(case, ctx):
     c["needs"] = case["needs"]
     res = {"id": case["id"], "category": case["category"], "status": "fail", "detail": "", "model": ""}
     if case["needs"] == "local":
-        res["model"] = ctx.mail_model() if case["kind"] == "mail_triage" else ctx.model
-        if case["kind"] == "voice_route" and not ctx.override:
-            from . import voice_fast
-            res["model"] = voice_fast.model_for(ctx.settings)  # the voice judge's model, not local_model
+        res["model"] = ctx.case_model(case)
     try:
+        ctx.prepare(case)
         got = RUNNERS[case["kind"]](c, ctx)
         if case["kind"] == "voice_route":
             res.update(tier=got["tier"], route_ms=got["ms"])
@@ -505,16 +541,31 @@ def _ollama_up(settings):
         return False
 
 
-def _warm(ctx, notes):
-    """Load the local model once with a generous timeout, so a cold load is not scored as a slow case."""
+def _warm(ctx, notes, model=None):
+    """Load a local model with a generous timeout (the same plain call its live callers make), so a cold load is not
+    scored as a slow case."""
     from . import ollama
+    model = model or ctx.model
     try:
-        ollama.chat([{"role": "user", "content": "ok"}], model=ctx.model, settings=ctx.settings,
+        ollama.chat([{"role": "user", "content": "ok"}], model=model, settings=ctx.settings,
                     timeout=LLM_TIMEOUT_S)
         return True
     except Exception as e:  # noqa: BLE001
-        notes.append(f"the local model {ctx.model} did not load ({type(e).__name__}): its cases were skipped")
+        notes.append(f"the local model {model} did not load ({type(e).__name__}): its cases were skipped")
         return False
+
+
+def _rewarm_voice(ctx, notes):
+    """After a run that loaded another model (local_model is 22 GB and evicts the small voice model), load the voice
+    judge's model again the way voice_intent.warm does, so the next voice turn does not pay the 8 s reload."""
+    from . import voice_fast, voice_intent
+    if not ctx.real:
+        return
+    voice_model = voice_fast.model_for(ctx.settings)
+    if not any(not voice_fast._same_model(m, voice_model) for m in ctx.used):
+        return
+    if not voice_intent.warm(voice_model, url=ctx.settings.ollama_url, timeout=LLM_TIMEOUT_S):
+        notes.append(f"the voice model {voice_model} could not be loaded again after the run")
 
 
 def summarize(results):
@@ -553,15 +604,20 @@ def run(settings=None, now=None, categories=None, ids=None, quick=False, claude=
         from . import voice_fast
         model = voice_fast.model_for(s)  # the model already loaded for the voice judge: not local_model (a 22 GB load)
     ctx = Ctx(s, model=model, chat=chat, mail_chat=mail_chat, ollama_up=up, asker=asker, embedder=embedder)
-    if up and chat is None and any(c["needs"] == "local" for c in cases):
-        ctx.ollama_up = _warm(ctx, notes)
-    cases.sort(key=lambda c: (c["needs"] == "claude", c["needs"] == "local" and c["kind"] == "mail_triage"))
+    ctx.real = bool(up and chat is None and any(c["needs"] == "local" for c in cases))
+    ctx.notes = notes
+    # Claude last; the voice routes just before it, so the voice model is the one left loaded
+    cases.sort(key=lambda c: (c["needs"] == "claude", c["needs"] == "local" and c["kind"] == "voice_route",
+                              c["needs"] == "local" and c["kind"] == "mail_triage"))
     results = []
-    for case in cases:
-        r = run_case(case, ctx)
-        results.append(r)
-        if on_result:
-            on_result(r)
+    try:
+        for case in cases:
+            r = run_case(case, ctx)
+            results.append(r)
+            if on_result:
+                on_result(r)
+    finally:
+        _rewarm_voice(ctx, notes)
     out = {"time": now, "golden_version": data["version"], "model": ctx.model,
            "mode": "quick" if quick else ("local+claude" if use_claude else "local"), "results": results,
            "categories": summarize(results), "notes": notes}

@@ -20,7 +20,11 @@ The caller (chat_engine.run_turn, voice turns only) gets a Route. The exchange i
 (answered_by "code" or "local") and the next message to Claude carries it (unseen_note), so a follow-up such as
 "and tomorrow?" works. One INFO line per voice turn names the tier and its time, never the words.
 
-Switches (config.json): voice_fast_path (true), voice_fast_local (true), voice_fast_model, voice_fast_cap_s (2.5).
+A typed message (Telegram text) gets the code tier only (text_route): no local model, a typed question can wait for
+Claude's better answer. Same recording (answered_by "code") and the same unseen_note for Claude's next message.
+
+Switches (config.json): voice_fast_path (true), voice_fast_local (true), voice_fast_model, voice_fast_cap_s (2.5),
+text_fast_path (true, the typed code tier).
 """
 import datetime as dt
 import json
@@ -499,14 +503,37 @@ def route(text, settings, *, chat="", voice_info=None, now=None, rows=None, ask=
     return out
 
 
+def text_route(text, settings, *, chat="", now=None, rows=None):
+    """The typed twin of route(): the code tier or Claude, never the local model. A slash command is not a question."""
+    t0 = time.monotonic()
+    out = Route()
+    if not _flag(settings, "text_fast_path"):
+        out.why = "off"
+        return out
+    if (text or "").lstrip().startswith("/"):
+        out.why = "slash command"
+        return out
+    try:
+        got = code_answer(text, now=now, chat=chat, rows=rows)
+        if got:
+            got.ms = int((time.monotonic() - t0) * 1000)
+            return Route("code", got, ms=got.ms)
+        out.why = "not a code answer"
+    except Exception as e:  # noqa: BLE001  (a bug here must only ever mean "ask Claude")
+        out.why = f"error: {type(e).__name__}"
+        log.warning("typed fast path failed: %s: %s", type(e).__name__, e)
+    out.ms = int((time.monotonic() - t0) * 1000)
+    return out
+
+
 def reply_text(fast):
     """The reply in the voice format run_turn splits again, exactly as if the model had written it."""
     return f"SPOKEN: {fast.spoken}\nANSWER:\n{fast.written}"
 
 
-def log_turn(tier, seconds, why="", local_ms=0):
-    """The one INFO line per voice turn: which tier answered and how long it took (never the words)."""
-    log.info("voice turn tier=%s time=%.2fs%s%s", tier, seconds, f" why={why}" if why else "",
+def log_turn(tier, seconds, why="", local_ms=0, kind="voice"):
+    """The one INFO line per voice (or typed fast) turn: which tier answered and how long it took (never the words)."""
+    log.info("%s turn tier=%s time=%.2fs%s%s", kind, tier, seconds, f" why={why}" if why else "",
              f" local_miss={local_ms}ms" if local_ms else "")
 
 

@@ -116,6 +116,9 @@ class Settings:
     voice_fast_local: bool = True
     voice_fast_model: str = ""
     voice_fast_cap_s: float = 2.5
+    # A typed (Telegram text) message gets the same code tier only: the time, the date, reminders, sums, conversions.
+    # Never the local model: a typed question can wait for Claude's better answer.
+    text_fast_path: bool = True
     scout_enabled: bool = True
     # Cheap checks in front of Claude for work that runs on its own (waggle/gates.py, notifycheck.py, cooldowns.py).
     # Each switch is independent: false restores the old behaviour exactly.

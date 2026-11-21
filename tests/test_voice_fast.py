@@ -361,14 +361,105 @@ def test_a_note_or_a_restart_keeps_the_fast_path_out_of_it(settings):
     assert rec.answered_by.startswith("claude")
 
 
-def test_a_typed_message_is_not_answered_by_the_fast_path(settings):
-    settings.edit_interval_s = 0.05
+def typed_turn(settings, text, script=None, fake=None, chat="telegram:42", **kw):
+    """One typed Telegram message with a fake Claude: (record, delivery, fake)."""
     from engine_fakes import FakeDelivery
-    fake = FakeClaude(lambda proc, msg: proc.answer("It's late."))
-    sess = ChatSession("telegram:42", settings=settings, popen=fake, claude="claude")
-    rec = chat_engine.run_turn("telegram:42", "what time is it", FakeDelivery(), context="", settings=settings,
-                               session=sess, platform="telegram")
+    settings.edit_interval_s = 0.05
+    d = FakeDelivery()
+    fake = fake or FakeClaude(script or (lambda proc, msg: proc.answer("From Claude.")))
+    sess = ChatSession(chat, settings=settings, popen=fake, claude="claude")
+    kw.setdefault("platform", "telegram")
+    rec = chat_engine.run_turn(chat, text, d, context="", settings=settings, session=sess, **kw)
+    return rec, d, fake
+
+
+def test_a_typed_local_tier_question_waits_for_claude(settings, monkeypatch):
+    monkeypatch.setattr(voice_fast, "loaded_models", lambda url="", timeout=0: pytest.fail("the model must not be asked"))
+    monkeypatch.setattr(voice_fast, "ollama_ask", lambda *a, **k: pytest.fail("the model must not be asked"))
+    rec, d, fake = typed_turn(settings, "what is the capital of France")
+    assert rec.answered_by.startswith("claude") and d.messages == ["From Claude."] and "fast_tier" not in rec.voice
+
+
+@pytest.mark.parametrize("text, starts", [("what time is it", "It's "), ("what day is it", "Today is "),
+                                          ("what's 15 percent of 80", "15 percent of 80"), ("how many feet in a mile", "1 mile is 5,280 feet")])
+def test_a_typed_code_question_is_answered_at_once_and_never_reaches_claude(settings, text, starts):
+    rec, d, fake = typed_turn(settings, text)
+    assert fake.procs == [] and rec.answered_by == "code" and rec.outcome == "ok" and rec.delivered
+    assert d.messages[-1].startswith(starts) and "SPOKEN" not in d.messages[-1] and "ANSWER" not in d.messages[-1]
+    assert "sir" not in d.messages[-1] and "Heard" not in d.messages[-1]  # the written text, not the spoken one
+    assert rec.voice["fast_tier"] == "code" and rec.voice["typed"] is True and rec.steps == []
+    row = traces.get(rec.trace_id)
+    assert row["answered_by"] == "code" and row["turn_outcome"] == "ok" and row["request"] == text
+    assert json.loads(row["extra"])["voice"] is False
+
+
+def test_a_typed_reminders_question_reads_the_store(settings):
+    from waggle import followups
+    followups.add(dt.datetime.now().timestamp() + 7200, "call the dentist", chat="telegram:42")
+    rec, d, fake = typed_turn(settings, "what are my reminders")
+    assert fake.procs == [] and rec.answered_by == "code" and "call the dentist" in d.messages[-1]
+
+
+def test_claude_sees_a_typed_quick_exchange_on_its_next_message(settings):
+    rec, _, _ = typed_turn(settings, "what day is it")
+    assert rec.answered_by == "code"
+    rec2, d2, fake = typed_turn(settings, "and tomorrow?")
+    first = fake.procs[0].inputs[0]
+    assert rec2.answered_by.startswith("claude")
+    assert "answered these without you" in first and "User: what day is it" in first and "Waggle: Today is " in first
+
+
+@pytest.mark.parametrize("text", ["/time", "/status what time is it", "  /help"])
+def test_a_slash_command_goes_the_normal_way(settings, text):
+    rec, d, fake = typed_turn(settings, text)
+    assert rec.answered_by.startswith("claude") and len(fake.procs) == 1
+
+
+def test_attachments_notes_restarts_and_other_origins_go_the_normal_way(settings):
+    cases = [dict(attachments="<waggle_attachments>a photo</waggle_attachments>"),
+             dict(note="The user approved: x."), dict(attempt=2), dict(origin="canary"), dict(origin="agent"),
+             dict(origin="bench")]
+    for kw in cases:
+        rec, d, fake = typed_turn(settings, "what time is it", **kw)
+        assert rec.answered_by.startswith("claude"), kw
+
+
+def test_a_test_marked_message_is_a_canary_and_goes_the_normal_way(settings):
+    marked, text = chat_engine.test_marked("[waggle-test] what time is it")
+    origin = chat_engine.marked_origin("user") if marked else "user"
+    rec, d, fake = typed_turn(settings, text, origin=origin)
+    assert origin == "canary" and rec.answered_by.startswith("claude")
+
+
+def test_the_typed_switch_turns_only_the_typed_path_off(settings):
+    settings.text_fast_path = False
+    rec, d, fake = typed_turn(settings, "what time is it")
     assert rec.answered_by.startswith("claude")
+    rec, _, heard, _ = voice_turn(settings, "what time is it")  # the voice path is its own switch
+    assert rec.answered_by == "code"
+    settings.text_fast_path = True
+    settings.voice_fast_path = False
+    rec, d, fake = typed_turn(settings, "what time is it")
+    assert rec.answered_by == "code"
+
+
+def test_text_route_is_the_code_tier_only_and_never_raises(settings, monkeypatch):
+    r = voice_fast.text_route("what time is it", settings, now=NOW)
+    assert r.tier == "code" and r.fast.written == "It's 11:46 AM."
+    assert voice_fast.text_route("who wrote Hamlet", settings, now=NOW).why == "not a code answer"
+    assert voice_fast.text_route("/time", settings, now=NOW).why == "slash command"
+    settings.text_fast_path = False
+    assert voice_fast.text_route("what time is it", settings, now=NOW).why == "off"
+    settings.text_fast_path = True
+    monkeypatch.setattr(voice_fast, "code_answer", lambda *a, **k: 1 / 0)
+    assert voice_fast.text_route("what time is it", settings, now=NOW).tier == "claude"
+
+
+def test_the_typed_turn_logs_one_line_without_the_words(settings, caplog):
+    with caplog.at_level(logging.INFO, logger="waggle.voice_fast"):
+        typed_turn(settings, "what time is it")
+    lines = [r.getMessage() for r in caplog.records if r.name == "waggle.voice_fast"]
+    assert len(lines) == 1 and lines[0].startswith("typed turn tier=code time=") and "time is it" not in lines[0]
 
 
 def test_the_switch_turns_the_whole_path_off(settings):

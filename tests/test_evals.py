@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from waggle import evals, voice_fast
+from waggle import evals, voice_fast, voice_intent
 from waggle.config import Settings
 from waggle.core import cron, jobs, plugins, timers
 
@@ -436,8 +436,69 @@ def test_the_voice_fast_local_cases_score_the_routing_and_the_answer():
 def test_a_voice_fast_only_run_warms_the_voice_model_not_local_model(monkeypatch):
     seen = []
     monkeypatch.setattr(evals, "_ollama_up", lambda s: True)
-    monkeypatch.setattr(evals, "_warm", lambda ctx, notes: seen.append(ctx.model) or True)
+    monkeypatch.setattr(evals, "_warm", lambda ctx, notes, model=None: seen.append(model or ctx.model) or True)
+    monkeypatch.setattr(voice_intent, "warm", lambda model, **kw: seen.append("voice:" + model) or True)
     s = Settings(local_model="a-22gb-model")
     out = evals.run(s, now=NOW, categories=["voice_fast"], save=False, ollama_up=True)
-    assert seen == ["gemma4:latest"] and out["model"] == "gemma4:latest"
+    assert seen == ["voice:gemma4:latest"] and out["model"] == "gemma4:latest"  # no local_model, no re-warm needed
     assert evals._voice_timing(out["results"])[0].startswith("claude median")
+
+
+# ---- the full run keeps the voice model loaded --------------------------------------------------------------
+
+def _golden(*ids):
+    cases = {c["id"]: c for c in evals.load_golden()["cases"]}
+    return {"version": 1, "cases": [cases[i] for i in ids]}
+
+
+def _spy(monkeypatch, voice_ok=True, local_ok=True):
+    seen = []
+    monkeypatch.setattr(evals, "_ollama_up", lambda s: True)
+    monkeypatch.setattr(evals, "_warm", lambda ctx, notes, model=None: seen.append(("local", model or ctx.model)) or local_ok)
+    monkeypatch.setattr(voice_intent, "warm", lambda model, **kw: seen.append(("voice", model, sorted(kw))) or voice_ok)
+    return seen
+
+
+def test_a_full_run_loads_each_cases_own_model_and_warms_the_voice_model_again_after(monkeypatch):
+    seen = _spy(monkeypatch)
+    golden = _golden("vf-local-1", "saf-5", "mail-1", "vf-local-2", "saf-6")  # deliberately out of order
+    out = evals.run(Settings(local_model="a-22gb-model"), now=NOW, golden=golden, save=False)
+    models = {r["id"]: r["model"] for r in out["results"]}
+    assert models["saf-5"] == "a-22gb-model" and models["mail-1"] == "a-22gb-model"
+    assert models["vf-local-1"] == "gemma4:latest"  # the voice judge's model, not local_model
+    # the 22 GB model once for its cases, the voice model before its own cases, and once more at the end
+    assert [s[:2] for s in seen] == [("local", "a-22gb-model"), ("voice", "gemma4:latest"), ("voice", "gemma4:latest")]
+    assert seen[-1][2] == ["timeout", "url"]  # voice_intent.warm's own call: a model and a url, nothing else
+
+
+def test_the_voice_model_is_warmed_again_even_when_a_case_crashes(monkeypatch):
+    seen = _spy(monkeypatch)
+    monkeypatch.setitem(evals.RUNNERS, "chat_reply", lambda c, ctx: (_ for _ in ()).throw(KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):
+        evals.run(Settings(local_model="a-22gb-model"), now=NOW, golden=_golden("saf-5"), save=False)
+    assert seen[-1][:2] == ("voice", "gemma4:latest")
+
+
+def test_a_run_of_the_voice_model_alone_needs_no_rewarm_and_a_fake_model_never_warms(monkeypatch):
+    seen = _spy(monkeypatch)
+    evals.run(Settings(), now=NOW, golden=_golden("vf-local-1"), save=False)
+    assert [s[:2] for s in seen] == [("voice", "gemma4:latest")]
+    seen.clear()
+    evals.run(Settings(), now=NOW, golden=_golden("saf-5", "vf-local-1"), chat=lambda m, s: {"reply": "ok"}, save=False)
+    assert seen == []  # a test's fake model: nothing real is loaded
+
+
+def test_a_model_that_does_not_load_skips_its_cases_once_and_the_run_goes_on(monkeypatch):
+    seen = _spy(monkeypatch, local_ok=False)
+    out = evals.run(Settings(local_model="a-22gb-model"), now=NOW, golden=_golden("saf-5", "saf-6", "vf-local-1"),
+                    save=False)
+    st = {r["id"]: r["status"] for r in out["results"]}
+    assert st["saf-5"] == "skip" and st["saf-6"] == "skip"
+    assert [s for s in seen if s[0] == "local"] == [("local", "a-22gb-model")]  # tried once, not per case
+    assert any(s[0] == "voice" for s in seen)
+
+
+def test_a_voice_model_that_cannot_be_loaded_again_is_a_note(monkeypatch):
+    _spy(monkeypatch, voice_ok=False)
+    out = evals.run(Settings(local_model="a-22gb-model"), now=NOW, golden=_golden("saf-5"), save=False)
+    assert any("loaded again" in n for n in out["notes"])

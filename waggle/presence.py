@@ -1,17 +1,22 @@
-"""Is the owner at the PC right now? Read from two real signals, never from the clock:
+"""Is the owner at the PC right now? Read from real signals, never from the clock:
 
   idle time   how long since the last keyboard or mouse input in this session (GetLastInputInfo)
   locked      whether the session is locked: the input desktop is then the secure "Winlogon" desktop, which a
               normal process cannot open (OpenInputDesktop fails) or whose name is not "Default"
+  activitywatch  its AFK watcher, when ActivityWatch runs: it counts media playing as active, so an idle mouse
+              while watching a video is still "at the PC"
 
 The owner is at the PC when the session is not locked and the last input is younger than the idle limit
-(config.json "pc_presence_idle_s", default 300 s = 5 minutes). Off Windows, or when the API cannot be read, the
-answer is "not at the PC" (Telegram then carries the message, as it always did).
+(config.json "pc_presence_idle_s", default 300 s = 5 minutes), or, past that limit, ActivityWatch says not-afk.
+ActivityWatch can only add presence, never remove it, and is asked only when the idle signal says away. Without it
+(not running, off, stale) the idle signal decides alone. Off Windows, or when the API cannot be read, the answer is
+"not at the PC" (Telegram then carries the message, as it always did).
 
     at_pc()        -> bool
-    state()        -> {"at_pc", "idle_s", "locked", "limit_s", "why"}
+    state()        -> {"at_pc", "idle_s", "locked", "limit_s", "why", "aw_afk"}   (aw_afk: None | True | False)
 
-The API is a seam: pass api=<object with idle_s() and locked()> in tests."""
+The API is a seam: pass api=<object with idle_s() and locked()> in tests; aw=<callable -> None|bool> replaces the
+ActivityWatch read (with a fake api and no aw=, ActivityWatch is not asked)."""
 import os
 
 DEFAULT_IDLE_S = 300.0
@@ -84,10 +89,19 @@ def _default_api():
     return _api
 
 
-def state(idle_limit=None, api=None):
-    """{"at_pc": bool, "idle_s": float | None, "locked": bool | None, "limit_s": float, "why": str}."""
+def _aw_afk():
+    """ActivityWatch's AFK verdict (None | True | False); never raises."""
+    try:
+        from waggle import aw_sensor
+        return aw_sensor.afk_now()
+    except Exception:  # noqa: BLE001 - a second signal that cannot be read is simply absent
+        return None
+
+
+def state(idle_limit=None, api=None, aw=None):
+    """{"at_pc": bool, "idle_s": float | None, "locked": bool | None, "limit_s": float, "why": str, "aw_afk": ...}."""
     limit = float(idle_limit) if idle_limit is not None else idle_limit_s()
-    out = {"at_pc": False, "idle_s": None, "locked": None, "limit_s": limit, "why": ""}
+    out = {"at_pc": False, "idle_s": None, "locked": None, "limit_s": limit, "why": "", "aw_afk": None}
     try:
         a = api or _default_api()
         if a is None:
@@ -101,15 +115,22 @@ def state(idle_limit=None, api=None):
     if out["locked"]:
         out["why"] = "the session is locked"
     elif out["idle_s"] >= limit:
-        out["why"] = f"no input for {out['idle_s']:.0f} s (limit {limit:.0f} s)"
+        if aw is None and api is None:
+            aw = _aw_afk  # the real thing only; a test's fake api never reaches the real ActivityWatch
+        out["aw_afk"] = aw() if aw else None
+        if out["aw_afk"] is False:
+            out["at_pc"], out["why"] = True, f"no input for {out['idle_s']:.0f} s, but ActivityWatch says not away"
+        else:
+            out["why"] = f"no input for {out['idle_s']:.0f} s (limit {limit:.0f} s)"
     else:
         out["at_pc"], out["why"] = True, f"input {out['idle_s']:.0f} s ago"
     return out
 
 
-def at_pc(idle_limit=None, api=None):
-    """True when the session is unlocked and the last keyboard or mouse input is younger than the idle limit."""
-    return state(idle_limit, api)["at_pc"]
+def at_pc(idle_limit=None, api=None, aw=None):
+    """True when the session is unlocked and the last input is younger than the idle limit, or ActivityWatch says
+    the owner is not away (a video playing with an idle mouse)."""
+    return state(idle_limit, api, aw)["at_pc"]
 
 
 if __name__ == "__main__":
