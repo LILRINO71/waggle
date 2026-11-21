@@ -4,8 +4,15 @@ import json
 
 import pytest
 
-from waggle import agent, agents, engines, models, notify, routines, traces, vault
+from waggle import agent, agents, engines, models, notify, notifycheck, routines, traces, vault
 from waggle.config import Settings
+
+
+@pytest.fixture(autouse=True)
+def _local_says_notify(monkeypatch):
+    """A routine result asks a local yes/no before it messages (waggle/notifycheck.py); these tests are about
+    delivery, so the answer is yes. tests/test_gates.py covers the no and the failure."""
+    monkeypatch.setattr(notifycheck, "_ask", lambda m, s, t: {"decision": "yes", "reason": "test"})
 
 
 def _ok_runner(text):

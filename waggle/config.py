@@ -88,6 +88,12 @@ class Settings:
     voice_note_voice: str = "af_heart"
     voice_note_speed: float = 1.1
     scout_enabled: bool = True
+    # Cheap checks in front of Claude for work that runs on its own (waggle/gates.py, notifycheck.py, cooldowns.py).
+    # Each switch is independent: false restores the old behaviour exactly.
+    gates_enabled: bool = True  # a pre-check may skip a background Claude call when it is very sure (P >= 0.95)
+    gates_local: bool = True  # the pre-check may ask the local model (only when Ollama already has a model loaded)
+    notify_check_enabled: bool = True  # a local yes/no decides if a background result is worth a message now
+    engine_cooldowns_enabled: bool = True  # an engine that just failed (limit, credit, busy, auth...) rests a while
     phone_target: str = "telegram"
     # Saved by install.py: cron scripts run with a trimmed environment and may not see LOCALAPPDATA.
     claude_bin: str = ""

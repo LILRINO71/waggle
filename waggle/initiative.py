@@ -20,7 +20,11 @@ Every decision is logged (signal, action the model chose, final action, reason, 
 user answered is filled in later (track_responses). The context the model sees holds only the user's own turns
 (origin.user_turns, decision 10); every message it causes is one core outbox row with origin initiative,
 followup or scout. When Claude is unavailable, urgent facts still go out with
-template text; the rest waits for the next decision or the evening note. The local model is not used here.
+template text; the rest waits for the next decision or the evening note.
+
+A cheap gate (waggle/gates.py) sits in front of the Claude call: when every pending signal is routine, a repeat of
+a topic already raised, or the daily cap is used up, and the check is very sure (P >= 0.95), the call is skipped and
+the signals go to the evening note. Urgent signals, check-ins and automation candidates never pass through it.
 """
 import datetime as dt
 import json
@@ -427,9 +431,48 @@ def rules_say_now(sig, activity):
     return "fail" in title and any(title.startswith(repo.lower() + ":") for repo in activity)
 
 
-def decide(settings=None, now=None, asker=None, activity=None, only_urgent=False, turns=None, info=None):
+def _protected(sig):
+    """A signal that always gets the model: urgent ones, the owner's check-ins, automation candidates, and anything
+    the owner asked for."""
+    if sig.get("urgent") or sig.get("kind") in ("followup", "automation"):
+        return True
+    try:
+        return bool(json.loads(sig.get("data") or "{}").get("asked"))
+    except ValueError:
+        return False
+
+
+GATE_QUESTION = ("Is every one of these new signals routine news, a repeat of something the owner was already told, "
+                 "or marketing, so that none of them needs a decision from a stronger model today? Answer wake=false "
+                 "only when you are very sure.")
+
+
+def gate_check(sigs, settings, now, ask=None):
+    """The cheap check in front of the decision call, as a zero-argument function for gates.evaluate: first two
+    certain facts (code), then, only when Ollama already has a model loaded, one local-model question."""
+    from . import gates
+
+    def check():
+        topics = recent_topics(now, max(settings.topic_repeat_hours, 2))
+        if all(_norm_topic(x.get("topic") or x["key"]) in topics for x in sigs):
+            return {"wake": False, "p_needed": 0.02, "data": {"why": "every signal repeats a topic already raised"}}
+        if sent_today(now, settings) >= settings.daily_text_cap:
+            return {"wake": False, "p_needed": 0.03, "data": {"why": f"the daily cap of {settings.daily_text_cap} "
+                                                                       "is used up: nothing can go out"}}
+        if getattr(settings, "gates_local", True) and (ask is not None or gates.ollama_ready(settings)):
+            told = [r["text"][:100] for r in notify.rows(since=now - 2 * 86400)
+                    if r["status"] in ("sent", "queued", "sending")][-8:]
+            facts = ("New signals:\n" + "\n".join(f"- [{x['kind']}] {x['title'][:120]}" for x in sigs[:12])
+                     + ("\n\nAlready told in the last 2 days:\n" + "\n".join(f"- {t}" for t in told) if told else ""))
+            return gates.local_check(GATE_QUESTION, facts, settings=settings, ask=ask)()
+        return {"wake": True, "p_needed": 1.0}
+    return check
+
+
+def decide(settings=None, now=None, asker=None, activity=None, only_urgent=False, turns=None, info=None, gate=None):
     """One decision run over the pending signals. Returns the decision rows. info (a dict) is filled with what
-    happened: asked, model ("ok" or why it was unavailable), held (signals left pending), notes (guard notes)."""
+    happened: asked, model ("ok" or why it was unavailable), held (signals left pending), notes (guard notes), and
+    gate (what the pre-check said). gate: a zero-argument check replacing the default (gates.evaluate), or False."""
     from waggle.core import store
     s = settings or Settings.load()
     now = now or time.time()
@@ -442,6 +485,22 @@ def decide(settings=None, now=None, asker=None, activity=None, only_urgent=False
         return []
     sigs = sigs[:20]
     info["asked"] = len(sigs)
+    if gate is not False and not any(_protected(x) for x in sigs):
+        from . import gates
+        gv = gates.evaluate("initiative.decide", gate or gate_check(sigs, s, now), settings=s, now=now,
+                            quiet_hold=True, subject=f"{len(sigs)} signal(s)")
+        info["gate"] = gv.as_dict()
+        if gv.skip:  # nothing is lost: each signal goes to the evening note, with the gate's reason
+            info["model"] = "not asked: " + gv.reason
+            state = {"topics": recent_topics(now, max(s.topic_repeat_hours, 2)), "cap_used": sent_today(now, s),
+                     "automations": _automations_today(now), "activity": activity, "turns": turns}
+            rows = [_apply(x, {"action": "evening", "message": "", "reason": "gate: " + gv.reason}, s, now, state,
+                           "gate") for x in sigs]
+            return rows
+        if gv.hold:
+            info["model"] = "not asked: " + gv.reason
+            info["held"] = len(sigs)
+            return []
     by_model, decided_by = {}, s.initiative_model
     try:
         by_model = _ask_claude(sigs, s, now, asker, activity)
@@ -584,6 +643,19 @@ def evening_items(now, settings=None):
         (start - 6 * 3600, start))]
     con.close()
     return rows
+
+
+def keep_for_evening(key, kind, title, detail="", now=None, topic=None):
+    """Put one finished piece of background work into tonight's evening note (instead of a message now). The title is
+    the line the note shows (140 characters), the detail stays here. Returns the signal key."""
+    now = now or time.time()
+    record([{"key": key, "kind": kind, "title": " ".join(str(title).split())[:300], "detail": str(detail)[:4000],
+             "topic": topic or key}], now)
+    con = _db()
+    con.execute("UPDATE signals SET status='evening', decided_at=? WHERE key=? AND status='pending'", (now, key))
+    con.commit()
+    con.close()
+    return key
 
 
 def close_evening(keys, now):

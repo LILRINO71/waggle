@@ -12,7 +12,8 @@ class OllamaError(RuntimeError):
 
 def _post(path, payload, timeout=300, settings=None):
     s = settings or Settings.load()
-    req = urllib.request.Request(s.ollama_url.rstrip("/") + path, data=json.dumps(payload).encode(),
+    req = urllib.request.Request(s.ollama_url.rstrip("/") + path,  # payload None: a GET (/api/ps)
+                                 data=None if payload is None else json.dumps(payload).encode(),
                                  headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:

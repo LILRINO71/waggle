@@ -157,6 +157,13 @@ def evening_note(settings=None, now=None, activity=None):
         did.append(f"sent you {len(sent)} message(s)")
     lines.append("Did: " + ("; ".join(did) if did else "nothing beyond watching (no jobs ran, nothing worth a "
                                                            "message)") + ".")
+    try:  # what the gates and the notify check did today (waggle/gates.py)
+        from . import gates
+        gate_line = gates.evening_line(now, s)
+    except Exception:  # noqa: BLE001
+        gate_line = ""
+    if gate_line:
+        lines.append(gate_line)
     learned = _learned(now)
     lines.append("Learned: " + ("; ".join(learned) if learned else "nothing new recorded today") + ".")
     try:  # the learning loop's changes, one line each with its undo code (waggle/learnloop.py)

@@ -321,6 +321,26 @@ def _context(goal, s, now):
             f"RECENT STEPS: {json.dumps([{k: r[k] for k in ('title', 'outcome', 'detail')} for r in recent])}")
 
 
+IDLE_PICKS = 2          # this many "nothing useful to do" picks in a row ...
+IDLE_REST_S = 6 * 3600  # ... and the next look waits this long
+
+
+def idle_check(goal, now):
+    """The cheap check in front of the pick call, as a zero-argument function for gates.evaluate: when the goal's
+    last IDLE_PICKS picks both found nothing useful (a failed step with no action, not a model outage) and the
+    newest was under IDLE_REST_S ago, another pick would almost surely say the same."""
+    def check():
+        rows = [r for r in steps(goal["id"], now - 24 * 3600)][-IDLE_PICKS:]
+        idle = [r for r in rows if r["outcome"] == "failed" and not r["action"]
+                and not str(r["detail"] or "").startswith("model call failed")]
+        if len(rows) == IDLE_PICKS and len(idle) == IDLE_PICKS and now - idle[-1]["time"] < IDLE_REST_S:
+            ago = int((now - idle[-1]["time"]) / 60)
+            return {"wake": False, "p_needed": 0.04, "data": {"why": f"the last {IDLE_PICKS} picks found nothing "
+                                                                     f"to do; the newest was {ago} min ago"}}
+        return {"wake": True, "p_needed": 1.0}
+    return check
+
+
 def pick_step(goal, settings=None, now=None, asker=None):
     """One model call inside the background allowance. Returns the proposal dict, or {"refused": why} when the
     allowance says no, or {"error": why}."""
@@ -405,8 +425,9 @@ def _units(objective_ids, since):
 
 # ---- the loop ---------------------------------------------------------------------------------------------------
 
-def run_once(settings=None, now=None, asker=None, run_fn=None, fetch=None, goal_id=None):
-    """At most one step toward one goal. Returns a small report of what happened (and why not, when nothing)."""
+def run_once(settings=None, now=None, asker=None, run_fn=None, fetch=None, goal_id=None, gate=None):
+    """At most one step toward one goal. Returns a small report of what happened (and why not, when nothing).
+    gate: a zero-argument check replacing the default one in front of the pick call (gates.evaluate), or False."""
     from . import objectives
     s = settings or Settings.load()
     now = store_.now_or(now)
@@ -422,6 +443,12 @@ def run_once(settings=None, now=None, asker=None, run_fn=None, fetch=None, goal_
     goal = sorted(candidates, key=lambda g: (g["last_step"] or 0, g["created"] or 0))[0]
     started = time.time()
     tag = f"goal-{goal['id']}"
+    if gate is not False:
+        from . import gates
+        gv = gates.evaluate("autowork.pick", gate or idle_check(goal, now), settings=s, now=now, subject=goal["id"])
+        if gv.skip:  # no model call; the goal goes to the back of the line so another one gets the turn
+            goals.touch(goal["id"], now)
+            return {"goal": goal["id"], "outcome": "gated", "skipped": gv.reason}
     prop = pick_step(goal, s, now, asker)
     if "refused" in prop:
         record_step(goal["id"], "refused", title="choose the next step", detail=prop["refused"], now=now,
