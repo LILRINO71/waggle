@@ -343,6 +343,11 @@ class StreamParser:
                 step["result"] = _redact(body)[:TOOL_RESULT_CAP]
         elif t == "rate_limit_event":
             self.rate_limit = ev.get("rate_limit_info")
+            try:  # the real used share of the 5-hour window; must never break a turn
+                from . import quota
+                quota.note_real_usage(self.rate_limit)
+            except Exception:
+                pass
         elif t == "result":
             self.result = ev
             if not self.text and ev.get("result") and not ev.get("is_error"):
