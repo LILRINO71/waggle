@@ -41,6 +41,8 @@ LEDGER_TTL_S = 36 * 3600
 PONG_WAIT_S = 90
 REMINDER_WAIT_S = 150
 SETUP_S = 90  # connecting, logging in, deleting the messages: headroom on top of the two waits
+SESSION_WAIT_S = 180  # the child first waits this long for another test-client run to let go of the login
+#                      (tools/testclient/tclib.SESSION_WAIT_S)
 ALERT_ORIGIN = "canary-alert"
 LAST_KEY = "canary.last"
 ALERT_KEY = "canary.alert"
@@ -79,7 +81,7 @@ def setup_problem(base=None, script=None, python=None):
 # ---- running the child --------------------------------------------------------------------------
 
 def child_timeout(reminder):
-    return float(SETUP_S + PONG_WAIT_S + (REMINDER_WAIT_S if reminder else 0))
+    return float(SESSION_WAIT_S + SETUP_S + PONG_WAIT_S + (REMINDER_WAIT_S if reminder else 0))
 
 
 def spawn(python, script, args, timeout):

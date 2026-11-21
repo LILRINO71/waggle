@@ -83,11 +83,15 @@ def main():
     if not a.text and not a.voice and not a.file:
         print("Nothing to send.")
         return 1
-    client = TelegramClient(tclib.session_base(d), int(api["api_id"]), api["api_hash"])
     if a.raw and not a.text.startswith("/"):
         print("--raw is only for slash commands: anything else must carry the test mark.")
         return 1
-    return asyncio.run(run(client, bot, a.text, a.wait, a.settle, a.voice or None, a.file or None, a.raw))
+    with tclib.SessionLock(d) as lock:
+        if not lock.acquire(on_wait=lambda: print("waiting: another test-client run is using the login", flush=True)):
+            print(f"another test-client run held the login for {tclib.SESSION_WAIT_S}s; try again later")
+            return 1
+        client = TelegramClient(tclib.session_base(d), int(api["api_id"]), api["api_hash"])
+        return asyncio.run(run(client, bot, a.text, a.wait, a.settle, a.voice or None, a.file or None, a.raw))
 
 
 if __name__ == "__main__":

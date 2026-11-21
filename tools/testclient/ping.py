@@ -16,8 +16,12 @@ def main():
     if not api or not target:
         print("Missing api.json or target.json: run login.py first.")
         return 1
-    client = TelegramClient(tclib.session_base(d), int(api["api_id"]), api["api_hash"])
-    return asyncio.run(tclib.run_ping(client, target, print))
+    with tclib.SessionLock(d) as lock:
+        if not lock.acquire(on_wait=lambda: print("waiting: another test-client run is using the login", flush=True)):
+            print(f"another test-client run held the login for {tclib.SESSION_WAIT_S}s; try again later")
+            return 1
+        client = TelegramClient(tclib.session_base(d), int(api["api_id"]), api["api_hash"])
+        return asyncio.run(tclib.run_ping(client, target, print))
 
 
 if __name__ == "__main__":

@@ -271,3 +271,70 @@ async def run_ping(client, target, out, wait_s=PING_WAIT_S, poll_s=POLL_S, token
         return 1
     finally:
         await client.disconnect()
+
+
+# ---- one user of the Telegram login at a time --------------------------------------------------------------------
+# ask.py, canary.py, ping.py and login.py all open the same Telethon session (owner.session, a SQLite file). Two at
+# once fail with "database is locked", which once made a deploy's live check fail and roll back a good change. Each
+# script holds this lock (a byte-range lock, released by the OS if the script dies) for as long as it is connected.
+
+SESSION_WAIT_S = 180
+LOCK_NAME = "session.use.lock"
+
+
+class SessionLock:
+    def __init__(self, d=None):
+        self.path = (d or state_dir()) / LOCK_NAME
+        self._f = None
+
+    def try_acquire(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        f = open(self.path, "a+b")
+        try:
+            if os.name == "nt":
+                import msvcrt
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            f.close()
+            return False
+        self._f = f
+        return True
+
+    def acquire(self, wait_s=SESSION_WAIT_S, *, clock=time.monotonic, sleep=time.sleep, poll_s=1.0, on_wait=None):
+        """True once held; False when another run still holds it after wait_s seconds."""
+        t0 = clock()
+        told = False
+        while not self.try_acquire():
+            if clock() - t0 >= wait_s:
+                return False
+            if on_wait and not told:
+                on_wait()
+                told = True
+            sleep(poll_s)
+        return True
+
+    def release(self):
+        if self._f is None:
+            return
+        try:
+            if os.name == "nt":
+                import msvcrt
+                self._f.seek(0)
+                msvcrt.locking(self._f.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self._f.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        self._f.close()
+        self._f = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.release()

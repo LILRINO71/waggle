@@ -186,9 +186,17 @@ def main(argv=None):
                "error": "no_telethon", "cleaned": None, "seconds": 0.0}
         print(json.dumps(res), flush=True)
         return 1
-    client = TelegramClient(tclib.session_base(d), int(api["api_id"]), api["api_hash"])
-    res = asyncio.run(run(client, bot, reminder=not a.no_reminder, pong_wait=a.pong_wait,
-                          reminder_wait=a.reminder_wait, keep=a.keep))
+    with tclib.SessionLock(d) as lock:
+        if not lock.acquire():
+            res = {"ok": False, "id": "", "checks": [_result("telegram", False, float(tclib.SESSION_WAIT_S),
+                                                             "The test client was busy: another test-client run held "
+                                                             f"the login for {tclib.SESSION_WAIT_S} s.")],
+                   "error": "busy", "cleaned": None, "seconds": float(tclib.SESSION_WAIT_S)}
+            print(json.dumps(res), flush=True)
+            return 1
+        client = TelegramClient(tclib.session_base(d), int(api["api_id"]), api["api_hash"])
+        res = asyncio.run(run(client, bot, reminder=not a.no_reminder, pong_wait=a.pong_wait,
+                              reminder_wait=a.reminder_wait, keep=a.keep))
     print(json.dumps(res, ensure_ascii=False), flush=True)
     return 0 if res["ok"] else 1
 

@@ -111,8 +111,8 @@ def test_no_reminder_flag_reaches_the_child(tmp_path, client):
 
 
 def test_child_timeout_covers_the_waits():
-    assert cn.child_timeout(False) == cn.SETUP_S + 90
-    assert cn.child_timeout(True) == cn.SETUP_S + 90 + 150
+    assert cn.child_timeout(False) == cn.SESSION_WAIT_S + cn.SETUP_S + 90
+    assert cn.child_timeout(True) == cn.SESSION_WAIT_S + cn.SETUP_S + 90 + 150
     assert cn.JOB_TIMEOUT_S > cn.child_timeout(True)
 
 

@@ -25,12 +25,17 @@ def main():
         return 1
     api_hash = api.get("api_hash") or getpass.getpass("api_hash (hidden): ").strip()
     tclib.save_json(tclib.api_path(d), {"api_id": api_id, "api_hash": api_hash})
-    client = TelegramClient(tclib.session_base(d), api_id, api_hash)
     show = None if "--code" in sys.argv[1:] else show_qr
+    lock = tclib.SessionLock(d)
+    if not lock.acquire(on_wait=lambda: print("waiting: another test-client run is using the login", flush=True)):
+        print(f"another test-client run held the login for {tclib.SESSION_WAIT_S}s; try again later")
+        return 1
     try:
+        client = TelegramClient(tclib.session_base(d), api_id, api_hash)
         return asyncio.run(tclib.run_login(client, input, getpass.getpass, print, SessionPasswordNeededError, d,
                                            show_qr=show))
     finally:
+        lock.release()
         (tclib.state_dir() / "login-qr.svg").unlink(missing_ok=True)  # the picture holds a short-lived login token
 
 

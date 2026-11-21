@@ -203,3 +203,43 @@ def test_ping_requires_login():
     c = FakeClient(authorized=False)
     assert asyncio.run(tclib.run_ping(c, {"group_id": 1, "bot_username": "Waggle_Bot"}, out.append)) == 1
     assert "login.py" in out[0] and c.sent == []
+
+
+# ---- one user of the Telegram login at a time ------------------------------------------------------------------
+
+def test_session_lock_is_exclusive_and_released(tmp_path):
+    a, b = tclib.SessionLock(tmp_path), tclib.SessionLock(tmp_path)
+    assert a.try_acquire()
+    assert not b.try_acquire()
+    a.release()
+    assert b.try_acquire()
+    b.release()
+
+
+def test_session_lock_waits_then_gives_up(tmp_path):
+    holder = tclib.SessionLock(tmp_path)
+    assert holder.try_acquire()
+    t = [0.0]
+    told = []
+    waiter = tclib.SessionLock(tmp_path)
+    ok = waiter.acquire(5, clock=lambda: t[0], sleep=lambda s: t.__setitem__(0, t[0] + s),
+                        on_wait=lambda: told.append(1))
+    assert ok is False and told == [1] and t[0] >= 5
+    holder.release()
+    assert waiter.acquire(5, clock=lambda: t[0], sleep=lambda s: None) is True
+    waiter.release()
+
+
+def test_session_lock_context_manager_releases(tmp_path):
+    with tclib.SessionLock(tmp_path) as lock:
+        assert lock.acquire(0)
+    other = tclib.SessionLock(tmp_path)
+    assert other.try_acquire()
+    other.release()
+
+
+@pytest.mark.parametrize("script", ["ask.py", "canary.py", "ping.py", "login.py"])
+def test_every_script_takes_the_lock_before_opening_the_session(script):
+    src = (SRC / script).read_text(encoding="utf-8")
+    assert "SessionLock(" in src and "TelegramClient(tclib.session_base" in src
+    assert src.index("SessionLock(") < src.index("TelegramClient(tclib.session_base")
