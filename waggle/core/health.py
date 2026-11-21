@@ -13,6 +13,7 @@ POST /turn           an inbound message, JSON {chat, address, text, kind, media,
 POST /voice          the hands-free line (waggle/core/voiceline.py): its own bearer token, the file voice.token;
                      the core token does not open it, and the voice token opens nothing else.
 POST /voice/transcribe  the same token: the words of one recording (the PC voice's wake word); no turn runs.
+POST /voice/stream  the same token: /voice for the PC voice, answered as lines of JSON while the model writes.
 Anything else is 404; without the token everything is 401."""
 import hmac
 import json
@@ -238,6 +239,23 @@ def serve(loops_fn=None, port=None, accepting_fn=None):
             self.end_headers()
             self.wfile.write(data)
 
+        def _send_stream(self, stream):
+            """Lines written as they are made, no Content-Length: the connection closes when the stream ends."""
+            try:
+                self.send_response(200)
+                for name, value in stream.headers.items():
+                    self.send_header(name, value)
+                self.send_header("Connection", "close")
+                self.end_headers()
+                for chunk in stream:
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+            except OSError:
+                return None  # the PC voice hung up; the turn carries on and its answer still goes to Telegram
+            finally:
+                stream.close()
+            return None
+
         def _authorized(self):
             auth = self.headers.get("Authorization", "")
             return hmac.compare_digest(auth.encode(), f"Bearer {secret}".encode())
@@ -245,9 +263,11 @@ def serve(loops_fn=None, port=None, accepting_fn=None):
         def do_POST(self):  # noqa: N802 - http.server API
             arrived = self.server.arrival(self.request)
             url = urlparse(self.path)
-            if url.path in (voiceline.PATH, voiceline.TRANSCRIBE_PATH):  # its own token, checked inside
-                code, headers, data = voiceline.respond(self.headers, self.rfile, url.query, accepting=accepting_fn,
-                                                        path=url.path)
+            if url.path in (voiceline.PATH, voiceline.TRANSCRIBE_PATH, voiceline.STREAM_PATH):  # own token, checked inside
+                out = voiceline.respond(self.headers, self.rfile, url.query, accepting=accepting_fn, path=url.path)
+                if isinstance(out, voiceline.Stream):
+                    return self._send_stream(out)
+                code, headers, data = out
                 try:
                     return self._send_raw(code, headers, data)
                 except OSError:

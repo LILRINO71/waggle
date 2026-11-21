@@ -295,7 +295,7 @@ def _view(row):
 
 
 def deliver(kind, text="", *, path="", title="", urgent=False, asked=False, origin="manual", source=None, topic="",
-            decision_id=None, expires=None, settings=None, now=None, chat="", ref=None):
+            decision_id=None, expires=None, settings=None, now=None, chat="", ref=None, meta=None):
     """Decide whether and when a message may go out, then write exactly one outbox row. Returns that row (see
     _view), or a row with status 'suppressed' (and id None) when developer/test activity caused it.
 
@@ -304,6 +304,8 @@ def deliver(kind, text="", *, path="", title="", urgent=False, asked=False, orig
     outbox_max_age_h unless `expires` says otherwise. The idempotency key is "<origin>:<ref>" (ref defaults to the
     decision id plus the kind), so the same decision or reminder never queues two messages.
     asked: the user asked for this (a reminder, "call me at 7"): it bypasses the daily cap like urgent items do.
+    meta: extra row meta (for example {"spoken": "..."}, the sentence the PC says aloud instead of the text); it can
+    never replace the keys this function sets.
     """
     from waggle.core import outbox, store
     if kind not in KINDS:
@@ -322,10 +324,12 @@ def deliver(kind, text="", *, path="", title="", urgent=False, asked=False, orig
     exp = expires if expires is not None else (not_before or now) + s.outbox_max_age_h * 3600
     if ref is None:
         ref = f"{decision_id}:{kind}" if decision_id else uuid.uuid4().hex[:12]
-    meta = {"title": title or "", "topic": topic or "", "decision_id": decision_id, "urgent": bool(urgent),
-            "asked": bool(asked), "held": held}
+    extra, meta = meta, {"title": title or "", "topic": topic or "", "decision_id": decision_id,
+                         "urgent": bool(urgent), "asked": bool(asked), "held": held}
     if source:
         meta["cause"] = str(source)
+    for k, v in (extra or {}).items():
+        meta.setdefault(k, v)
     oid = outbox.enqueue(kind, text or "", chat=chat or "", file=str(path) if path else None,
                          idem_key=f"{origin}:{ref}", priority=_priority(urgent, asked), origin=origin,
                          not_before=not_before, expires=exp, meta=meta, now=now)

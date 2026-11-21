@@ -36,10 +36,24 @@ Waggle's own messages (reminders, outreach, finished background jobs) are spoken
 PC: the core's sender drops a small JSON file into <home>/pcvoice/say/ (waggle/pcspeak.py) and this process says
 it between conversations.
 
+Who is being addressed, and speaking sentence by sentence (waggle/voice_intent.py; "pc_voice_smart": false turns all
+of this off and gives back the behaviour above):
+  * What is heard without the wake name (the follow-up window after an answer, and after "Sir?") is transcribed first
+    and judged: background talk (TV, another person) is ignored, "stop" / "never mind" ends the conversation and cuts
+    the speech, and a transcript that mostly repeats what Waggle just said through the speakers (an echo) is dropped.
+    The judge is a small local model; when it is slow or down the words are sent, as before. A hotkey press is always
+    a request: it is never judged.
+  * When Waggle's answer ends in a question the follow-up window is longer (pc_voice_question_s, 10).
+  * The answer is requested from POST /voice/stream and said sentence by sentence: the first sentence is spoken
+    while the model is still writing the rest. An older core without that path is answered through POST /voice.
+
 Settings (config.json in the Waggle home, all optional): pc_voice_hotkey ("ctrl+alt+backquote"), pc_voice_wake
 (true), pc_voice_wake_names (["Waggle"]), pc_voice_followup_s (6), pc_voice_end_silence_s (1.2),
 pc_voice_max_s (30), pc_voice_start_timeout_s (6), pc_voice_min_level (120, the lowest frame RMS that can start
-speech), pc_voice_speak_messages (true). A change is read when the process starts."""
+speech), pc_voice_speak_messages (true), pc_voice_smart (true: the master switch of the two paragraphs above),
+pc_voice_judge (true), pc_voice_stream (true), pc_voice_question_s (10), pc_voice_judge_model ("": settings.local_model),
+pc_voice_judge_timeout_s (3), pc_voice_judge_min (0.5, how sure the judge must be that it was said to Waggle).
+A change is read when the process starts."""
 import argparse
 import hashlib
 import http.client
@@ -55,7 +69,7 @@ import urllib.parse
 import uuid
 from pathlib import Path
 
-from waggle import mic, speaker
+from waggle import mic, speaker, voice_intent
 
 log = logging.getLogger("waggle.pcvoice")
 
@@ -76,6 +90,13 @@ DEFAULTS = {
     "pc_voice_start_timeout_s": 6.0,
     "pc_voice_min_level": 120.0,
     "pc_voice_speak_messages": True,
+    "pc_voice_smart": True,
+    "pc_voice_judge": True,
+    "pc_voice_stream": True,
+    "pc_voice_question_s": 10.0,
+    "pc_voice_judge_model": "",
+    "pc_voice_judge_timeout_s": voice_intent.JUDGE_TIMEOUT_S,
+    "pc_voice_judge_min": voice_intent.JUDGE_MIN_CONFIDENCE,
 }
 WAKE_END_SILENCE_S, WAKE_MAX_S, WAKE_MIN_SPEECH_MS = 0.8, 10.0, 300
 MAX_TURNS = 12
@@ -241,9 +262,15 @@ class Hotkey:
 
 # ---- talking to the core -----------------------------------------------------------------------------------
 
+def ends_in_question(text):
+    """Does what Waggle said end in a question (so the owner's next words are probably the answer)?"""
+    return str(text or "").rstrip().rstrip("\"')]}*_ \u201d\u2019").endswith("?")
+
+
 class Reply:
-    def __init__(self, status, *, wav=None, spoken="", http=0, error="", line=""):
+    def __init__(self, status, *, wav=None, spoken="", http=0, error="", line="", streamed=0):
         self.status, self.wav, self.spoken, self.http, self.error, self.line = status, wav, spoken, http, error, line
+        self.streamed = streamed  # sentences handed to the speaker while the answer was still coming
 
     def __repr__(self):
         return f"Reply({self.status!r}, http={self.http}, wav={bool(self.wav)}, line={self.line!r})"
@@ -304,6 +331,58 @@ class CoreClient:
     def voice_text(self, text):
         return self._reply("/voice?format=wav&client=pc", json.dumps({"text": text}).encode("utf-8"),
                            "application/json")
+
+    def voice_stream(self, kind, payload, on_sentence):
+        """POST /voice/stream: kind "audio" (payload: PCM) or "text" (payload: the words). on_sentence(text) is
+        called for each sentence as the core finishes it; returns the Reply of the last line (no wav: the caller
+        made the sound). Status "stream_unavailable" (an older core, nothing was run): ask /voice instead."""
+        body, ctype = ((mic.wav_bytes(payload), "audio/wav") if kind == "audio"
+                       else (json.dumps({"text": payload}).encode("utf-8"), "application/json"))
+        token = self._token()
+        if not token:
+            return Reply("core_down", error="no voice.token in the Waggle home (has the core ever started?)",
+                         line="core_down")
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=self.timeout)
+        count, final = 0, None
+        try:
+            conn.request("POST", "/voice/stream?client=pc", body=body,
+                         headers={"Content-Type": ctype, "Authorization": f"Bearer {token}"})
+            r = conn.getresponse()
+            if r.status != 200:
+                data = r.read()
+                err = data[:200].decode("utf-8", "replace")
+                if r.status in (401, 404, 405):  # an older core: the path is not there, nothing ran
+                    return Reply("stream_unavailable", http=r.status, error=err)
+                if r.status == 429:
+                    return Reply("busy", http=r.status, line="busy")
+                if r.status == 503:
+                    return Reply("core_down", http=r.status, error=err, line="core_down")
+                return Reply("failed", http=r.status, error=err, line="failed")
+            while True:
+                raw = r.readline()
+                if not raw:
+                    break
+                try:
+                    obj = json.loads(raw)
+                except ValueError:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                if isinstance(obj.get("sentence"), str) and obj["sentence"].strip():
+                    count += 1
+                    on_sentence(obj["sentence"].strip())
+                if obj.get("done"):
+                    final = obj
+                    break
+        except (OSError, http.client.HTTPException) as e:
+            err = f"{type(e).__name__}: {e}"[:200]
+            return (Reply("failed", error=err, streamed=count) if count
+                    else Reply("core_down", error=err, line="core_down"))
+        finally:
+            conn.close()
+        if final is None:
+            return Reply("failed", error="the stream ended early", streamed=count, line="" if count else "failed")
+        return Reply(str(final.get("status") or "done"), spoken=str(final.get("spoken") or ""), http=200, streamed=count)
 
     def transcribe(self, pcm):
         """{"text", "ok", ...} or {"error"}; the words are for the caller only (never logged here)."""
@@ -370,13 +449,65 @@ class Sounds:
         return {k: bool(self.line(k)) for k in LINES}
 
 
+class SentenceSpeaker:
+    """Says an answer sentence by sentence: add(text) as each sentence arrives; a thread of its own makes the sound
+    (one sentence at a time, in order) and queues it on the speaker, so the first sentence plays while the next is
+    being made. close() says no more are coming; cancel() drops what is left (the hotkey)."""
+
+    def __init__(self, sounds, spk, log=None):
+        self.sounds, self.spk, self.log = sounds, spk, log
+        self.items, self.errors = [], []
+        self._q = queue.Queue()
+        self._cancelled = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True, name="waggle-pcvoice-sentences")
+        self._thread.start()
+
+    def add(self, text):
+        if self.log is not None:
+            self.log.add(text)
+        self._q.put(text)
+
+    def close(self):
+        self._q.put(None)
+
+    def cancel(self):
+        self._cancelled.set()
+
+    @property
+    def cancelled(self):
+        return self._cancelled.is_set()
+
+    def _run(self):
+        while True:
+            text = self._q.get()
+            if text is None:
+                return
+            if self._cancelled.is_set():
+                continue
+            out = folder("tmp") / f"sent-{uuid.uuid4().hex[:10]}.wav"
+            try:
+                ok = self.sounds.make(text, out)
+            except Exception as e:  # noqa: BLE001
+                ok = False
+                self.errors.append(f"sentence speech: {e}"[:200])
+            if ok and not self._cancelled.is_set():
+                self.items.append(self.spk.say(out, delete=True, label="reply"))
+            elif ok:
+                Path(out).unlink(missing_ok=True)
+
+    def finished(self, timeout=30.0):
+        """Wait until every sentence has been made and queued. The last item (or None when nothing was made)."""
+        self._thread.join(timeout)
+        return self.items[-1] if self.items else None
+
+
 # ---- the process -------------------------------------------------------------------------------------------
 
 class PcVoice:
     """The brain: one thread that owns the microphone and runs conversations; the hotkey thread only signals."""
 
     def __init__(self, *, mic_factory=None, spk=None, client=None, sounds=None, wake=None, names=None,
-                 dry_wake=False, on_event=None):
+                 dry_wake=False, on_event=None, smart=None, decide=None):
         self.mic_factory = mic_factory or mic.WaveInSource
         self.spk = spk
         self.client = client or CoreClient()
@@ -392,12 +523,49 @@ class PcVoice:
                       "transcribe_s": 0.0, "wake_triggers": 0, "spoken_messages": 0, "errors": 0, "last_error": ""}
         self.trigger_texts = []  # dry-run measurement only: what a (false) trigger heard
         self._mic = None
+        self.smart = setting("pc_voice_smart") if smart is None else bool(smart)  # judge + echo + stream, see the docstring
+        self.decide = decide or self._decide  # (text, asked_question=) -> voice_intent.Decision; replaced in tests
+        self.spoken = voice_intent.SpokenLog()  # what Waggle said lately, for echo rejection
+        self.asked = False  # Waggle's last words were a question
+        self._sink = None
+        self._warmed = 0.0
+        self.stats.update(ignored=0, echoes=0, stops=0, judged=0, judge_fallbacks=0, streamed_turns=0)
 
     # -- signals
     def hotkey_pressed(self):
+        sink = self._sink
+        if sink is not None:
+            sink.cancel()  # sentences still to be made are dropped too
         if self.spk is not None and self.spk.speaking:
             self.spk.stop()  # cut Waggle off at once, from the hotkey thread
         self.events.put("hotkey")
+
+    def judging(self):
+        return self.smart and setting("pc_voice_judge")
+
+    def streaming(self):
+        return self.smart and setting("pc_voice_stream") and callable(getattr(self.client, "voice_stream", None))
+
+    def _decide(self, text, asked_question=False):
+        """voice_intent.decide with the settings: the local model (kept loaded by the judge itself)."""
+        from waggle.config import Settings
+        s = Settings.load()
+        recent = self.spoken.recent()
+        return voice_intent.decide(
+            text, spoken_texts=recent, last_spoken=recent[-1] if recent else "", asked_question=asked_question,
+            model=setting("pc_voice_judge_model") or s.local_model, url=s.ollama_url,
+            timeout=setting("pc_voice_judge_timeout_s"), min_confidence=setting("pc_voice_judge_min"))
+
+    def _warm_judge(self):
+        """A conversation has begun: load the judge's model in the background (at most once in ten minutes)."""
+        if not self.judging() or time.monotonic() - self._warmed < 600 or self.decide != self._decide:
+            return
+        self._warmed = time.monotonic()
+        from waggle.config import Settings
+        s = Settings.load()
+        model = setting("pc_voice_judge_model") or s.local_model
+        threading.Thread(target=voice_intent.warm, args=(model,), kwargs={"url": s.ollama_url}, daemon=True,
+                         name="waggle-pcvoice-warm").start()
 
     def _event(self, name, **info):
         if self.on_event:
@@ -428,6 +596,7 @@ class PcVoice:
         return self.spk.play_now(t, label=f"tone:{key}") if wait else self.spk.say(t, label=f"tone:{key}")
 
     def say_line(self, key):
+        self.spoken.add(LINES[key])
         p = self.sounds.line(key)
         if p:
             return self.spk.say(p, label=f"line:{key}")
@@ -485,6 +654,80 @@ class PcVoice:
         self._event("speech_end", last_loud=last_loud)
         return ep.pcm(), info
 
+    def _hear(self, src, mode):
+        """The next request in a conversation: ("audio", pcm), "stop" (the owner said stop), or None (nobody spoke
+        in time: the conversation is over). A follow-up and what comes after "Sir?" are judged when pc_voice_judge
+        is on: the recording is transcribed once to decide, background talk and echoes are skipped and listening goes
+        on for what is left of the window; an accepted recording is then sent as audio, so the core recognises it
+        itself and keeps its own sureness figures (the guard reads them); the hotkey is never judged."""
+        judged = mode in ("followup", "listen") and self.judging()
+        if mode == "followup":  # a question from Waggle gets a longer window
+            window = setting("pc_voice_question_s") if self.asked and self.smart else setting("pc_voice_followup_s")
+        else:
+            window = setting("pc_voice_start_timeout_s")
+        deadline = time.monotonic() + window
+        while True:
+            pcm, info = self.listen(src, max(0.5, deadline - time.monotonic()))
+            if pcm is None:
+                if mode != "followup":
+                    self.tone("stop")
+                log.info("conversation ends: %s", info["ended_by"])
+                return None
+            if not judged:
+                self.tone("stop", wait=False)
+                return ("audio", pcm)
+            r = self.client.transcribe(pcm)
+            self.stats["transcribed"] += 1
+            words = (r.get("text") or "").strip()
+            if r.get("error"):  # cannot judge what cannot be read: send the audio, as before
+                self._error(f"transcribe: {r['error']}")
+                self.tone("stop", wait=False)
+                return ("audio", pcm)
+            if not words:
+                del pcm
+                if time.monotonic() >= deadline:
+                    return None
+                continue
+            d = self.decide(words, asked_question=self.asked)
+            self.stats["judged"] += 1
+            if d.source == "fallback":
+                self.stats["judge_fallbacks"] += 1
+            log.info("heard in a conversation window: %s (%s)", d.action, d.source)  # never the words
+            if d.action == "send":
+                self.tone("stop", wait=False)
+                return ("audio", pcm)
+            del pcm
+            if d.action == "stop":
+                self.stats["stops"] += 1
+                return "stop"
+            self.stats["echoes" if d.action == "echo" else "ignored"] += 1
+            if time.monotonic() >= deadline:
+                return None
+
+    def _stopped(self):
+        """The owner said stop / never mind: cut Waggle off, say nothing more, end the conversation."""
+        self.spk.stop()
+        self.asked = False
+        self.tone("stop")
+
+    def _ask(self, request):
+        """Send one request. Returns (reply, sink): sink is the SentenceSpeaker that is saying the answer, or None
+        when the answer comes as one WAV (the buffered /voice path, always used when streaming is off or the core
+        has no stream)."""
+        kind, payload = request
+        if self.streaming():
+            sink = SentenceSpeaker(self.sounds, self.spk, self.spoken)
+            self._sink = sink
+            reply = self.client.voice_stream(kind, payload, sink.add)
+            sink.close()
+            if reply.status != "stream_unavailable":
+                self.stats["streamed_turns"] += 1
+                return reply, sink
+            sink.cancel()
+            self._sink = None
+        reply = self.client.voice_text(payload) if kind == "text" else self.client.voice_audio(payload)
+        return reply, None
+
     # -- one conversation
     def conversation(self, src, first="hotkey", text=None):
         """first: "hotkey" (start tone, then listen), "listen" (listen without a tone: after "Sir?") or "text"
@@ -492,50 +735,65 @@ class PcVoice:
         self.in_conversation = True
         self.stats["conversations"] += 1
         mode = first
+        if first != "listen":
+            self.asked = False
+        self._warm_judge()
         try:
             for _ in range(MAX_TURNS):
                 if self.stopping.is_set():
                     return
                 if mode == "text":
-                    self._event("request_sent")
-                    reply = self.client.voice_text(text)
+                    request = ("text", text)
                 else:
                     if mode == "hotkey":
                         self.tone("start")
                     src.flush()
-                    timeout = setting("pc_voice_followup_s") if mode == "followup" else setting(
-                        "pc_voice_start_timeout_s")
-                    pcm, info = self.listen(src, timeout)
-                    if pcm is None:
-                        if mode != "followup":
-                            self.tone("stop")
-                        log.info("conversation ends: %s", info["ended_by"])
+                    request = self._hear(src, mode)
+                    if request is None:
                         return
-                    self.tone("stop", wait=False)
-                    self._event("request_sent")
-                    reply = self.client.voice_audio(pcm)
-                    del pcm
+                    if request == "stop":
+                        self._stopped()
+                        return
+                self._event("request_sent")
+                reply, sink = self._ask(request)
+                del request
                 self.stats["turns"] += 1
                 self._event("reply", status=reply.status, http=reply.http)
                 if reply.error:
                     self._error(f"turn: {reply.status} {reply.error}")
                 if self._pressed():  # pressed while waiting: the owner wants to say something else
+                    if sink is not None:
+                        sink.cancel()
                     if reply.wav:
                         Path(reply.wav).unlink(missing_ok=True)
                     mode = "hotkey"
                     continue
-                item = self.spk.say(reply.wav, delete=True, label="reply") if reply.wav else self.say_line(
-                    reply.line or "failed")
+                if sink is not None:
+                    item = sink.finished()
+                    self._sink = None
+                    for e in sink.errors:
+                        self._error(e)
+                    if item is None:  # nothing could be said (the speech server is down, or the turn failed)
+                        item = self.say_line(reply.line or "failed")
+                        if reply.status == "done":
+                            reply.status = "failed"
+                else:
+                    if reply.wav:
+                        self.spoken.add(reply.spoken)
+                    item = self.spk.say(reply.wav, delete=True, label="reply") if reply.wav else self.say_line(
+                        reply.line or "failed")
                 cut = self.wait_speech(item)
                 if cut:
                     mode = "hotkey"
                     continue
-                if reply.status != "done" or not reply.wav:
+                if reply.status != "done" or (sink is None and not reply.wav):
                     return  # a holding line or a failure: no follow-up (the answer comes later)
+                self.asked = ends_in_question(reply.spoken)
                 time.sleep(0.15)  # the room's echo of the last word
                 mode = "followup"
         finally:
             self.in_conversation = False
+            self._sink = None
 
     # -- the wake word
     def heard(self, src, ep):
@@ -552,9 +810,17 @@ class PcVoice:
         if r.get("error"):
             self._error(f"transcribe: {r['error']}")
             return
-        rest = match_wake(r.get("text") or "", self.names)
+        words = r.get("text") or ""
+        if self.judging() and voice_intent.is_echo(words, self.spoken.recent()):
+            self.stats["echoes"] += 1  # Waggle's own voice coming back through the speakers
+            return
+        rest = match_wake(words, self.names)
         if rest is None:
             return  # not for Waggle: the words go out of scope here, unread
+        if rest and self.judging() and voice_intent.stop_phrase(rest):
+            self.stats["stops"] += 1  # "Waggle, stop": nothing to send, whatever is speaking is cut off
+            self.spk.stop()
+            return
         self.stats["wake_triggers"] += 1
         if self.dry_wake:
             self.trigger_texts.append(r.get("text") or "")
@@ -565,6 +831,7 @@ class PcVoice:
             self.conversation(src, "text", rest)
         else:
             self.wait_speech(self.say_line("sir"))
+            self.asked = True  # "Sir?" was a question: what follows is probably meant for Waggle
             self.conversation(src, "listen")
 
     # -- Waggle's own messages
@@ -589,6 +856,7 @@ class PcVoice:
                 ok = False
                 self._error(f"message speech: {e}")
             if ok:
+                self.spoken.add(text)
                 self.spk.say(out, delete=True, label="message")
                 said += 1
                 self.stats["spoken_messages"] += 1
@@ -770,11 +1038,13 @@ def cmd_once(args):
     spk.close()
     out = {"reply_status": marks.get("reply_status"), "played": played, "errors": pv.stats["errors"],
            "last_error": pv.stats["last_error"]}
+    if "reply" in started and "request_sent" in marks:
+        out["request_to_first_voice_s"] = round(started["reply"] - marks["request_sent"], 2)
     if "reply" in started and "last_loud" in marks:
         out["end_of_speech_to_voice_s"] = round(started["reply"] - marks["last_loud"], 2)
         out["endpoint_wait_s"] = round(marks.get("request_sent", 0) - marks["last_loud"], 2)
         out["request_to_reply_s"] = round(marks.get("reply", 0) - marks.get("request_sent", 0), 2)
-        out["reply_to_voice_s"] = round(started["reply"] - marks.get("reply", 0), 2)
+        out["reply_to_voice_s"] = round(started["reply"] - marks.get("reply", 0), 2)  # negative: spoken while streaming
     out["total_s"] = round(time.monotonic() - t0, 2)
     print(json.dumps(out))
     return 0 if out["reply_status"] == "done" else 1
