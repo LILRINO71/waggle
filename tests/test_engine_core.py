@@ -281,7 +281,8 @@ def test_typed_text_in_the_engine_chat_goes_to_the_core(core):
 
 
 @pytest.mark.parametrize("text,mtype,media,src,why", [
-    ("hello", "voice", (), {}, "not typed text"),
+    ("hello", "voice", (), {}, "caption"),
+    ("", "audio", ("C:/in/song.mp3",), {}, "not typed text"),
     ("look at this", "photo", ("C:/in/p.jpg",), {}, "not typed text"),
     ("caption", "text", ("C:/in/doc.pdf",), {}, "not typed text"),
     ("/status", "text", (), {}, "command"),
@@ -303,6 +304,54 @@ def test_everything_else_stays_on_the_old_path(core, text, mtype, media, src, wh
     route, reason = p.engine_route("telegram", {"chat_id": "42", "user_id": "42", "chat_type": "dm", **src}, "m3",
                                    text)
     assert route == "old" and why in reason
+
+
+def _note(tmp_path, name="voice.ogg", data=b"OggS-fake"):
+    f = tmp_path / name
+    f.write_bytes(data)
+    return str(f)
+
+
+def test_a_voice_note_in_the_engine_chat_goes_to_the_core_as_audio(core, tmp_path):
+    p = _plugin()
+    path = _note(tmp_path)
+    event(p, "v1", "voice", [path])
+    assert admit(p, text="", mid="v1") == {"action": "handled"}
+    assert core.seen[0]["body"] == {"chat": "telegram:42", "address": "42", "text": "", "kind": "voice",
+                                    "media": [{"path": path, "kind": "audio"}], "platform": "telegram",
+                                    "origin": "user", "dedupe_key": "telegram:42:v1"}
+
+
+def test_a_voice_note_the_core_refuses_stays_on_the_old_path(core, tmp_path):
+    core.status = 503
+    p = _plugin()
+    event(p, "v2", "voice", [_note(tmp_path)])
+    assert admit(p, text="", mid="v2") is None and len(core.seen) == 1
+
+
+@pytest.mark.parametrize("media,text,why", [
+    ((), "", "several files"),  # no file at all
+    (("a.ogg", "b.ogg"), "", "several files"),
+    (("one.ogg",), "a caption", "caption"),
+    (("missing.ogg",), "", "file missing"),
+    (("notes.txt",), "", "file missing"),
+])
+def test_voice_notes_without_one_usable_audio_file_stay_old(core, tmp_path, media, text, why):
+    p = _plugin()
+    paths = [_note(tmp_path, m) if m in ("a.ogg", "b.ogg", "one.ogg", "notes.txt") else str(tmp_path / m) for m in media]
+    event(p, "v3", "voice", paths)
+    route, reason = p.engine_route("telegram", {"chat_id": "42", "user_id": "42", "chat_type": "dm"}, "v3", text)
+    assert route == "old" and why in reason and core.seen == []
+
+
+def test_voice_note_in_other_chats_and_groups_stays_old(core, tmp_path):
+    p = _plugin()
+    path = _note(tmp_path)
+    event(p, "v4", "voice", [path])
+    assert admit(p, text="", mid="v4", chat_id="43") is None
+    event(p, "v5", "voice", [path])
+    assert admit(p, text="", mid="v5", chat_type="group") is None
+    assert core.seen == []
 
 
 def test_other_chats_unknown_types_and_other_platforms_stay_old(core):

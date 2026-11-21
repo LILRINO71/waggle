@@ -152,7 +152,8 @@ def _refusal_kind(step):
     return "blocked by the safety policy"
 
 
-def turn_outcome(*, answered_by, delivered, queued=False, steps=(), partial=False, failure_notice=False):
+def turn_outcome(*, answered_by, delivered, queued=False, steps=(), partial=False, failure_notice=False,
+                 degraded_why=()):
     """(outcome, reasons) for one turn by a fixed rule, no model involved:
     failed    - no real answer (only an honest failure notice), or the reply was neither delivered nor queued;
     degraded  - answered, but a tool failed or was refused (the safety hook: needs approval, or blocked) and the
@@ -161,6 +162,7 @@ def turn_outcome(*, answered_by, delivered, queued=False, steps=(), partial=Fals
     recovered - every tool that failed was followed by a later call of the same kind of work that succeeded
                 (Bash then PowerShell, a second WebFetch ...), nothing was refused, and the answer was delivered;
     ok        - no tool failed.
+    degraded_why: more reasons that make an answered turn degraded (a voice turn whose spoken reply was not sent).
     A refused call is only recovered by the identical call succeeding later (an approval given in the same turn):
     another command that happens to work is not the action the user has to approve. The reasons list every
     failure, refusal and recovery, in order."""
@@ -197,6 +199,7 @@ def turn_outcome(*, answered_by, delivered, queued=False, steps=(), partial=Fals
         bad.append("answer cut off")
     if not delivered:
         bad.append("delivery deferred to the outbox")
+    bad.extend(degraded_why or ())  # e.g. the spoken reply could not be sent
     if bad:
         return "degraded", bad + healed
     return ("recovered" if healed else "ok"), healed

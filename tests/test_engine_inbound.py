@@ -164,6 +164,49 @@ def test_handle_inbound_voice_without_a_transcript_is_an_honest_failure(settings
     assert fake.procs == [] and rec.outcome == "failed" and "could not be transcribed" in rec.reply
 
 
+def _stt(monkeypatch, text="what's the plan for tomorrow", ok=True, error=""):
+    seen = []
+
+    def fake(path, **kw):
+        seen.append(path)
+        return {"ok": ok, "text": text if ok else "", "error": error, "seconds": 1.5, "load_s": 0.5, "audio_s": 3.2,
+                "source": "fake whisper"}
+    monkeypatch.setattr(chat_engine.stt, "transcribe", fake)
+    return seen
+
+
+def test_a_voice_note_is_transcribed_here_and_answered(settings, monkeypatch):
+    monkeypatch.setattr(chat_engine, "build_context", lambda *a, **k: "")
+    seen = _stt(monkeypatch, "next thing on the ethics robotics bot")
+    rec, api, fake = inbound(settings, "", kind="voice", audio="C:/in/note.ogg")
+    assert seen == ["C:/in/note.ogg"] and rec.delivered and rec.outcome == "ok"
+    assert "next thing on the FTC robotics bot" in fake.procs[0].inputs[0]  # known mishearings fixed
+    extra = json.loads(traces.get(rec.trace_id)["extra"])["voice_turn"]
+    assert extra["transcript_source"] == "fake whisper" and extra["stt_s"] == 1.5 and extra["stt_ok"] is True
+
+
+def test_a_voice_note_that_cannot_be_transcribed_gets_an_honest_reply(settings, monkeypatch):
+    _stt(monkeypatch, ok=False, error="no speech was recognised")
+    rec, api, fake = inbound(settings, "", kind="voice", audio="C:/in/note.ogg")
+    assert fake.procs == [] and rec.outcome == "failed" and rec.reply.startswith("I couldn't make out")
+    extra = json.loads(traces.get(rec.trace_id)["extra"])["voice_turn"]
+    assert extra["stt_ok"] is False and "no speech" in extra["stt_error"]
+
+
+def test_on_inbound_voice_hands_the_audio_file_to_the_turn(settings, monkeypatch):
+    monkeypatch.setattr(chat_engine, "build_context", lambda *a, **k: "")
+    seen = _stt(monkeypatch)
+    fake = FakeClaude(None)
+    sess = ChatSession("telegram:42", settings=settings, popen=fake, claude="claude")
+    monkeypatch.setattr(chat_engine.pool(settings), "get", lambda chat: sess)
+    api = FakeBotApi()
+    chat_engine.set_delivery_factory("telegram", lambda address: BotApiDelivery(address, api))
+    out = chat_engine.on_inbound({"chat": "telegram:42", "address": "42", "text": "", "kind": "voice",
+                                  "media": [{"path": "C:/in/note.ogg", "kind": "audio"}], "platform": "telegram",
+                                  "origin": "user", "turn_id": "v-1"})
+    assert seen == ["C:/in/note.ogg"] and out["delivered"] and "C:/in/note.ogg" not in fake.procs[0].inputs[0]
+
+
 def test_handle_inbound_media_and_origin(settings, monkeypatch):
     monkeypatch.setattr(chat_engine, "build_context", lambda *a, **k: "")
     rec, api, fake = inbound(settings, "what is this?", kind="photo", media=[{"path": "inbox/photo.jpg", "kind": "photo"}],
