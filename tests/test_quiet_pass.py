@@ -148,3 +148,13 @@ def test_gh_is_started_without_the_time_zone_helper(monkeypatch):
     monkeypatch.setattr(real, "gh_path", lambda: "gh")
     assert real.run_gh(["repo", "list"]) == []
     assert seen["env"]["TZ"] == "UTC"
+
+
+def test_a_failed_first_look_does_not_make_every_open_pr_look_new_later(settings):
+    settings.github_repos = ["me/alpha"]
+    t0 = time.time()
+    down = lambda args: [] if args[:2] == ["repo", "list"] else None  # noqa: E731  (gh fails for the repo's questions)
+    assert watchers.github_watch(settings, gh=down, now=t0) == []
+    up = FakeGitHub(t0, repos=("me/alpha",))
+    up.open_pr("me/alpha", 3, "An old pull request", t0 - 86400)
+    assert watchers.github_watch(settings, gh=up, now=t0 + 3600) == [], "the first look that worked is the baseline"

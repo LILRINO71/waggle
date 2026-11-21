@@ -154,9 +154,11 @@ def github_watch(settings, gh=None, now=None):
             continue  # GitHub says nothing moved here: no run, PR or issue call for it
         rs = rs or {"runs": {}, "prs": {}, "issues": []}
         rs["fp"], rs["full"] = fp, now
+        answered = False
         runs = gh(["run", "list", "-R", repo, "-L", "10", "--json",
                    "databaseId,workflowName,headBranch,status,conclusion,url,createdAt"])
         if isinstance(runs, list):
+            answered = True
             latest = {}
             for r in runs:  # newest first: the first completed run per workflow+branch is its current state
                 if r.get("status") != "completed":
@@ -195,6 +197,7 @@ def github_watch(settings, gh=None, now=None):
         prs = gh(["pr", "list", "-R", repo, "--state", "all", "-L", "10", "--json",
                   "number,title,state,author,url,mergedAt"])
         if isinstance(prs, list):
+            answered = True
             for p in prs:
                 num, state = str(p.get("number")), p.get("state")
                 prev = rs["prs"].get(num)
@@ -209,6 +212,7 @@ def github_watch(settings, gh=None, now=None):
                 rs["prs"][num] = state
         issues = gh(["issue", "list", "-R", repo, "--state", "open", "-L", "10", "--json", "number,title,author,url"])
         if isinstance(issues, list):
+            answered = True
             known = set(rs["issues"])
             for i in issues:
                 num = i.get("number")
@@ -219,7 +223,8 @@ def github_watch(settings, gh=None, now=None):
                                       f"issue:{repo}#{num}", url=i.get("url", "")))
                 known.add(num)
             rs["issues"] = sorted(known)[-200:]
-        seen[repo] = rs
+        if answered:  # gh failed for every question: remember nothing, or the next look would treat all as new
+            seen[repo] = rs
     st2 = _state()
     st2["github"] = seen
     _save(st2)
