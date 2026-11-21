@@ -38,6 +38,10 @@ videos, locations, Hermes's own slash commands (/new /status /model ...), other 
 | Off switch (`waggle/core/offswitch.py`) | Live, proven: `python -m waggle.core off --for 3m` stopped the core and PC voice, and Waggle came back by itself on time. Also `on`, `--all`, `/on` in Telegram |
 | Owner rule and variables | A file named through a plain one-time variable (`$p = "..."; Remove-Item $p`, Join-Path, GetFolderPath) counts as that file; anything trickier makes the hook answer RETRY_LITERAL (never "reply yes"). Proven: a desktop file created and deleted by chat with no ask |
 | Mail alerts | Same sender and subject in a pass become one text ("Google (4 messages): ..."), not repeated within 60 min; summaries say "you"; a deadline only when the mail writes the date |
+| Learning loop (`waggle/learnloop.py`) | Live. Timer 30 min before the evening note: the owner's corrections (origin user only), quiz misses and failed turns go to the ledger `improvements` in knowledge.db; fact fixes are re-checked against retrieval and the held-out quiz, kept or reverted, and listed in the evening note with `undo L<n>` (typed, no model). Items that need code are listed, not auto-built. Sandbox proof on real data: `py -3.14 tools/learnloop_proof.py` (7/7 on 2026-11-20) |
+| Code proposals (`waggle/proposals.py`) | Live. `python -m waggle.proposals file --title .. --evidence ..` (or the owner asks in chat: MCP tool `file_proposal`). A Sonnet job builds it in `~/autonomy-worktrees/waggle/<id>`; the pipeline verifies (the diff has tests, the new test fails on the base, targeted and FULL suite under `~/.waggle-locks/full-suite.lock`, safety-file check), pushes `proposals/<id>` and texts "Reply 'merge CODE' / 'drop CODE'". merge goes to overnight, then tools/deploy.ps1; a canary failure reverts and redeploys. First real one: 33HN (polite "no thanks" counted as a correction), building since 2026-11-20 23:22 |
+| Autonomy | ON since 2026-11-20 23:00: goals schoolwork, ftc-robot, portfolio, waggle, money (new: $0, lawful, honest, research and notes only, expires 2026-12-20), at most 2 steps a day, only while the real window is under 60%. First step (money) proven in 26 s: `WaggleVault/Goals/money/plan-shortlist.md` |
+| Open-source survey | `C:\Users\hiheo\Claude\reports\open-source-jarvis-2026-11.md` (Opus, 52 projects, 12 read in depth); closest is KenKaiii/Roamies (AGPL: ideas only). Borrow-list rows 3-13 being built overnight on rebuild/gates, rebuild/lessons, rebuild/memgit, rebuild/voice2, rebuild/tools |
 | Hands-free phone line | Tailscale Serve live at https://pranavaura.tailf0a221.ts.net/voice (answers 401 without the token); owner's iPhone Shortcut set up, not yet proven |
 | Tools | All Hermes toolsets enabled; chat tools include Write/Edit; hidden on purpose: Higgsfield (paid), Onshape (school cap), REA (size), Miro (sign-in) |
 
@@ -99,7 +103,7 @@ videos, locations, Hermes's own slash commands (/new /status /model ...), other 
 
 ```
 # in the dev worktree (branch overnight): merge the feature branches, then
-python -m pytest -q -p no:cacheprovider        # must pass; one full suite at a time on this PC
+python -m waggle.proposals suite              # the full suite under the machine-wide lock (exit 75: another run holds it)
 git push origin overnight
 # then one command on the live checkout: merge, install the plug-in if it changed, guard approve + verify, restart
 # the watchdog, core, PC voice, dashboard and gateway, check the running version, run a live canary
