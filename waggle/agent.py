@@ -25,6 +25,7 @@ from .config import Settings, data_path
 REPO = Path(__file__).resolve().parent.parent
 BUILTIN_TOOLS = ["Read", "Edit", "Write", "Glob", "Grep", "Bash", "PowerShell", "WebSearch", "WebFetch", "TodoWrite"]
 CONNECTORS_KEEP = ("claude_ai_Gmail", "claude_ai_Google_Drive", "claude_ai_Google_Docs", "claude_ai_Google_Sheets",
+                   "claude_ai_Google_Slides", "claude_ai_Claude_Docs",
                    "claude_ai_Google_Calendar", "claude_ai_Google_Tasks", "claude_ai_Gcal")
 
 AGENT_RULES = """You are Waggle, the user's personal AI agent, running on their Windows PC with real tools.
