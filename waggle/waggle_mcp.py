@@ -272,6 +272,27 @@ add(schema("schedule_call", "Call the user's phone at a time they asked for ('ca
            {"message": {"type": "string", "description": "what the call is about"}, **_WHEN}, []), t_schedule_call)
 
 
+# ---- comfort settings (waggle/comfort.py): voice, speed, quiet hours, the daily notes, the mail watch ---------
+
+def t_settings(args):
+    from waggle import comfort, guard
+    return comfort.run(args, turn=guard.current_turn())
+
+
+add(schema("settings", "Read or change Waggle's comfort settings when the owner asks ('talk faster', 'use a different "
+           "voice', 'quiet hours from 10 PM to 7', 'send the brief at 8'). action=get lists the changeable settings, "
+           "their values and the installed voices; action=set changes ONE setting (key + value) and returns old and "
+           "new. Only these settings can change; anything else (budgets, limits, folders, addresses) is refused. "
+           "Works only in the owner's own message.",
+           {"action": {"type": "string", "enum": ["get", "set"]},
+            "key": {"type": "string", "enum": ["voice_note_voice", "voice_note_speed", "quiet_hours", "brief_time",
+                                               "evening_time", "mailwatch"]},
+            "value": {"description": "voice_note_voice: a voice id like bm_george; voice_note_speed: 0.7-1.8; "
+                                     "quiet_hours: [start hour, end hour] 0-23; brief_time / evening_time: 24-hour "
+                                     "HH:MM; mailwatch: true or false"}},
+           ["action"]), t_settings)
+
+
 def _load_providers():
     """Optional modules add their own tools (agents, routines, recall, models)."""
     import importlib
