@@ -219,6 +219,47 @@ def mark(fid, status, now=None, outbox_id=None, reason=""):
     con.close()
 
 
+DONE_WORDS = re.compile(r"\b(done|did|finished|tested|completed|submitted|pushed|fixed|sent|built|wrote|ran|worked|"
+                        r"works|handed in|turned in|it scored)\b", re.I)
+STOP = {"the", "and", "for", "with", "that", "this", "about", "some", "from", "into", "have", "get", "out", "tonight",
+        "today", "tomorrow", "then", "just", "all", "them", "our", "his", "her", "its", "one", "new"}
+
+
+def done_evidence(item, now=None, settings=None, turns=None, activity=None):
+    """What the records say about a check-in's subject having been done since it was said: a statement by the user
+    (not a question) with a word of completion and a word of the subject, or a commit of today whose subject shares
+    its words. "" when nothing shows it. turns: trace dicts (default: the user's own turns since it was said,
+    from traces.db); activity: {repo: [commit subjects]} (default: none)."""
+    now = now or time.time()
+    keys = [w for w in re.findall(r"[a-z0-9]{3,}", (item.get("what") or "").lower()) if w not in STOP]
+    if not keys:
+        return ""
+    said_at = float(item.get("said_at") or item.get("created") or 0)
+
+    def hits(text):
+        words = re.findall(r"[a-z0-9]{3,}", text.lower())
+        return sum(1 for k in keys if any(w.startswith(k[:4]) or k.startswith(w[:4]) and len(w) >= 4 for w in words))
+
+    if turns is None:
+        try:
+            from . import origin, traces
+            s = settings or Settings.load()
+            turns = origin.user_turns(traces.all_traces(since=said_at, limit=200), s)
+        except Exception:  # noqa: BLE001
+            turns = []
+    for r in sorted(turns, key=lambda x: x.get("time") or 0):
+        text = (r.get("request") or "").strip()
+        if (r.get("time") or 0) <= said_at or r.get("id") == item.get("trace") or text.endswith("?"):
+            continue
+        if DONE_WORDS.search(text) and hits(text) >= min(2, len(keys)):
+            return f'the user said "{text[:100]}"'
+    for repo, subjects in (activity or {}).items():
+        for subj in subjects:
+            if hits(subj) >= min(2, len(keys)):
+                return f'a commit in {repo}: "{subj[:80]}"'
+    return ""
+
+
 def template(sig):
     """Fallback wording when Claude is unavailable."""
     what = sig["title"].split("you'd", 1)[-1].strip()

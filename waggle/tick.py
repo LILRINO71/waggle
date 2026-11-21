@@ -13,13 +13,16 @@ It registers
   reminder:<id>      once (followups.add)           all                              outreach.reminder
   checkin:<id>       once (followups.capture)       all                              outreach.checkin
   call:<id>          once (call.schedule_at)        all                              outreach.call
+  recheck:<key>:<n>  once (initiative.defer)        all                              outreach.recheck
 
 outreach.look, each step guarded so one failing step never stops the others:
   calls       how placed calls ended (the "call" ledger evidence)
   followups   new commitments and "remind me" from the user's own turns -> check-in and reminder timers
-  watchers    GitHub (github_every_min), Waggle's work, cron failures, unpushed commits (5 min), Upcoming (15 min)
+  watchers    GitHub (every 30 min at most, one repo-list call; a repo's runs, PRs and issues only when it moved), Waggle's work, cron failures, unpushed commits (5 min), Upcoming (15 min)
   responses   which sent messages the user answered
-  decide      the reasoning step over pending signals: every initiative_every_min while awake, at once if urgent
+  decide      the reasoning step over pending signals: every initiative_every_min while awake, at once if urgent,
+              a check-in or a look-again; a model that was unavailable is retried after 30 min, not 2 h. The result
+              names the gate ("no pending signals", "quiet hours ...", "cadence ...", "model unavailable ...")
 Cadences and cursors live in runtime.db meta ("outreach.last.<step>", "outreach.last_decision"), never in files.
 
 Handlers get the timer payload with scheduled_ts and late_s; a reminder that fires late says so. Nothing here
@@ -36,7 +39,7 @@ LOOK_EVERY = "5m"
 SCOUT_CRON = "0 17 * * *"
 SCOUT_MAX_LATE_S = 7 * 3600
 JOB_KINDS = ("outreach.look", "outreach.brief", "outreach.evening", "outreach.scout", "outreach.reminder",
-             "outreach.checkin", "outreach.call")
+             "outreach.checkin", "outreach.call", "outreach.recheck")
 LOOK_STEPS = ("calls", "followups", "watchers", "responses", "decide")
 
 
@@ -100,25 +103,54 @@ def look(payload=None, *, settings=None, now=None, asker=None, gh=None, activity
     step("followups", lambda: len(followups.capture(s, now)))
 
     def do_watchers():
-        sigs = []
-        if s.github_watch and _every("github", s.github_every_min, now):
-            sigs += watchers.github_watch(s, gh=gh, now=now)
+        """Each watcher is guarded on its own: one that fails must not take the others' signals with it (their
+        cursors have already moved, so those findings would be gone for good). The result says what each did."""
+        sigs, ran, not_due = [], {}, []
+
+        def watch(name, fn):
+            try:
+                got = fn()
+                sigs.extend(got)
+                ran[name] = len(got)
+            except Exception as e:  # noqa: BLE001
+                ran[name] = f"error: {type(e).__name__}: {e}"[:200]
+                events.log("tick_error", step=f"watchers.{name}", error=ran[name])
+
+        if s.github_watch and _every("github", max(s.github_every_min, watchers.GITHUB_MIN_EVERY_MIN), now):
+            watch("github", lambda: watchers.github_watch(s, gh=gh, now=now))
+        else:
+            not_due.append("github")
         if _every("work", 5, now):
-            sigs += watchers.work_watch(s, now) + watchers.cron_watch(s, now) + watchers.unpushed_watch(s, now)
+            watch("work", lambda: watchers.work_watch(s, now))
+            watch("cron", lambda: watchers.cron_watch(s, now))
+            watch("unpushed", lambda: watchers.unpushed_watch(s, now))
+        else:
+            not_due += ["work", "cron", "unpushed"]
         if _every("upcoming", 15, now):
-            sigs += watchers.upcoming_watch(s, now)
-        return initiative.record(sigs, now)
+            watch("upcoming", lambda: watchers.upcoming_watch(s, now))
+        else:
+            not_due.append("upcoming")
+        new = initiative.record(sigs, now)
+        return {"found": len(sigs), "new": new, "already_known": len(sigs) - new, "ran": ran, "not_due": not_due}
     step("watchers", do_watchers)
     step("responses", lambda: initiative.track_responses(s, now))
 
     def do_decide():
-        if not initiative.due(s, now):
-            return None
+        """{"gate": why it ran or did not, "pending", "urgent", and when it ran: "model", "decisions", "held",
+        "notes"}: a pass that decided nothing says which gate stopped it."""
+        g = initiative.gate(s, now)
+        res = {"gate": g["gate"], "pending": g["pending"], "urgent": g["urgent"], "ran": g["due"]}
+        if not g["due"]:
+            return res
         quiet = notify.in_quiet_hours(s, now)
-        out = initiative.decide(s, now, asker=asker, activity=None if quiet else get_activity(), only_urgent=quiet)
-        if not quiet:
-            store.set_meta(initiative.LAST_DECISION_META, now)
-        return [(d["signal"], d["action"]) for d in out]
+        info = {}
+        out = initiative.decide(s, now, asker=asker, activity=None if quiet else get_activity(), only_urgent=quiet,
+                                info=info)
+        if not quiet and info.get("model") != "not asked" and not str(info.get("model")).startswith("unavailable"):
+            store.set_meta(initiative.LAST_DECISION_META, now)  # a failed try does not use up the cadence slot
+        res.update({"model": info.get("model"), "held": info.get("held"), "notes": info.get("notes"),
+                    "decisions": [(d["signal"], d["action"]) for d in out]})
+        return res
     step("decide", do_decide)
     return report
 
@@ -190,6 +222,14 @@ def checkin_due(payload, *, now=None):
     return {"signals": n}
 
 
+def recheck_due(payload, *, now=None):
+    """Job outreach.recheck: a finding the decision step put off ("look again at ...") comes back as pending."""
+    from . import initiative
+    key = payload.get("key") or ""
+    back = initiative.recheck(key, now or time.time())
+    return {"key": key, "back": back, "deferred": initiative.deferral(key)["count"], "late": _late(payload)}
+
+
 def call_due(payload):
     from . import call
     return call.call_due(payload)
@@ -197,7 +237,7 @@ def call_due(payload):
 
 HANDLERS = {"outreach.look": look, "outreach.brief": brief_due, "outreach.evening": evening_due,
             "outreach.scout": scout_due, "outreach.reminder": reminder_due, "outreach.checkin": checkin_due,
-            "outreach.call": call_due}
+            "outreach.call": call_due, "outreach.recheck": recheck_due}
 
 
 # ---- registration --------------------------------------------------------------------------------------------

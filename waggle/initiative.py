@@ -32,26 +32,48 @@ import uuid
 from . import notify
 from .config import Settings, data_path
 
-ACTIONS = ("none", "text", "voice", "call", "evening", "automate")
+ACTIONS = ("none", "text", "voice", "call", "evening", "later", "automate")
+MAX_DEFERRALS = 3      # a finding can be put off this many times; the next time it is told or dropped
+URGENT_LATER_MAX_MIN = 30
 SEND_ACTIONS = ("text", "voice", "call")
 
-SYSTEM = """You are Waggle, the user's personal assistant, deciding what to tell them unprompted. They are a busy
-student (school, FTC robotics, GitHub projects). You get new signals (facts Waggle noticed) plus context.
-For EACH signal decide one action:
-  none     not worth their attention, already handled in the conversation, or they clearly know
-  text     worth a short message now
-  voice    worth saying out loud (only for something personal and timely, e.g. a check-in or an event soon)
-  call     only if it is urgent AND time-critical (minutes to hours) and a text could be missed
-  evening  useful but not now: it goes into tonight's evening note
-  automate (only for kind=automation) Waggle should set this automation up now
-Judge by what matters to THIS user today: deadlines, broken builds on projects they are actively working on,
-things they said they would do, people waiting on them. Don't repeat what they were already told. Silence is
-fine. Messages: 1-2 short sentences, plain and specific, friendly, no greetings, no emoji, no markdown. For a
-check-in on something they said they'd do, ask how it went. Return JSON only."""
+SYSTEM = """You are Waggle, a student's personal assistant, deciding what to tell them unprompted. They are busy
+(school, FTC robotics, GitHub projects) and a phone buzz costs them focus, so every message has to earn it. Below
+you get the current time, what they have been doing (commits today, their recent conversation with you, what you
+already told them) and new findings: facts Waggle noticed. For EACH finding pick one action and say why in one
+sentence:
+  text     tell them now, a short message
+  voice    say it out loud: only for something personal and timely
+  call     urgent AND minutes away, where a text could be missed
+  evening  not now, but worth a line in tonight's evening note
+  later    look at it again at a time you choose (look_again_minutes): the right moment is not now, or it may
+           settle by itself. It comes back to you with how often it was put off. When can_defer is false you must
+           choose another action.
+  none     drop it: noise, already known, already handled, or not for them
+  automate (only kind=automation) set that automation up now
+How urgent something is depends on what the user is doing right now, not on its kind:
+  - Something broken (failing tests or CI, a failed build) on a project they worked on today or talked about
+    recently is worth telling now: they are in it and can fix it while the context is fresh. The same failure on
+    a project they have not touched for days can wait for the evening note.
+  - A deadline, meeting, quiz or start time inside the next two hours is told now, with the time left. One later
+    today or tomorrow is for the evening note or the morning brief unless they have not been told yet.
+  - A person or a review waiting on them (a pull request, a question) is worth a text when they are active on that
+    project today, otherwise the evening note. Not a reason to nag: do not repeat what they were already told.
+  - A check-in on something they said they would do ("did you test the shooter?") is for asking how it went, when
+    its time has come and nothing shows it is done. If they already did it (their own words or a commit), drop it
+    and say so. If the moment is wrong (late, or they are busy), use later with a time. Never drop a check-in
+    just because it feels early: choose later.
+  - Routine news (release notes, digests, newsletters, status mail) waits for the evening note, or none when it
+    does not concern their work. Marketing, promotions and sales never get through: none.
+  - Respect quiet hours and the daily count shown: when many findings compete, tell the one that matters most
+    now and let the rest wait.
+Messages: 1-2 short sentences, plain and specific (the project, the time left, the one thing to do), friendly, no
+greetings, no emoji, no markdown. For a check-in ask how it went. Return JSON only; reason is one sentence."""
 
 SCHEMA = {"type": "object", "properties": {"decisions": {"type": "array", "items": {"type": "object", "properties": {
     "key": {"type": "string"}, "action": {"type": "string", "enum": list(ACTIONS)},
-    "message": {"type": "string"}, "topic": {"type": "string"}, "reason": {"type": "string"}},
+    "message": {"type": "string"}, "topic": {"type": "string"}, "reason": {"type": "string"},
+    "look_again_minutes": {"type": "integer"}},
     "required": ["key", "action", "message", "reason"]}}}, "required": ["decisions"]}
 
 
@@ -67,6 +89,8 @@ def _db():
         topic TEXT, model_action TEXT, action TEXT, message TEXT, reason TEXT, guard TEXT, decided_by TEXT,
         outbox_id TEXT, urgent INTEGER)""")
     con.execute("CREATE TABLE IF NOT EXISTS responses (outbox_id INTEGER PRIMARY KEY, responded_at REAL)")
+    con.execute("""CREATE TABLE IF NOT EXISTS deferrals (key TEXT PRIMARY KEY, count INTEGER, next_at REAL,
+        ready INTEGER, reason TEXT, timer_id TEXT)""")
     con.execute("""CREATE TABLE IF NOT EXISTS followups (id TEXT PRIMARY KEY, kind TEXT, created REAL, trace INTEGER,
         said TEXT, said_at REAL, what TEXT, due REAL, status TEXT, closed REAL, outbox TEXT, reason TEXT, chat TEXT,
         origin TEXT, timer_id TEXT)""")
@@ -157,6 +181,64 @@ def track_responses(settings=None, now=None, window_s=6 * 3600, turns=None):
     con.commit()
     con.close()
     return marked
+
+
+# ---- "look again at": deferrals -------------------------------------------------------------------------------
+
+def deferral(key):
+    """{count, next_at, ready, reason} of a finding that was put off (count 0 when it never was)."""
+    con = _db()
+    row = con.execute("SELECT * FROM deferrals WHERE key=?", (key,)).fetchone()
+    con.close()
+    return dict(row) if row else {"key": key, "count": 0, "next_at": None, "ready": 0, "reason": "", "timer_id": None}
+
+
+def defer(sig, minutes, reason, now):
+    """Put a finding off: a one-shot core timer (catch-up "all", so a look-again that fell while the PC was off still
+    happens) turns it back into a pending signal. Returns the timer id."""
+    from waggle.core import timers
+    n = deferral(sig["key"])["count"] + 1
+    try:
+        minutes = int(minutes)
+    except (TypeError, ValueError):
+        minutes = 60
+    minutes = max(10, min(minutes, 24 * 60))
+    if sig.get("urgent"):
+        minutes = min(minutes, URGENT_LATER_MAX_MIN)
+    tid = timers.once(now + minutes * 60, "outreach.recheck", {"key": sig["key"]}, timer_id=f"recheck:{sig['key']}:{n}",
+                      catch_up="all", origin="outreach")
+    con = _db()
+    con.execute("INSERT OR REPLACE INTO deferrals VALUES (?,?,?,?,?,?)",
+                (sig["key"], n, now + minutes * 60, 0, str(reason or "")[:300], tid))
+    con.commit()
+    con.close()
+    return tid
+
+
+def recheck(key, now=None):
+    """The look-again time has come: a deferred signal is pending again (and due() will decide it at once)."""
+    con = _db()
+    cur = con.execute("UPDATE signals SET status='pending' WHERE key=? AND status='deferred'", (key,))
+    if cur.rowcount:
+        con.execute("UPDATE deferrals SET ready=1 WHERE key=?", (key,))
+    con.commit()
+    con.close()
+    return bool(cur.rowcount)
+
+
+def _settle(keys):
+    con = _db()
+    for k in keys:
+        con.execute("UPDATE deferrals SET ready=0 WHERE key=?", (k,))
+    con.commit()
+    con.close()
+
+
+def _ready_keys():
+    con = _db()
+    out = {r[0] for r in con.execute("SELECT key FROM deferrals WHERE ready=1")}
+    con.close()
+    return out
 
 
 # ---- guard rails -------------------------------------------------------------------------------------------
@@ -273,8 +355,15 @@ def template(sig):
 
 def _ask_claude(sigs, settings, now, asker=None, activity=None):
     from . import budget, claude_cli
-    payload = [{"key": x["key"], "kind": x["kind"], "title": x["title"], "detail": x.get("detail", ""),
-                "urgent": bool(x["urgent"]), "topic": x["topic"]} for x in sigs]
+    payload = []
+    for x in sigs:
+        item = {"key": x["key"], "kind": x["kind"], "title": x["title"], "detail": x.get("detail", ""),
+                "urgent": bool(x["urgent"]), "topic": x["topic"]}
+        d = deferral(x["key"])
+        if d["count"]:
+            item.update({"deferred_before": d["count"], "why_deferred": d["reason"]})
+        item["can_defer"] = d["count"] < MAX_DEFERRALS
+        payload.append(item)
     prompt = (context(settings, now, activity) + "\n\nNew signals:\n" + json.dumps(payload, indent=1) +
               f"\n\nUnprompted messages already sent today: {sent_today(now, settings)} of {settings.daily_text_cap}.")
     with budget.background("initiative"):
@@ -290,52 +379,101 @@ def _ask_claude(sigs, settings, now, asker=None, activity=None):
 
 
 LAST_DECISION_META = "outreach.last_decision"
+BLOCKED_META = "outreach.decision_blocked"   # {"until": ts, "why": text}: the model could not be asked
+RETRY_AFTER_S = 30 * 60                       # a failed try (budget, quota, CLI) is retried after this, not after 2 h
+
+
+def gate(settings, now):
+    """Is a decision run due, and which gate says so: {"due": bool, "gate": text, "pending", "urgent"}. The text is
+    what the look pass records in its job result, so a pass that decided nothing says why."""
+    from waggle.core import store
+    p = pending()
+    n, urgent = len(p), sum(1 for x in p if x["urgent"])
+    out = {"pending": n, "urgent": urgent}
+    if not p:
+        return {**out, "due": False, "gate": "no pending signals"}
+    blocked = store.loads(store.get_meta(BLOCKED_META)) or {}
+    if urgent:
+        return {**out, "due": True, "gate": f"{urgent} urgent signal(s): decided at once"}
+    if notify.in_quiet_hours(settings, now):
+        return {**out, "due": False, "gate": f"quiet hours: {n} non-urgent signal(s) held until morning"}
+    if blocked.get("until", 0) > now:
+        return {**out, "due": False, "gate": f"model unavailable ({blocked.get('why', '')}); next try in "
+                                              f"{int((blocked['until'] - now) / 60) + 1} min"}
+    if any(x["kind"] == "followup" for x in p):
+        return {**out, "due": True, "gate": "a check-in's time has come: decided at once"}
+    if _ready_keys() & {x["key"] for x in p}:
+        return {**out, "due": True, "gate": "a look-again time came: decided at once"}
+    every = settings.initiative_every_min * 60
+    since = now - float(store.get_meta(LAST_DECISION_META, 0) or 0)
+    if since >= every:
+        return {**out, "due": True, "gate": "cadence: initiative_every_min passed"}
+    return {**out, "due": False, "gate": f"cadence: last decision {int(since / 60)} min ago, next in "
+                                         f"{int((every - since) / 60) + 1} min"}
 
 
 def due(settings, now):
-    """Is a decision run due? Pending signals and (an urgent one, or initiative_every_min passed while awake)."""
+    """Is a decision run due? Pending signals and (an urgent one, a check-in or a look-again whose time came, or
+    initiative_every_min passed while awake and the model was not just found unavailable)."""
+    return gate(settings, now)["due"]
+
+
+def rules_say_now(sig, activity):
+    """With the model unavailable: a failure (CI, build, tests) on a project the user committed to today is still
+    worth telling now. Nothing else is guessed: the rest waits for the model, or goes to the evening note."""
+    if sig["kind"] not in ("github_ci", "build") or not activity:
+        return False
+    title = (sig.get("title") or "").lower()
+    return "fail" in title and any(title.startswith(repo.lower() + ":") for repo in activity)
+
+
+def decide(settings=None, now=None, asker=None, activity=None, only_urgent=False, turns=None, info=None):
+    """One decision run over the pending signals. Returns the decision rows. info (a dict) is filled with what
+    happened: asked, model ("ok" or why it was unavailable), held (signals left pending), notes (guard notes)."""
     from waggle.core import store
-    p = pending()
-    if not p:
-        return False
-    if any(x["urgent"] for x in p):
-        return True
-    if notify.in_quiet_hours(settings, now):
-        return False
-    return now - float(store.get_meta(LAST_DECISION_META, 0) or 0) >= settings.initiative_every_min * 60
-
-
-def decide(settings=None, now=None, asker=None, activity=None, only_urgent=False):
-    """One decision run over the pending signals. Returns the decision rows."""
     s = settings or Settings.load()
     now = now or time.time()
+    info = info if info is not None else {}
     sigs = pending()
     if only_urgent:
         sigs = [x for x in sigs if x["urgent"]]
+    info.update({"asked": 0, "model": "not asked", "held": 0, "notes": []})
     if not sigs:
         return []
     sigs = sigs[:20]
+    info["asked"] = len(sigs)
     by_model, decided_by = {}, s.initiative_model
     try:
         by_model = _ask_claude(sigs, s, now, asker, activity)
+        info["model"] = "ok"
+        store.set_meta(BLOCKED_META, store.dumps({}))
     except Exception as e:  # noqa: BLE001  (budget, quota, CLI missing, timeout)
         decided_by = f"rules (Claude unavailable: {str(e)[:80]})"
         by_model = None
+        info["model"] = f"unavailable: {str(e)[:120]}"
+        store.set_meta(BLOCKED_META, store.dumps({"until": now + RETRY_AFTER_S, "why": str(e)[:80]}))
     state = {"topics": recent_topics(now, max(s.topic_repeat_hours, 2)), "cap_used": sent_today(now, s),
-             "automations": _automations_today(now)}
+             "automations": _automations_today(now), "activity": activity, "turns": turns}
     out = []
     for sig in sigs:
         if by_model is None:
             if sig["urgent"]:
                 d = {"action": "text", "message": template(sig), "reason": "urgent fact; Claude unavailable"}
+            elif rules_say_now(sig, activity):
+                d = {"action": "text", "message": template(sig), "reason": "failure on a project worked on today; "
+                                                                         "Claude unavailable"}
             elif now - sig["time"] > 20 * 3600:
                 d = {"action": "evening", "message": "", "reason": "waited a day for a decision"}
             else:
+                info["held"] += 1
                 continue  # stays pending for the next run
         else:
             d = by_model.get(sig["key"]) or {"action": "evening", "message": "",
                                              "reason": "the model returned no decision for it"}
-        out.append(_apply(sig, d, s, now, state, decided_by))
+        row = _apply(sig, d, s, now, state, decided_by)
+        out.append(row)
+        if row["guard"]:
+            info["notes"].append(f"{sig['key'][:40]}: {row['guard'][:100]}")
     return out
 
 
@@ -349,7 +487,12 @@ def _automations_today(now):
 
 def _apply(sig, d, s, now, state, decided_by):
     model_action = str(d.get("action", "none"))
-    action, note = guard(sig, model_action, s, now, state)
+    wanted, note0 = _settle_later(sig, model_action, s, now, state)
+    action, note = guard(sig, wanted, s, now, state)
+    if note0:
+        note = (note0 + "; " + note) if note else note0
+    if sig["kind"] == "followup" and action == "none" and not note0.startswith("closed:"):
+        action, note = "evening", (note + "; " if note else "") + "a check-in is never dropped silently"
     msg = " ".join(str(d.get("message") or "").split())[:900].lstrip("🐝 ")  # the bee is added once, below
     if action in SEND_ACTIONS and not msg:
         msg = template(sig).lstrip("🐝 ")
@@ -371,6 +514,8 @@ def _apply(sig, d, s, now, state, decided_by):
             note = (note + "; " if note else "") + "calls not possible: urgent push + voice note instead"
             notify.deliver("push", msg, title="Waggle", **kw)
             outbox_id = notify.voice(msg, caption=f"📞 {msg}", **kw)["id"]
+    elif action == "later":
+        defer(sig, d.get("look_again_minutes"), d.get("reason", ""), now)
     elif action == "automate":
         from . import scout
         res = scout.build(sig, msg, s)
@@ -383,7 +528,7 @@ def _apply(sig, d, s, now, state, decided_by):
             state["cap_used"] += 1
     if action == "automate":
         state["automations"] += 1
-    status = {"none": "dropped", "evening": "evening"}.get(action, "decided")
+    status = {"none": "dropped", "evening": "evening", "later": "deferred"}.get(action, "decided")
     con = _db()
     con.execute("INSERT INTO decisions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (did, now, sig["key"], sig["kind"], topic, model_action, action, msg,
@@ -393,8 +538,13 @@ def _apply(sig, d, s, now, state, decided_by):
     con.close()
     if sig["kind"] == "followup":
         from . import followups
+        closed = note0.startswith("closed:")
         followups.mark(sig["key"].split(":", 1)[1], "asked" if action in SEND_ACTIONS else
-                       "evening" if action == "evening" else "dropped", now, outbox_id, d.get("reason", ""))
+                       "evening" if action == "evening" else "deferred" if action == "later" else
+                       "closed" if closed else "dropped", now, outbox_id,
+                       note0[len("closed: "):] if closed else d.get("reason", ""))
+    if action != "later":
+        _settle([sig["key"]])
     from . import events
     events.log("decision", id=did, signal=sig["key"], signal_kind=sig["kind"], model_action=model_action, action=action,
                reason=str(d.get("reason", ""))[:200], guard=note[:160], by=decided_by[:60])
@@ -402,12 +552,35 @@ def _apply(sig, d, s, now, state, decided_by):
             "message": msg, "reason": d.get("reason", ""), "guard": note, "outbox_id": outbox_id}
 
 
+def _settle_later(sig, model_action, s, now, state):
+    """(the action to run through guard(), a note). Two rules sit between the model and the guard rails:
+    a check-in on something the user said they would do is never dropped: with no record that it was done it
+    becomes a look-again (closed, with the evidence, when the records show it was done); and a finding that was
+    put off MAX_DEFERRALS times cannot be put off again: it is told (check-ins and urgent ones) or dropped."""
+    is_followup = sig["kind"] == "followup"
+    count = deferral(sig["key"])["count"]
+    note = ""
+    if is_followup and model_action in ("none", "later"):
+        from . import followups
+        item = followups.get(sig["key"].split(":", 1)[1])
+        ev = followups.done_evidence(item, now, s, turns=state.get("turns"), activity=state.get("activity")) if item else ""
+        if ev:
+            return "none", f"closed: {ev}"
+        if model_action == "none":
+            model_action, note = "later", "check-in not dropped: nothing in the records shows it was done"
+    if model_action == "later" and count >= MAX_DEFERRALS:
+        if is_followup or sig.get("urgent"):
+            return "text", f"deferred {count} times: told now" + (f" ({note})" if note else "")
+        return "none", f"deferred {count} times: dropped, nothing new came up"
+    return model_action, note
+
+
 def evening_items(now, settings=None):
     """Signals kept for tonight's note (decided 'evening' today, or pending since this morning)."""
     start = dt.datetime.fromtimestamp(now).replace(hour=0, minute=0, second=0).timestamp()
     con = _db()
     rows = [dict(r) for r in con.execute(
-        "SELECT * FROM signals WHERE (status='evening' AND decided_at>=?) OR (status='pending' AND time>=?)",
+        "SELECT * FROM signals WHERE (status IN ('evening','deferred') AND decided_at>=?) OR (status='pending' AND time>=?)",
         (start - 6 * 3600, start))]
     con.close()
     return rows

@@ -28,6 +28,8 @@ from pathlib import Path
 
 
 GH_CANDIDATES = (r"C:\Program Files\GitHub CLI\gh.exe",)
+GITHUB_MIN_EVERY_MIN = 30      # GitHub is asked at most this often, whatever github_every_min says
+GITHUB_FULL_LOOK_S = 3 * 3600  # a repo whose overview did not move is still looked at fully this often (CI re-runs)
 URGENT_WITHIN_S = 3 * 3600
 LOOKAHEAD_DAYS = 2
 
@@ -69,9 +71,12 @@ def run_gh(args, timeout=40):
     exe = gh_path()
     if not exe:
         return None
+    env = dict(os.environ)
+    env.setdefault("TZ", "UTC")  # on Windows gh starts `tzutil` to find the local zone: one more process per call
     try:
         r = subprocess.run([exe, *args], capture_output=True, text=True, timeout=timeout, encoding="utf-8",
-                           errors="replace", creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+                           errors="replace", env=env,
+                           creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     except (OSError, subprocess.TimeoutExpired):
         return None
     if r.returncode != 0:
@@ -82,32 +87,50 @@ def run_gh(args, timeout=40):
         return None
 
 
-def github_repos(settings, gh=None, now=None):
-    """The repos to watch: settings.github_repos, else the user's 10 most recently pushed (last 21 days)."""
-    if settings.github_repos:
-        return list(settings.github_repos)
+OVERVIEW_FIELDS = "nameWithOwner,pushedAt,updatedAt,isArchived,issues,pullRequests"
+
+
+def _fingerprint(r):
+    """What GitHub's own repo list says moved: a push, any update, a new issue or pull request."""
+    return [r.get("pushedAt"), r.get("updatedAt"), (r.get("issues") or {}).get("totalCount"),
+            (r.get("pullRequests") or {}).get("totalCount")]
+
+
+def github_overview(settings, gh=None, now=None):
+    """(repos to watch, {repo: fingerprint}) from ONE `gh repo list` call, or None when gh could not answer.
+    The repos are settings.github_repos, else the user's 10 most recently pushed (last 21 days). The answer is
+    kept in runtime state for GITHUB_MIN_EVERY_MIN minutes, so asking twice inside that window costs no process."""
     now = now or time.time()
     st = _state()
     cache = st.get("gh_repos") or {}
-    if cache.get("list") and now - cache.get("time", 0) < 6 * 3600:
-        return cache["list"]
-    data = (gh or run_gh)(["repo", "list", "--limit", "40", "--json", "nameWithOwner,pushedAt,isArchived"])
-    if not isinstance(data, list):
-        return cache.get("list") or []
+    if cache.get("all") and 0 <= now - cache.get("time", 0) < GITHUB_MIN_EVERY_MIN * 60:
+        data = cache["all"]
+    else:
+        data = (gh or run_gh)(["repo", "list", "--limit", "40", "--json", OVERVIEW_FIELDS])
+        if not isinstance(data, list):
+            return None
+        st = _state()
+        st["gh_repos"] = {"time": now, "all": data}
+        _save(st)
+    fps = {r["nameWithOwner"]: _fingerprint(r) for r in data if isinstance(r, dict) and r.get("nameWithOwner")}
+    if settings.github_repos:
+        return list(settings.github_repos), fps
     cutoff = now - 21 * 86400
     fresh = []
     for r in data:
         try:
             pushed = dt.datetime.fromisoformat(r["pushedAt"].replace("Z", "+00:00")).timestamp()
-        except (KeyError, ValueError, AttributeError):
+        except (KeyError, ValueError, AttributeError, TypeError):
             continue
         if not r.get("isArchived") and pushed >= cutoff:
             fresh.append((pushed, r["nameWithOwner"]))
-    repos = [n for _, n in sorted(fresh, reverse=True)[:10]]
-    st = _state()
-    st["gh_repos"] = {"time": now, "list": repos}
-    _save(st)
-    return repos
+    return [n for _, n in sorted(fresh, reverse=True)[:10]], fps
+
+
+def github_repos(settings, gh=None, now=None):
+    """The repos to watch (see github_overview); empty when gh cannot answer."""
+    got = github_overview(settings, gh, now)
+    return got[0] if got else []
 
 
 def github_watch(settings, gh=None, now=None):
@@ -118,14 +141,24 @@ def github_watch(settings, gh=None, now=None):
     out = []
     st = _state()
     seen = st.setdefault("github", {})
-    for repo in github_repos(settings, gh, now):
+    got = github_overview(settings, gh, now)
+    if got is None:
+        return []  # gh could not answer (not signed in, offline): one failed call, not thirty
+    repos, fps = got
+    for repo in repos:
         short = repo.split("/")[-1]
         rs = seen.get(repo)
         first = rs is None
+        fp = fps.get(repo)
+        if not first and fp is not None and rs.get("fp") == fp and 0 <= now - rs.get("full", 0) < GITHUB_FULL_LOOK_S:
+            continue  # GitHub says nothing moved here: no run, PR or issue call for it
         rs = rs or {"runs": {}, "prs": {}, "issues": []}
+        rs["fp"], rs["full"] = fp, now
+        answered = False
         runs = gh(["run", "list", "-R", repo, "-L", "10", "--json",
                    "databaseId,workflowName,headBranch,status,conclusion,url,createdAt"])
         if isinstance(runs, list):
+            answered = True
             latest = {}
             for r in runs:  # newest first: the first completed run per workflow+branch is its current state
                 if r.get("status") != "completed":
@@ -164,6 +197,7 @@ def github_watch(settings, gh=None, now=None):
         prs = gh(["pr", "list", "-R", repo, "--state", "all", "-L", "10", "--json",
                   "number,title,state,author,url,mergedAt"])
         if isinstance(prs, list):
+            answered = True
             for p in prs:
                 num, state = str(p.get("number")), p.get("state")
                 prev = rs["prs"].get(num)
@@ -178,6 +212,7 @@ def github_watch(settings, gh=None, now=None):
                 rs["prs"][num] = state
         issues = gh(["issue", "list", "-R", repo, "--state", "open", "-L", "10", "--json", "number,title,author,url"])
         if isinstance(issues, list):
+            answered = True
             known = set(rs["issues"])
             for i in issues:
                 num = i.get("number")
@@ -188,7 +223,8 @@ def github_watch(settings, gh=None, now=None):
                                       f"issue:{repo}#{num}", url=i.get("url", "")))
                 known.add(num)
             rs["issues"] = sorted(known)[-200:]
-        seen[repo] = rs
+        if answered:  # gh failed for every question: remember nothing, or the next look would treat all as new
+            seen[repo] = rs
     st2 = _state()
     st2["github"] = seen
     _save(st2)
