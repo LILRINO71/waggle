@@ -261,6 +261,9 @@ WAGGLE_TOOLS = {
     # Google through gogcli (waggle/google.py): reads only look; the five below change the owner's own account
     "google_status": (ALLOW, _READS), "google_docs_read": (ALLOW, _READS), "google_drive_search": (ALLOW, _READS),
     "google_calendar_list": (ALLOW, _READS), "google_tasks_list": (ALLOW, _READS), "google_classroom_due": (ALLOW, _READS),
+    # focus blocks (waggle/focus.py): the owner's own request starts a timer that only speaks or texts the owner
+    "focus_start": (ALLOW, "starts a focus block: short nudges to the owner only (waggle/focus.py)"),
+    "focus_stop": (ALLOW, "ends the owner's focus block"), "focus_status": (ALLOW, _READS),
     # Waggle's own memory, skills, routines and agents (agent work goes through this policy again)
     "remember": (ALLOW, _OWN), "project_update": (ALLOW, _OWN), "rate_finding": (ALLOW, _OWN),
     "skill_create": (ALLOW, _OWN), "skill_update": (ALLOW, _OWN), "agent_note": (ALLOW, _OWN),

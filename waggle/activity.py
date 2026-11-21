@@ -14,10 +14,16 @@ Inputs, all local and cheap:
   chat turns     the owner's own Waggle turns (learn.user_turns: origin 'user' only; tests, canaries, benches and
                  agents count for nothing), matched to a workstream by its name.
   upcoming       dated items from the knowledge store (learn.facts, kinds event/deadline/reply).
+  ActivityWatch  window and AFK activity over the whole PC (waggle/aw_sensor.py, derived rows only: app, project
+                 guess, workstream, minutes). Time in a window whose title names a repository counts for it; time in
+                 an FTC, Waggle, school, Onshape, laser or CAD window counts for that project; leisure and AFK
+                 time counts for nothing. Off with config activitywatch_enabled=false; nothing happens while
+                 ActivityWatch is not running.
 
 Ranking, no model:  score(ws) = sum over events of w_kind * exp(-age / tau_kind)  +  sum of 2 / (days_to_due + 1)
   owner turn in Claude Code 1.0 (tau 2 d), owner chat turn 1.0 (2 d), file touched 0.2 (2 d, at most 30 per session),
-  file touched by a sub-agent 0.1 (2 d), commit 0.5 (3 d). Events older than WINDOW_DAYS are ignored.
+  file touched by a sub-agent 0.1 (2 d), commit 0.5 (3 d), ActivityWatch focused time 0.5 per 10 minutes (2 d).
+  Events older than WINDOW_DAYS are ignored.
 
 refresh() writes the ranked list to runtime.db meta "activity.workstreams" (and returns it); the core job
 autonomy.activity calls it every 30 minutes with catch-up "skip". workstreams() reads the last snapshot.
@@ -39,10 +45,12 @@ TOP_N = 12
 MIN_SCORE = 0.05
 MAX_EDITS_PER_SESSION = 30
 WEIGHTS = {"cc_turn": (1.0, 2.0), "chat_turn": (1.0, 2.0), "edit": (0.2, 2.0), "agent_edit": (0.1, 2.0),
-           "commit": (0.5, 3.0)}
+           "commit": (0.5, 3.0), "aw": (0.5, 2.0)}
 DEADLINE_WEIGHT = 2.0
 DEADLINE_DAYS = 14
 META_KEY = "activity.workstreams"
+WORK_PROJECTS = {"ftc", "waggle", "school", "onshape", "laser", "cad"}  # ActivityWatch projects that are workstreams
+LEISURE_PROJECTS = {"video", "social", "anime", "games"}
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 SHELL_TOOLS = {"Bash", "PowerShell"}
 SKIP_DIRS = ("appdata/local/temp", "/.claude/", "/.waggle", "/.hermes", "/tmp/", "site-packages")
@@ -514,9 +522,10 @@ def match_ws(text, labels):
     return None
 
 
-def build(sessions, commits=None, chat_turns=None, upcoming=None, names=None, now=None):
+def build(sessions, commits=None, chat_turns=None, upcoming=None, names=None, now=None, aw=None):
     """Rank workstreams from derived facts (pure, for tests). sessions: read_session_file outputs; commits:
-    {ws: [times]}; chat_turns: the owner's turn rows ({time, request}); upcoming: [{date, text}]; names: {ws: note}."""
+    {ws: [times]}; chat_turns: the owner's turn rows ({time, request}); upcoming: [{date, text}]; names: {ws: note};
+    aw: ActivityWatch rows (aw_sensor.slices_since: start, secs, project, ws, afk)."""
     now = store_.now_or(now)
     since = now - WINDOW_DAYS * 86400
     week = now - 7 * 86400
@@ -526,14 +535,15 @@ def build(sessions, commits=None, chat_turns=None, upcoming=None, names=None, no
         return ws.setdefault(key, {"key": key, "name": (names or {}).get(key) or key, "score": 0.0, "last": 0.0,
                                    "first": None, "evidence": {"cc_turns_7d": 0, "sessions_7d": set(),
                                                                "files_touched_7d": 0, "commits_7d": 0,
-                                                               "chat_turns_7d": 0, "deadlines_14d": 0},
+                                                               "chat_turns_7d": 0, "deadlines_14d": 0,
+                                                               "aw_minutes_7d": 0},
                                    "topic": "", "topic_ts": 0.0, "next_due": None})
 
-    def hit(key, kind, t, session=None):
+    def hit(key, kind, t, session=None, scale=1.0):
         if not key or t is None or t < since or t > now + 300:
             return False
         e = entry(key)
-        e["score"] += _decay(kind, now - t)
+        e["score"] += scale * _decay(kind, now - t)
         e["last"] = max(e["last"], t)
         e["first"] = t if e["first"] is None else min(e["first"], t)
         if session and t >= week:
@@ -577,6 +587,13 @@ def build(sessions, commits=None, chat_turns=None, upcoming=None, names=None, no
         for t in times:
             if hit(key, "commit", t) and t >= week:
                 ws[key]["evidence"]["commits_7d"] += 1
+    for r in aw or []:  # ActivityWatch: focused minutes, by the workstream the window names or its project
+        if r.get("afk") or r.get("project") in LEISURE_PROJECTS:
+            continue
+        key = r.get("ws") or (r.get("project") if r.get("project") in WORK_PROJECTS else None)
+        t = (r.get("start") or 0) + (r.get("secs") or 0)
+        if hit(key, "aw", t, scale=(r.get("secs") or 0) / 600.0) and t >= week:
+            ws[key]["evidence"]["aw_minutes_7d"] += (r.get("secs") or 0) / 60.0
     labels = {k: {k, k.replace("-", " "), k.replace("_", " "), str(v.get("name", "")).lower()}
               for k, v in ws.items()}
     for k, note in (names or {}).items():
@@ -607,6 +624,7 @@ def build(sessions, commits=None, chat_turns=None, upcoming=None, names=None, no
         if e["score"] < MIN_SCORE:
             continue
         e["score"] = round(e["score"], 3)
+        e["evidence"]["aw_minutes_7d"] = round(e["evidence"]["aw_minutes_7d"])
         out.append(e)
     out.sort(key=lambda e: (-e["score"], -e["last"]))
     return out[:TOP_N]
@@ -629,6 +647,15 @@ def chat_turns(since):
         return []
 
 
+def _aw_rows(settings, since):
+    """ActivityWatch's derived rows since `since` (empty when switched off or never read)."""
+    try:
+        from . import aw_sensor
+        return aw_sensor.slices_since(since) if aw_sensor.enabled(settings) else []
+    except Exception:  # noqa: BLE001 - the sensor is optional
+        return []
+
+
 def refresh(settings=None, now=None, claude_dir=None, repos=None, save=True):
     """Rebuild the ranked workstreams from every source and store them. Returns {time, workstreams, stats}."""
     s = settings or Settings.load()
@@ -640,9 +667,10 @@ def refresh(settings=None, now=None, claude_dir=None, repos=None, save=True):
     commits = commit_times({p: Path(p).name.lower() for p in known}, now=now)
     chats = chat_turns(now - WINDOW_DAYS * 86400)
     up = _upcoming()
-    ranked = build(sessions, commits, chats, up, resolve.names, now)
+    aw = _aw_rows(s, now - WINDOW_DAYS * 86400)
+    ranked = build(sessions, commits, chats, up, resolve.names, now, aw)
     stats = {"sessions": len({d.get("session") for d in sessions}), "session_files": len(sessions),
-             "repos": len(known), "chat_turns": len(chats), "upcoming": len(up), "workstreams": len(ranked),
+             "repos": len(known), "chat_turns": len(chats), "upcoming": len(up), "aw_slices": len(aw), "workstreams": len(ranked),
              "seconds": round(time.time() - t0, 2)}
     snap = {"time": now, "workstreams": ranked, "stats": stats}
     if save:

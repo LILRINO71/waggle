@@ -35,6 +35,8 @@ Each piece can be switched off on its own. To switch something off:
 | New tools: CAD convert/measure, print estimate, notes/Office to PDF, video/image convert, GitHub portfolio audit, explain any file, FTC team stats | one `git rm` line per tool in `skills/README.md` ("Removing a tool pack") |
 | Google through gogcli (pinned v0.48.1): Docs create/read/append, Drive search, Calendar list/create (no guests), Tasks list/add/done, Classroom due dates; Gmail never. Chat tools `google_*`, `python -m waggle.google` (status, docs-new, tasks, classroom-due), one extra morning-brief line, a `Google` line in doctor. Does nothing until you sign in once (`docs/GOOGLE.md`, about 10 minutes, double-click `Waggle Google Login.bat`) | `"google_gog": false` |
 | Dead-man switch (needs you): a free Cloudflare Worker sends your reminders if the PC is off and says "Waggle is down" if it dies during the day (not when you switch the PC off at night). Does nothing until you do the steps in `docs/DEADMAN.md` (about 10 minutes, no card) | leave `deadman_url` empty; after setup, `npx wrangler delete` then `"deadman_url": ""` |
+| ActivityWatch sees work across the whole PC (rebuild/activity): installed in `%LOCALAPPDATA%\Programs\ActivityWatch`, starts hidden at logon (task `ActivityWatch`). Every 10 min (not in quiet hours) Waggle keeps only derived facts (program, project guess, minutes, away time, salted title hash; never raw titles or URLs) and feeds them to the activity model and the repeated-work miner (`app_sequence` candidates). Details and privacy: `docs/ACTIVITY.md` | `activitywatch_enabled`; `powershell -File tools\install-activitywatch-task.ps1 -Uninstall`, then delete the folder |
+| Focus blocks, off until you ask: "focus on calculus for 45 minutes" (chat, voice or `/waggle focus 45 calculus`). Every 90 s it checks the window in front; two drifts in a row (YouTube, games, anime) get one short spoken line (Telegram text if you are away), at most every 3 min; one summary line at the end. Rules first, the local model only for unclear windows. No Claude call | nothing runs unless you start a block; `/waggle focus stop`; remove `waggle.focus` from `MODULES` in `waggle/core/plugins.py` to remove it |
 
 ## Also fixed overnight (nothing to decide)
 
@@ -59,6 +61,9 @@ Each piece can be switched off on its own. To switch something off:
    `ollama rm qwen3.8:27b` (17 GB, lost the comparison), `ollama rm embeddinggemma:300m` and
    `ollama rm qwen3-embedding:0.6b` (lost the embedding test; Waggle keeps using nomic-embed-text).
 6. **Licence**: the waggle repo has no licence. MIT is the usual pick for a portfolio; say "add MIT" and I will.
+7. **Chrome extension for ActivityWatch** (optional, 2 minutes): so Waggle can tell Onshape from YouTube in the same
+   Chrome. Steps in `docs/ACTIVITY.md` ("Your steps"). Without it everything still works with program names and tab
+   titles.
 
 ## Research reports
 
