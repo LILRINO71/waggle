@@ -594,7 +594,11 @@ def profile_goals(settings=None):
 
 def goal_name(text):
     words = re.sub(r"\(.*?\)|[\\/:*?\"<>|#^\[\]]", " ", text).replace("→", " ").split()
-    name = " ".join(words[:6]).strip(" ,.;-")
+    words = words[:6]
+    while len(words) > 2 and words[-1].lower().strip(",.;-") in {"and", "of", "to", "a", "an", "the", "for", "in", "on",
+                                                                 "with", "or", "at", "by", "persistent"}:
+        words.pop()  # a name must not end mid-phrase
+    name = " ".join(words).strip(" ,.;-")
     return name[:60] or "Goal"
 
 

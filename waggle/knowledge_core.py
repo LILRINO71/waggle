@@ -29,10 +29,17 @@ LEASE_S = 120.0
 TIMEOUTS = {INTAKE: 1200.0, DIGEST: 900.0, QUIZ: 900.0}
 
 
-def _background(purpose):
-    """Mark this process's Claude calls as background work (the budget's rules apply)."""
+def _background(purpose, fn):
+    """Run fn with its Claude calls marked as background work (the budget's rules apply). The mark lives in a copy
+    of the caller's context, so it cannot leak into whatever the same thread does next (a chat turn, a test)."""
+    import contextvars
+
     from . import budget
-    budget.set_background(purpose)
+
+    def go():
+        budget.set_background(purpose)
+        return fn()
+    return contextvars.copy_context().run(go)
 
 
 def _late(payload):
@@ -43,8 +50,8 @@ def _late(payload):
 def intake(payload=None, *, settings=None, now=None, **ctx):
     """Job knowledge.intake: the sources that are due. Raises only when every source that ran failed."""
     from . import ingest
-    _background("ingest")
-    report = ingest.run_due(now=now, settings=settings, exclude=("digest", "learning"), **ctx)
+    report = _background("ingest", lambda: ingest.run_due(now=now, settings=settings,
+                                                          exclude=("digest", "learning"), **ctx))
     errors = {k: v["error"] for k, v in report.items() if isinstance(v, dict) and v.get("error")}
     ran = [k for k, v in report.items() if isinstance(v, dict)]
     if errors and len(errors) == len(ran):
@@ -56,8 +63,7 @@ def intake(payload=None, *, settings=None, now=None, **ctx):
 def digest(payload=None, *, settings=None, now=None, asker=None):
     """Job knowledge.digest: today's and the last two days' journal notes, finished days distilled once each."""
     from . import digest as digest_mod
-    _background("digest")
-    out = digest_mod.run(settings, now=now, asker=asker)
+    out = _background("digest", lambda: digest_mod.run(settings, now=now, asker=asker))
     if out.get("skipped") and not out.get("written") and not out.get("distilled"):
         # the model was out of budget or unreachable: the skeleton may still be written, but say it did not finish
         events.log("knowledge", action="digest_deferred", reasons=out["skipped"][:3])
@@ -67,8 +73,7 @@ def digest(payload=None, *, settings=None, now=None, asker=None):
 def quiz(payload=None, *, settings=None, now=None, embedder=None):
     """Job knowledge.quiz: the nightly quiz and learning notes. Raises when the quiz could not run."""
     from . import learning
-    _background("learning")
-    out = learning.daily(settings, now=now, embedder=embedder)
+    out = _background("learning", lambda: learning.daily(settings, now=now, embedder=embedder))
     if out["quiz"].get("error"):
         raise RuntimeError("quiz did not run: " + str(out["quiz"]["error"]))
     return {**out, **_late(payload)}

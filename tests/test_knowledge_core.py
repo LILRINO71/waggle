@@ -136,3 +136,15 @@ def test_quiz_job_records_a_run_and_fails_when_retrieval_is_down(s, monkeypatch,
     monkeypatch.setattr(memory, "relevant", lambda *a, **k: (_ for _ in ()).throw(ConnectionError("down")))
     with pytest.raises(RuntimeError, match="quiz did not run"):
         knowledge_core.quiz({}, settings=s, now=at(21, 30), embedder=down)
+
+
+def test_a_handler_leaves_no_background_mark_on_the_thread_that_ran_it(s, monkeypatch):
+    from waggle import budget
+    monkeypatch.setattr(ingest, "run_due", lambda **k: {"memory": {"ok": 1}})
+    assert not budget.is_background()
+    knowledge_core.intake({})
+    assert not budget.is_background()  # a chat turn on this thread afterwards is still interactive
+    seen = []
+    monkeypatch.setattr(ingest, "run_due", lambda **k: seen.append(budget.is_background()) or {})
+    knowledge_core.intake({})
+    assert seen == [True]
