@@ -11,6 +11,8 @@
 # the core, the watchdog, PC voice, the dashboard and the Hermes gateway (which also starts the dashboard).
 param([string]$Branch = "overnight", [switch]$SkipCanary)
 $ErrorActionPreference = "Stop"
+# taskkill writes "not found" to stderr when a child already went with its parent: harmless, never fatal.
+function Stop-Tree($id) { & cmd.exe /c "taskkill /PID $id /T /F >nul 2>&1" | Out-Null }
 $live = Join-Path $env:USERPROFILE "Claude\waggle"
 Set-Location $live
 
@@ -39,7 +41,7 @@ if ($verify.Trim() -ne "clean") { throw "guard verify is not clean: $verify" }
 Step "restart the watchdog first (it must know the new code before the core goes down)"
 Stop-ScheduledTask -TaskName "Waggle Core Watchdog" -ErrorAction SilentlyContinue
 Get-CimInstance Win32_Process -Filter "Name='pythonw.exe' or Name='python.exe'" |
-    Where-Object { $_.CommandLine -like "*waggle.core watch*" } | ForEach-Object { & taskkill.exe /PID $_.ProcessId /T /F 2>&1 | Out-Null }
+    Where-Object { $_.CommandLine -like "*waggle.core watch*" } | ForEach-Object { Stop-Tree $_.ProcessId }
 Start-ScheduledTask -TaskName "Waggle Core Watchdog"
 
 Step "restart the core"
@@ -48,13 +50,13 @@ Run py @("-3.14", "-m", "waggle.core", "restart")
 Step "restart PC voice"
 Stop-ScheduledTask -TaskName "Waggle PC Voice" -ErrorAction SilentlyContinue
 Get-CimInstance Win32_Process -Filter "Name='pythonw.exe' or Name='python.exe'" |
-    Where-Object { $_.CommandLine -like "*waggle.pcvoice*" } | ForEach-Object { & taskkill.exe /PID $_.ProcessId /T /F 2>&1 | Out-Null }
+    Where-Object { $_.CommandLine -like "*waggle.pcvoice*" } | ForEach-Object { Stop-Tree $_.ProcessId }
 $off = Test-Path (Join-Path $env:USERPROFILE ".waggle\OFF")
 if (-not $off) { Start-ScheduledTask -TaskName "Waggle PC Voice" }
 
 Step "restart the dashboard and the gateway"
 Get-CimInstance Win32_Process -Filter "Name='pythonw.exe' or Name='python.exe'" |
-    Where-Object { $_.CommandLine -like "*waggle\dashboard.py*" } | ForEach-Object { & taskkill.exe /PID $_.ProcessId /T /F 2>&1 | Out-Null }
+    Where-Object { $_.CommandLine -like "*waggle\dashboard.py*" } | ForEach-Object { Stop-Tree $_.ProcessId }
 & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $live "tools\restart-gateway.ps1")
 if ($LASTEXITCODE) { throw "gateway restart failed" }
 

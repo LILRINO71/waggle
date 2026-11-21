@@ -4,6 +4,8 @@
 # started by hand kept running the old plugin, so a deploy looked done and was not.
 param([int]$TimeoutS = 120)
 $ErrorActionPreference = "Stop"
+# taskkill writes "not found" to stderr when a child already went with its parent: harmless, never fatal.
+function Stop-Tree($id) { & cmd.exe /c "taskkill /PID $id /T /F >nul 2>&1" | Out-Null }
 $hermesHome = Join-Path $env:USERPROFILE ".hermes"
 $log = Join-Path $hermesHome "logs\gateway.log"
 
@@ -17,7 +19,7 @@ $oldIds = $old | ForEach-Object { $_.ProcessId }
 try { & (Join-Path $hermesHome "bin\hermes.exe") gateway stop --yes | Out-Null } catch {}
 Start-Sleep -Seconds 3
 foreach ($p in Get-Gateways) {
-    if ($oldIds -contains $p.ProcessId) { & taskkill.exe /PID $p.ProcessId /T /F 2>&1 | Out-Null }
+    if ($oldIds -contains $p.ProcessId) { Stop-Tree $p.ProcessId }
 }
 $startedAt = Get-Date
 Start-ScheduledTask -TaskName "Waggle Gateway"
