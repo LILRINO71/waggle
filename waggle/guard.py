@@ -255,7 +255,12 @@ def _glob(path, pattern, cross):
             else:
                 out.append(re.escape(c))
             i += 1
-        rx = _GLOB_MEMO[pattern] = re.compile("".join(out) + r"\Z")
+        try:
+            rx = re.compile("".join(out) + r"\Z")
+        except re.error:  # bracket text that is no valid character class ("[biobuzz-robot]"): the shell takes it literally too
+            rx = re.compile("".join(".*" if t == "**" else "[^/]*" if t == "*" else "[^/]" if t == "?" else re.escape(t)
+                                    for t in re.findall(r"\*\*|.", pattern, re.S)) + r"\Z")
+        _GLOB_MEMO[pattern] = rx
     return bool(rx.match(path))
 
 

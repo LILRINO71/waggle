@@ -2008,3 +2008,12 @@ def test_a_test_started_core_under_another_temp_home_is_not_approved_not_frozen(
     assert runtime.check_guard(now=100)["status"] == "not approved"
     (world.repo / "waggle" / "policy.py").write_text("# tampered\n")
     assert runtime.check_guard(now=200)["status"] == "frozen"
+
+def test_bracket_text_that_is_no_file_pattern_does_not_break_the_check():
+    """A sed replacement such as [biobuzz-robot, x] is no valid character class (range z-r). The check used to
+    raise on it, and every such command then asked for approval."""
+    from waggle import guard
+    cmd = "cd Projects && mv 'A note.md' ../Archive/ && sed -i 's/repo: x/repo: [biobuzz-robot, biobuzz-shot-sim]/' 'Note.md'"
+    assert guard._glob("waggle/policy.py", "[biobuzz-robot, biobuzz-shot-sim]", False) is False
+    assert guard._glob("[biobuzz-robot]", "[biobuzz-robot]", False) is True
+    assert guard.shell_hit(cmd) is None
