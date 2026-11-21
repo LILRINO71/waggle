@@ -173,7 +173,12 @@ def build_context(chat, text, voice=False, settings=None, since=None):
             events.log("context_error", source=name, error=str(e)[:200])
 
     from . import memory, projects
-    add("memory", lambda: memory.context_block(text or "")[:4000], budget=CONTEXT_BUDGET_S)
+    # The small maintained core (who the user is, current focus, commitments, deadlines, yesterday) is read from
+    # files and the facts table: always there, never waiting on the embedder. Retrieval is gated: only notes that
+    # clearly stand out for this message, none at all otherwise, and the memory tools (note_read, related_to,
+    # vault_search, recall) are there for the rest.
+    add("core", lambda: memory.safe_core_block(settings)[:6500])
+    add("memory", lambda: memory.retrieval_block(text or "", settings, session=chat)[:4500], budget=CONTEXT_BUDGET_S)
     add("projects", lambda: projects.context_for(text or "")[:2000])
     add("graph", lambda: __import__("waggle.graph", fromlist=["x"]).context_for(text))
     add("recall", lambda: traces.context_for(text))

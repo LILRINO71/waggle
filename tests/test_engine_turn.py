@@ -235,11 +235,11 @@ def test_recent_background_results_reach_the_next_context(settings):
 def test_slow_notes_search_is_left_out_of_the_context_not_waited_for(settings, monkeypatch):
     from waggle import memory
     monkeypatch.setattr(chat_engine, "CONTEXT_BUDGET_S", 0.2)
-    monkeypatch.setattr(memory, "context_block", lambda text: time.sleep(3) or "A NOTE")
+    monkeypatch.setattr(memory, "retrieval_block", lambda text, *a, **k: time.sleep(3) or "A NOTE")
     t = time.time()
     ctx = chat_engine.build_context("telegram:5", "hello", False, settings)
     assert time.time() - t < 1.5 and "A NOTE" not in ctx and "<waggle_context>" in ctx
-    monkeypatch.setattr(memory, "context_block", lambda text: "A NOTE")
+    monkeypatch.setattr(memory, "retrieval_block", lambda text, *a, **k: "A NOTE")
     assert "A NOTE" in chat_engine.build_context("telegram:5", "hello", False, settings)
 
 

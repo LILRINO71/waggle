@@ -32,7 +32,7 @@ from .config import Settings, data_path
 
 FOLDER_TYPE = {"Projects": "project", "People": "person", "Ideas": "idea", "Objectives": "objective",
                "Research": "research", "Me": "profile", "Jobs": "build", "Routines": "routine", "Agents": "agent"}
-SKIP_FOLDERS = {"Journal", "Inbox", ".obsidian", "Waggle"}
+SKIP_FOLDERS = {"Journal", "Inbox", ".obsidian", "Waggle", "Archive", "Quarantine"}  # archives are not knowledge
 TYPES = {"person", "project", "decision", "idea", "objective", "research", "profile", "build", "routine", "agent",
          "tool", "place", "org", "topic", "event", "note"}
 
@@ -304,12 +304,12 @@ def _good_entity(name):
 
 def extract_from_traces(since=None, settings=None, chat=None, max_turns=40):
     """Read recent user turns with the local model; add entities/relations; file decisions into project notes."""
-    from . import traces
+    from . import learn
     s = settings or Settings.load()
     con = _db()
     last = con.execute("SELECT v FROM meta WHERE k='traces_until'").fetchone()
     since = since if since is not None else float(last["v"]) if last else time.time() - 86400
-    rows = [r for r in traces.all_traces(since, limit=max_turns) if not str(r.get("session", "")).startswith(
+    rows = [r for r in learn.user_turns(since, limit=max_turns) if not str(r.get("session", "")).startswith(
         ("objective-", "routine-")) and len(r.get("request") or "") > 15][::-1]
     if not rows:
         con.close()

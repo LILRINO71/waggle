@@ -7,7 +7,7 @@ from waggle import learning, prompts, router, skills, traces
 
 
 def _agent_turn(request, tools, ok=True, feedback=0):
-    tid = traces.record(request, route="act", model="claude-haiku-5-5", reply="done", ok=ok,
+    tid = traces.record(request, platform="telegram", route="act", model="claude-haiku-5-5", reply="done", ok=ok,
                         steps=[{"tool": t, "ok": True} for t in tools])
     if feedback:
         traces.set_feedback(tid, feedback, "no, wrong folder" if feedback < 0 else "")
@@ -16,7 +16,7 @@ def _agent_turn(request, tools, ok=True, feedback=0):
 
 def test_analyze_finds_corrections_failures_and_speed():
     _agent_turn("sort my downloads", ["Glob", "Bash"], feedback=-1)
-    traces.record("open the browser", route="act", reply="I can't do that", ok=True,
+    traces.record("open the browser", platform="telegram", route="act", reply="I can't do that", ok=True,
                   steps=[{"tool": "mcp__waggle__hermes_tool", "ok": False, "result": "timeout"},
                          {"tool": "Bash", "ok": False, "denied": True}], latency_s=12)
     an = learning.analyze(7)

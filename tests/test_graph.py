@@ -44,7 +44,7 @@ def test_record_decision_files_into_project_and_dedupes(settings):
 
 def test_extract_from_traces_with_fake_model(settings):
     _seed(settings)
-    traces.record("let's go with the ramp transfer on the robot build, Arjun will CAD it", session="tg-1")
+    traces.record("let's go with the ramp transfer on the robot build, Arjun will CAD it", session="tg-1", platform="telegram")
     traces.record("background objective step that should be skipped entirely", session="objective-9")
     seen = []
 
@@ -78,7 +78,7 @@ def test_main_is_silent(settings, capsys):
         raise ConnectionError("ollama down")
     ollama.chat_json, real = down, ollama.chat_json
     try:
-        traces.record("a long enough message about the robot build", session="cli-1")
+        traces.record("a long enough message about the robot build", session="cli-1", platform="telegram")
         graph.main()
     finally:
         ollama.chat_json = real
@@ -86,7 +86,7 @@ def test_main_is_silent(settings, capsys):
 
 
 def _extract(settings, msg, out):
-    traces.record(msg, session="tg-7")
+    traces.record(msg, session="tg-7", platform="telegram")
     return graph.extract_from_traces(settings=settings, chat=lambda m: out)
 
 

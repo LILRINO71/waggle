@@ -46,6 +46,7 @@ CRON_JOBS = [  # (name, schedule, script, extra argv, module)
     ("waggle-learn", "0 19 * * 0", "waggle_learn.py", "", "learning"),  # weekly: traces -> skills, prompt tuning
     ("waggle-routines", "every 5m", "waggle_routines.py", "", "routines"),  # routines + objectives supervisor
     ("waggle-graph", "0 */6 * * *", "waggle_graph.py", "", "graph"),  # knowledge graph from vault + chats (local)
+    ("waggle-ingest", "every 1h", "waggle_ingest.py", "", "ingest"),  # thin: ingest.run_due() decides what is due
 ]
 
 

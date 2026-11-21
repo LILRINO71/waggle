@@ -17,7 +17,7 @@ from .config import Settings, data_path
 
 ICON = {"route": "💬", "screen_look": "🖥️", "desktop": "🖱️", "call": "📞", "job": "🔨", "selfbuild": "🛠️",
         "web_search": "🔎", "notify": "🔔", "finding": "💡", "review": "🧐", "project_update": "📁",
-        "feedback": "👍", "learn": "🧠"}
+        "feedback": "👍", "learn": "🧠", "ingest": "📥"}
 STATUS_COLOR = {"active": "4", "planned": "6", "paused": "3", "done": "5"}  # canvas colours
 JOB_COLOR = {"running": "4", "queued": "3", "paused": "2", "done": "5", "failed": "1"}
 
@@ -66,6 +66,24 @@ def describe(e):
         return "Second opinion on an answer" + (" (fixed it)" if e.get("ran") and not e.get("ok") else "")
     if k == "project_update":
         return f"{'Added' if e.get('action') == 'create' else 'Updated'} project {e.get('project')}"
+    if k == "learn":
+        what = (e.get("text") or "")[:70]
+        if e.get("action") == "filed":
+            return f"Learned: {what}"
+        if e.get("action") == "rejected":
+            return f"Set aside: {what} ({(e.get('reason') or '')[:40]})"
+        return f"{(e.get('action') or 'learning').replace('_', ' ')}: {what}".strip(": ")
+    if k == "ingest":
+        j = e.get("jobs") or {}
+        mem, rep = j.get("memory") or {}, j.get("repos") or {}
+        bits = []
+        if mem.get("added") or mem.get("updated"):
+            bits.append(f"{mem.get('added', 0) + mem.get('updated', 0)} memory notes")
+        if rep.get("new_commits"):
+            bits.append(f"{rep['new_commits']} new commits")
+        if (j.get("digest") or {}).get("distilled"):
+            bits.append("today's conversations")
+        return "Read your sources" + (": " + ", ".join(bits) if bits else " (nothing new)")
     return k or "event"
 
 
@@ -132,7 +150,16 @@ def snapshot(settings=None, now=None):
                   "calls": sum(e.get("kind") == "call" and e.get("ok") for e in todays)},
         "quota_pct": q.get("window_pct"), "projects": projs, "learned": learned,
         "calls_ready": call.configured(), "routines": rts, "learning": learning, "objectives": objs,
+        "growth": _growth(),
     }
+
+
+def _growth(days=7):
+    try:
+        from . import kstore
+        return kstore.growth(days)
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def render_md(snap, settings=None):
@@ -194,6 +221,14 @@ def render_md(snap, settings=None):
         lines += [f"- {e.get('action', '').replace('_', ' ')} {ago(e.get('time', now), now)}"
                   for e in lr.get("learned_events", [])]
         lines += ["- Full report: [[Learning]] · live view: [Command Center](http://127.0.0.1:8897)"]
+    if snap.get("growth"):
+        lines += ["", "## 📈 Growth", "| Day | Notes | Facts | Learned | Quiz | Skills used |",
+                  "|---|---|---|---|---|---|"]
+        for g in snap["growth"]:
+            q = g.get("quiz_score")
+            lines.append(f"| {g['day'][5:]} | {g.get('notes', '')} | {g.get('facts_active', '')} | "
+                         f"{g.get('facts_filed', 0)} | {'' if q is None else f'{q:.0%}'} | {g.get('skills_used', 0)} |")
+        lines.append("- Details: [[Today I learned]] · [[Upcoming]]")
     lines += ["", "## 🧠 Recently learned about you"]
     lines += [f"- {l}" for l in snap["learned"]] or ["- Nothing new yet."]
     lines += ["", "## ✅ Finished builds"]
