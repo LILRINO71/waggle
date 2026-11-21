@@ -207,3 +207,86 @@ def test_a_gateway_transcript_has_no_numbers_so_it_is_not_confident(settings):
     text = '"Delete the old backups"\n[User sent audio: C:\\cache\\audio_4.ogg]'
     rec, api, seen = voice_turn_of(settings, text, kind="marker")
     assert trace_voice(rec)["stt_confident"] is False
+
+
+# ---- H3: the written reply starts with what was heard ---------------------------------------------------------
+
+def written(rec, api):
+    return api.messages[rec.message_ids[0]]
+
+
+def test_the_written_reply_to_a_voice_turn_starts_with_the_heard_line(settings, monkeypatch):
+    fake_transcribe(monkeypatch, "Um, remind me to call Sam in ten minutes.")
+    rec, api, seen = voice_turn_of(settings, "")
+    assert written(rec, api) == ('Heard: "Remind me to call Sam in ten minutes."\n\n'
+                                 "The reminder is set for ten minutes from now.")
+
+
+def test_the_heard_line_is_never_spoken(settings, monkeypatch):
+    said = []
+    monkeypatch.setattr(voice_reply, "synth_wav", lambda text, out, v, sp, t: said.append(text) or Path(out).write_bytes(b"RIFF") or 3.0)
+    fake_transcribe(monkeypatch, "Remind me to call Sam.")
+    rec, api, seen = voice_turn_of(settings, "")
+    assert said == ["Done, sir."] and "Heard" not in said[0]
+    assert "Heard" not in seen["prompt"]  # nor does the model see it
+
+
+def test_a_typed_turn_has_no_heard_line(settings):
+    rec, api, seen = voice_turn_of(settings, "", reply="It is three o'clock.", kind="text", typed="what time is it?")
+    assert written(rec, api) == "It is three o'clock." and "heard_line" not in (rec.voice or {})
+
+
+def test_a_long_transcript_is_cut_to_two_hundred_characters_with_an_ellipsis():
+    line = chat_engine.heard_line("word " * 100)
+    quoted = line[len('Heard: "'):-1]
+    assert len(quoted) == 200 and quoted.endswith("\u2026") and not quoted[:-1].endswith(" ")
+    assert chat_engine.heard_line("short one") == 'Heard: "short one"'
+    assert chat_engine.heard_line("x" * 200) == 'Heard: "' + "x" * 200 + '"'  # exactly 200 is not cut
+    assert chat_engine.heard_line("   ") == ""
+
+
+def test_the_record_keeps_the_answer_and_reads_claims_from_it_alone(settings, monkeypatch):
+    fake_transcribe(monkeypatch, "Open notes.txt and tell me what is in it.")
+    rec, api, seen = voice_turn_of(settings, "", reply="SPOKEN: It is empty, sir.\nANSWER:\nThe file is empty.")
+    row = traces.get(rec.trace_id)
+    assert row["reply"] == "The file is empty." and rec.reply == "The file is empty."
+    assert rec.claims is None  # the user's file name in the Heard line is not something Waggle claims to have made
+    assert written(rec, api).startswith('Heard: "Open notes.txt')
+
+
+def test_an_undelivered_voice_reply_goes_to_the_outbox_with_its_heard_line(settings, monkeypatch):
+    from waggle.core import outbox
+    fake_transcribe(monkeypatch, "Remind me to call Sam.")
+
+    class Down(BotApiDelivery):
+        def post(self, text):
+            return None
+    settings.edit_interval_s = 0.05
+    sess = ChatSession("telegram:42", settings=settings, popen=FakeClaude(lambda proc, t: proc.answer(REPLY)),
+                       claude="claude")
+    rec = chat_engine.handle_inbound("telegram:42", "", kind="voice", audio="C:/cache/a.ogg", settings=settings,
+                                     session=sess, delivery=Down("42", FakeBotApi()))
+    assert rec.outbox_id is not None
+    body = outbox.get(rec.outbox_id)["body"]
+    assert body == 'Heard: "Remind me to call Sam."\n\nThe reminder is set for ten minutes from now.'
+
+
+def test_a_direct_reply_to_a_voice_turn_also_starts_with_the_heard_line(settings, monkeypatch):
+    fake_transcribe(monkeypatch, "Approve zzzz.")
+    rec, api, seen = voice_turn_of(settings, "")
+    text = written(rec, api)
+    assert text.startswith('Heard: "Approve zzzz."\n\n') and "don't have an approval" in text
+
+
+def test_a_gateway_transcript_gets_the_line_with_the_cleaned_words(settings):
+    text = '"Um, set a timer for, uh, five minutes"\n[User sent audio: C:\\cache\\audio_5.ogg]'
+    rec, api, seen = voice_turn_of(settings, text, kind="marker")
+    assert written(rec, api).startswith('Heard: "Set a timer for, five minutes"\n\n')
+
+
+def test_a_voice_note_that_could_not_be_transcribed_has_nothing_to_show(settings, monkeypatch):
+    monkeypatch.setattr(chat_engine.stt, "transcribe", lambda path, **kw: {
+        "ok": False, "text": "", "error": "no speech", "seconds": 0.5, "load_s": 0.0, "audio_s": 0.0,
+        "source": "fake", "confidence": stt.confidence([])})
+    rec, api, seen = voice_turn_of(settings, "")
+    assert "Heard" not in written(rec, api) and "couldn't make out" in written(rec, api)

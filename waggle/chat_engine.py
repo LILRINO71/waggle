@@ -329,6 +329,10 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
     t0 = t0 or time.time()
     rec = TurnRecord(chat=chat, text=text, origin=origin or origin_for(platform), platform=platform or "")
     rec.voice = dict(voice_info or {})
+    if voice:
+        heard = heard_line(rec.voice.get("transcript_cleaned") or text)
+        if heard:
+            rec.voice["heard_line"] = heard  # shown at the top of the written reply, never spoken
     vr = None
     if voice and getattr(delivery, "can_voice", False):  # a chat that takes voice messages: spoken answer + text
         vr = voice_reply.VoiceReply(data_path("voice_out"), voice=s.voice_note_voice, speed=s.voice_note_speed,
@@ -359,7 +363,8 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
         try:
             sess = session or pool(s).get(chat)
             t_model = time.time()
-            res = sess.turn(message, on_text=vr.feed if vr else writer.update, on_tool=None if vr else writer.tool,
+            res = sess.turn(message, on_text=vr.feed if vr else _after_heard(writer.update, rec.voice.get("heard_line")),
+                            on_tool=None if vr else writer.tool,
                             origin=rec.origin)
             rec.voice["model_s"] = round(time.time() - t_model, 2) if vr else None
         except Exception as e:  # a bug in the session layer is a failed turn, never a silent one
@@ -406,7 +411,7 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
     rec.reply = reply
     if vr:
         send_spoken(rec, vr, delivery, t0)
-    out = writer.finish(reply)
+    out = writer.finish(shown_reply(rec))
     keeper.stop()
     rec.delivered = bool(out["delivered"])
     rec.message_ids = list(out.get("message_ids") or [])
@@ -452,11 +457,37 @@ def send_spoken(rec, vr, delivery, t0):
         events.log("engine_error", stage="voice_ledger", error=str(e)[:200])
 
 
+HEARD_MAX = 200
+
+
+def heard_line(transcript):
+    """The first line of the written reply to a voice turn: what Waggle heard, in quotes, cut to HEARD_MAX
+    characters with an ellipsis. "" when there is nothing to show."""
+    t = " ".join(str(transcript or "").split())
+    if not t:
+        return ""
+    if len(t) > HEARD_MAX:
+        t = t[:HEARD_MAX - 1].rstrip() + "…"
+    return f'Heard: "{t}"'
+
+
+def shown_reply(rec):
+    """The reply as the user sees it: a voice turn's text starts with its Heard line and a blank line; the record
+    keeps the answer alone (its claims are read from the answer, not from the user's own words)."""
+    line = rec.voice.get("heard_line") if rec.voice else ""
+    return f"{line}\n\n{rec.reply}" if line else rec.reply
+
+
+def _after_heard(update, line):
+    """A streaming callback that shows the Heard line above the text so far (no line: the callback itself)."""
+    return (lambda text: update(f"{line}\n\n{text}")) if line else update
+
+
 def queue_reply(rec, address=None):
     """Put an undelivered reply into the core outbox (once per turn); returns the row id, or None."""
     from waggle.core import outbox
     try:
-        return outbox.enqueue("text", plain_text(rec.reply), chat=rec.chat, idem_key=f"turn:{rec.turn_id}",
+        return outbox.enqueue("text", plain_text(shown_reply(rec)), chat=rec.chat, idem_key=f"turn:{rec.turn_id}",
                               origin="turn", meta={"kind": "reply", "turn_id": rec.turn_id, "platform": rec.platform,
                                                    "address": address or "", "turn_origin": rec.origin,
                                                    "partial_ids": rec.message_ids})
@@ -626,6 +657,8 @@ def handle_inbound(chat, text, *, kind="text", media=None, platform="telegram", 
     def direct(reply, route, failure_notice=False):
         keeper.stop()
         chat_store.touch_chat(chat, platform, address=address, user=True)
+        line = heard_line(vinfo.get("transcript_cleaned") or body) if voice and body else ""
+        reply = f"{line}\n\n{reply}" if line else reply  # a voice turn's written reply starts with what was heard
         out = StreamWriter(d, stream=False).finish(reply)
         rec = record_direct(chat, body, reply, platform=platform, origin=origin, t0=t0, route=route,
                             delivered=out["delivered"], delivery=getattr(d, "name", "delivery"),

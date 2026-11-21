@@ -15,6 +15,7 @@ from waggle.chat_session import ChatSession
 from waggle.core import ledger
 from waggle.delivery import BotApiDelivery, CollectDelivery
 
+HEARD = "Heard: \"what's the weather like?\"\n\n"  # the first lines of a voice turn's written reply
 REPLY = ("SPOKEN: It is sunny and warm today. Bring a light jacket for the evening.\n"
          "ANSWER:\nToday is sunny, 72 degrees, with a cool evening.\n\n- Jacket for tonight\n- Sunscreen")
 
@@ -145,7 +146,8 @@ def test_voice_message_first_then_the_full_text(settings, audio):
     assert voice[5] in (6, 7)  # the duration the speech server reported, rounded
     assert api.sent_voice and api.sent_voice.startswith(b"OggS")
     text = api.messages[rec.message_ids[0]]
-    assert text.startswith("Today is sunny") and "SPOKEN" not in text and "ANSWER" not in text
+    assert text.startswith(HEARD + "Today is sunny") and "SPOKEN" not in text and "ANSWER" not in text
+    assert "Heard" not in audio["say"][0][0]  # the Heard line is never spoken
     assert audio["say"][0][0] == "It is sunny and warm today. Bring a light jacket for the evening."
     assert audio["say"][0][1:] == (settings.voice_note_voice, settings.voice_note_speed)
     assert "<voice_reply_format>" in fake.procs[0].inputs[0]
@@ -177,7 +179,7 @@ def test_no_spoken_part_means_the_rule_builds_one_from_the_answer(settings, audi
     rec, api, _ = voice_turn_of(settings, "The build passed. All 40 tests ran. Nothing failed. Deploy at five.")
     assert audio["say"][0][0] == "The build passed. All 40 tests ran. Nothing failed."
     assert sends(api) == ["send_voice", "send_message"] and extra(rec)["spoken_from_model"] is False
-    assert api.messages[rec.message_ids[0]] == "The build passed. All 40 tests ran. Nothing failed. Deploy at five."
+    assert api.messages[rec.message_ids[0]] == HEARD + "The build passed. All 40 tests ran. Nothing failed. Deploy at five."
 
 
 @pytest.mark.parametrize("what,setup,why", [
@@ -238,7 +240,7 @@ def test_a_typed_message_never_gets_audio(settings, audio):
 def test_a_chat_that_cannot_take_voice_keeps_the_old_behaviour(settings, audio):
     d = CollectDelivery()
     rec, _, fake = voice_turn_of(settings, "Short answer.", delivery=d)
-    assert audio["say"] == [] and d.text == "Short answer." and "<voice_reply_format>" not in fake.procs[0].inputs[0]
+    assert audio["say"] == [] and d.text == HEARD + "Short answer." and "<voice_reply_format>" not in fake.procs[0].inputs[0]
 
 
 def test_a_failure_notice_is_text_only(settings, audio):
