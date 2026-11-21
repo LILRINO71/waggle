@@ -31,6 +31,8 @@ from pathlib import Path
 from . import events, kstore, projects, vault
 from .config import CONFIG_FILE, Settings, data_path
 
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)  # no console flash when run under pythonw
+
 MIRROR_DIR = "Knowledge/Claude Code"
 UPCOMING_NOTE = "Knowledge/Upcoming"
 ARCHIVE = "Archive"
@@ -204,7 +206,7 @@ def memory_notes_mentioning(names, settings=None):
 
 def git(args, cwd, timeout=30):
     r = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, encoding="utf-8",
-                       errors="replace", timeout=timeout)
+                       errors="replace", timeout=timeout, creationflags=NO_WINDOW)
     if r.returncode:
         raise RuntimeError((r.stderr or r.stdout).strip()[:200])
     return r.stdout
@@ -485,7 +487,7 @@ def gh_json(args, timeout=40):
     if not exe:
         raise RuntimeError("gh CLI not found")
     r = subprocess.run([exe, *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
-                       timeout=timeout)
+                       timeout=timeout, creationflags=NO_WINDOW)
     if r.returncode:
         raise RuntimeError((r.stderr or r.stdout).strip()[:200])
     return json.loads(r.stdout or "null")
