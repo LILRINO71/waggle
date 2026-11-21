@@ -138,7 +138,8 @@ def transcribe(path, *, idle_s=None, loader=None):
         segments, info = model.transcribe(
             samples, beam_size=5, condition_on_previous_text=False, vad_filter=True,
             vad_parameters={"min_silence_duration_ms": VAD_MIN_SILENCE_MS},
-            no_speech_threshold=NO_SPEECH_THRESHOLD, log_prob_threshold=LOGPROB_THRESHOLD)
+            no_speech_threshold=NO_SPEECH_THRESHOLD, log_prob_threshold=LOGPROB_THRESHOLD,
+            initial_prompt=vocabulary())
         parts = [s.text.strip() for s in list(segments) if _keep(s)]  # the decode runs while iterating
         out["text"] = " ".join(p for p in parts if p).strip()
         dur = float(getattr(info, "duration", 0.0) or 0.0)
@@ -153,3 +154,28 @@ def transcribe(path, *, idle_s=None, loader=None):
         _start_watcher(IDLE_UNLOAD_S if idle_s is None else idle_s)
     out["seconds"] = round(time.time() - t0, 2)
     return out
+
+_vocab = {"t": 0.0, "text": ""}
+
+
+def vocabulary(settings=None, now=None):
+    """Names the user is likely to say (their project notes plus a few fixed words), as a hint for the recogniser.
+    Without it project names come out as ordinary words ("Waggle repo" was heard as "bagel repo")."""
+    import time as _time
+    from pathlib import Path
+    now = _time.time() if now is None else now
+    if settings is None and _vocab["text"] and now - _vocab["t"] < 600:
+        return _vocab["text"]
+    names = ["Waggle", "Obsidian vault", "GitHub", "Telegram", "Claude"]
+    try:
+        if settings is None:
+            from .config import Settings
+            settings = Settings.load()
+        root = Path(str(getattr(settings, "vault", "") or "")) / "Projects"
+        names += sorted(p.stem for p in root.glob("*.md"))[:40]
+    except Exception:  # a hint only: never fail a transcription over it
+        pass
+    seen = list(dict.fromkeys(n.strip() for n in names if n and n.strip()))
+    text = ("Names that may come up: " + ", ".join(seen) + ".")[:600]
+    _vocab.update(t=now, text=text)
+    return text

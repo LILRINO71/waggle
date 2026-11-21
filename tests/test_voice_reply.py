@@ -418,3 +418,12 @@ def test_stt_decodes_with_the_real_ffmpeg_to_sixteen_khz_samples(tmp_path):
         w.writeframes(b"\0\0" * 24000)
     samples = stt.decode(wav)
     assert 15900 <= len(samples) <= 16100 and str(samples.dtype) == "float32"
+
+def test_recogniser_is_given_the_users_project_names(tmp_path):
+    from types import SimpleNamespace
+    from waggle import stt
+    (tmp_path / "Projects").mkdir()
+    (tmp_path / "Projects" / "Kalshi Claude Desk.md").write_text("x", encoding="utf-8")
+    hint = stt.vocabulary(SimpleNamespace(vault=str(tmp_path)))
+    assert "Waggle" in hint and "Kalshi Claude Desk" in hint and len(hint) <= 600
+    assert stt.vocabulary(SimpleNamespace(vault=str(tmp_path / "missing"))).startswith("Names that may come up: Waggle")
