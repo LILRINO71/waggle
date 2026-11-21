@@ -61,6 +61,9 @@ class Settings:
     max_verifications_per_day: int = 4
     max_calls_per_day: int = 2
     vision_model: str = "gemma4"
+    # The Drop folder (waggle/dropbox_ingest.py): summaries and the weekly tidy use this local Ollama model (empty =
+    # local_model); pictures are described by vision_model. Claude is never used for dropped files.
+    drop_local_model: str = ""
     max_selfbuilds_per_day: int = 3
     ntfy_server: str = "https://ntfy.sh"
     ntfy_topic: str = ""  # generated on first use; private channel for urgent push alerts
