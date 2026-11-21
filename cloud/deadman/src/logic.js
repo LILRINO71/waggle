@@ -76,11 +76,13 @@ export function pickReminders(snap, now, done) {
 }
 
 // Should the "down" alert go out now? lastBeat: ms of the last beat; down: the stored alert, if any.
+// Only when the last beat itself fell in waking hours, it is waking hours now, both are on the same local day
+// (so the night is not inside the outage) and more than 20 min passed. A PC switched off for the night never alerts.
 export function shouldAlertDown({ now, lastBeat, down, tz, startMin, endMin }) {
   if (!lastBeat || down) return false;
-  if (!isWaking(now, tz, startMin, endMin)) return false;
-  const sinceWake = (clock(now, tz).minutes - startMin) * MIN; // an overnight outage counts from wake-up
-  return Math.min(now - lastBeat, sinceWake) > DOWN_AFTER_MS;
+  if (!isWaking(now, tz, startMin, endMin) || !isWaking(lastBeat, tz, startMin, endMin)) return false;
+  if (clock(now, tz).day !== clock(lastBeat, tz).day) return false;
+  return now - lastBeat > DOWN_AFTER_MS;
 }
 
 export function shouldSendBack({ now, down }) {

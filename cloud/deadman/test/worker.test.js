@@ -165,19 +165,51 @@ test("down alert once; back note only after an outage over an hour", async () =>
   assert.ok(textOf(f.calls[4]).startsWith("Waggle is back"));
 });
 
-test("down alert rules: sleeping hours, overnight outage counts from wake-up, no beat ever", () => {
+test("down alert rules: sleeping hours, an overnight shutdown, no beat ever", () => {
   const s = { tz: TZ, startMin: 420, endMin: 1350 };
-  assert.equal(shouldAlertDown({ now: at("2026-11-22T07:00:00Z"), lastBeat: NOON, down: null, ...s }), false); // 23:00
   const night = at("2026-11-22T06:15:00Z"); // 22:15 on the 21st
-  assert.equal(shouldAlertDown({ now: at("2026-11-22T15:10:00Z"), lastBeat: night, down: null, ...s }), false);
-  assert.equal(shouldAlertDown({ now: at("2026-11-22T15:21:00Z"), lastBeat: night, down: null, ...s }), true);
-  assert.equal(shouldAlertDown({ now: at("2026-11-22T15:21:00Z"), lastBeat: night, down: { since: night }, ...s }), false);
+  assert.equal(shouldAlertDown({ now: at("2026-11-22T07:00:00Z"), lastBeat: NOON, down: null, ...s }), false); // 23:00
+  assert.equal(shouldAlertDown({ now: at("2026-11-22T06:40:00Z"), lastBeat: night, down: null, ...s }), false); // 22:40
+  assert.equal(shouldAlertDown({ now: at("2026-11-22T15:21:00Z"), lastBeat: night, down: null, ...s }), false); // next morning
+  assert.equal(shouldAlertDown({ now: at("2026-11-22T23:00:00Z"), lastBeat: night, down: null, ...s }), false); // next afternoon
+  assert.equal(shouldAlertDown({ now: NOON + 21 * MIN, lastBeat: NOON, down: null, ...s }), true);
+  assert.equal(shouldAlertDown({ now: NOON + 21 * MIN, lastBeat: NOON, down: { since: NOON }, ...s }), false);
   assert.equal(shouldAlertDown({ now: NOON, lastBeat: null, down: null, ...s }), false);
   assert.equal(downText(night, at("2026-11-22T15:21:00Z"), TZ), "Waggle is down since 22:15 yesterday");
   assert.equal(shouldSendBack({ now: NOON + 61 * MIN, down: { since: NOON } }), true);
   assert.equal(shouldSendBack({ now: NOON + 60 * MIN, down: { since: NOON } }), false);
   assert.equal(duration(125 * MIN), "2 h 5 min");
   assert.ok(backText(90 * MIN).includes("1 h 30 min"));
+});
+
+test("PC switched off for the night: no down alert, no back note, a reminder still goes out", async () => {
+  const e = env(), f = fakeFetch();
+  const last = at("2026-11-22T06:15:00Z"); // 22:15, last beat before 22:30
+  const due = at("2026-11-22T15:00:00Z"); // 07:00 next morning
+  await beat(e, last, [{ id: "r1", at: secs(due), text: "wake up" }], f);
+  for (let t = last + 5 * MIN; t < due; t += 5 * MIN) await runCron(e, t, f); // every cron all night
+  assert.equal(f.calls.filter((c) => textOf(c).includes("down")).length, 0);
+  // reminder at 07:00 goes out (PC silent), still no down alert
+  const out = await runCron(e, due + 5 * MIN, f);
+  assert.deepEqual(out.sent, ["r1"]);
+  assert.equal(out.down, false);
+  // PC starts at 09:00: no back note
+  const res = await (await beat(e, due + 120 * MIN, [], f)).json();
+  assert.equal(res.back, false);
+  assert.equal(f.calls.filter((c) => /down|back/.test(textOf(c))).length, 0);
+});
+
+test("dying at 15:00 gives one down alert, and a back note after more than an hour", async () => {
+  const e = env(), f = fakeFetch();
+  const last = at("2026-11-21T23:00:00Z"); // 15:00 LA
+  await beat(e, last, [], f);
+  for (let t = last + 5 * MIN; t <= last + 60 * MIN; t += 5 * MIN) await runCron(e, t, f);
+  const alerts = f.calls.filter((c) => textOf(c).startsWith("Waggle is down"));
+  assert.equal(alerts.length, 2); // one alert, two channels
+  assert.equal(textOf(alerts[0]), "Waggle is down since 15:00");
+  const res = await (await beat(e, last + 90 * MIN, [], f)).json();
+  assert.equal(res.back, true);
+  assert.ok(f.calls.some((c) => textOf(c).startsWith("Waggle is back")));
 });
 
 test("KV writes stay far under 1000 a day: 288 beats and nothing else when idle", async () => {
