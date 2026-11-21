@@ -702,6 +702,8 @@ def cmd_run(args):
         print("the PC voice is already running")
         return 1
     _setup_logging()
+    for old in folder("tmp").glob("*.wav"):  # left by a speech request that timed out before the server wrote it
+        old.unlink(missing_ok=True)
     spk = speaker.Speaker().start()
     sounds = Sounds()
     pv = PcVoice(spk=spk, sounds=sounds, wake=args.wake, dry_wake=args.dry_wake)
