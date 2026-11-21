@@ -539,9 +539,18 @@ class Stream:
             if telegram_copy():
                 run.queue_copy()
             yield _line({"done": True, "status": "done", "spoken": spoken, "text": written,
-                         "turn": run.rec.turn_id})
+                         "turn": run.rec.turn_id, "timings": _timings(run.rec)})
         finally:
             self.close()
+
+
+def _timings(rec):
+    """Seconds the core spent on this turn, for the PC voice's timing line: stt_s (recognising the audio),
+    context_s (building the notes block), model_first_s (the message sent to the model -> its first words)."""
+    voice = (getattr(rec, "voice", None) or {})
+    got = {"stt_s": voice.get("stt_s"), "context_s": voice.get("context_s"),
+           "model_first_s": (getattr(rec, "session", None) or {}).get("model_first_text_s")}
+    return {k: round(float(v), 2) for k, v in got.items() if isinstance(v, (int, float)) and not isinstance(v, bool)}
 
 
 def _serve_stream(headers, rfile, query, accepting, length):

@@ -51,6 +51,7 @@ INTERRUPTED_NOTE = ("Waggle restarted while you were answering this message befo
 INTERRUPTED_LINE = "\n\n(A restart interrupted my first try at this, so I checked what was already done first.)"
 
 CONTEXT_BUDGET_S = 0.8  # the notes search may take this long before the model is asked without it
+VOICE_CONTEXT_BUDGET_S = 0.4  # ...and on a voice turn, where every tenth of a second is heard as waiting
 AVAILABLE_TTL_S = 30.0  # the usage-limit check reads Claude Code's transcripts (0.3 s and growing): once per 30 s
 TYPING_EVERY_S = 4.0  # Telegram shows "typing..." for about 5 s per call
 
@@ -175,9 +176,10 @@ class ContextBlock(str):
     marker = None
 
 
-def build_context(chat, text, voice=False, settings=None, since=None):
+def build_context(chat, text, voice=False, settings=None, since=None, budget_s=None):
     """The per-turn <waggle_context> block (a ContextBlock: a str that also carries `.marker`). Every source is
-    optional: a failing one is skipped, never fatal."""
+    optional: a failing one is skipped, never fatal. budget_s: how long the notes search may take (default
+    CONTEXT_BUDGET_S)."""
     parts = []
     marker = {"v": 1, "core": False, "sources": [], "lessons_checked": False, "lessons": []}
 
@@ -227,7 +229,7 @@ def build_context(chat, text, voice=False, settings=None, since=None):
     # added only when the message contains one of their keywords (at most 3, 600 characters).
     add("core", lambda: memory.safe_core_block(settings)[:6500])
     add("lessons", lessons_step)
-    add("memory", lambda: memory.retrieval_block(text or "", settings, session=chat)[:4500], budget=CONTEXT_BUDGET_S)
+    add("memory", lambda: memory.retrieval_block(text or "", settings, session=chat)[:4500], budget=budget_s or CONTEXT_BUDGET_S)
     add("projects", lambda: projects.context_for(text or "")[:2000])
     add("graph", lambda: __import__("waggle.graph", fromlist=["x"]).context_for(text))
     add("recall", lambda: traces.context_for(text))
@@ -434,8 +436,12 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
         note = (note + " " if note else "") + INTERRUPTED_NOTE
     reply, why = "", ""
     try:
+        t_ctx = time.time()
         ctx = context if context is not None else build_context(
-            chat, text if owner_text is None else owner_text, voice and vr is None, s, since=prev_user)
+            chat, text if owner_text is None else owner_text, voice and vr is None, s, since=prev_user,
+            budget_s=VOICE_CONTEXT_BUDGET_S if voice else None)
+        if voice:
+            rec.voice["context_s"] = round(time.time() - t_ctx, 2)
         rec.context = dict(getattr(ctx, "marker", None) or {"v": 1, "given": True})
     except Exception as e:
         ctx = ""

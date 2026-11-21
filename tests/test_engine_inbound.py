@@ -119,7 +119,7 @@ def test_reap_job(monkeypatch):
     chat_jobs.register_core()
     monkeypatch.setattr(chat_engine.pool(), "reap", lambda now=None, keep=(): ["telegram:9"])
     jobs.enqueue(chat_jobs.REAP_KIND)
-    assert jobs.run_one()["result"] == {"stopped": ["telegram:9"]}
+    assert jobs.run_one()["result"] == {"stopped": ["telegram:9"], "rolled": []}  # rolled: new-day sessions started
 
 
 # ---- handle_inbound --------------------------------------------------------------------------------------------
