@@ -242,6 +242,7 @@ WAGGLE_TOOLS = {
     "routine_remove": (ASK, "deletes a routine"),
     "skill_install": (ASK, "installs community code"),
     "hermes_tool": (ASK, "runs a Hermes tool"),  # decided as the Hermes tool it names (decide() below)
+    "settings": (ASK, "changes Waggle's comfort settings (voice, speed, quiet hours...)"),  # owner turn only (owner_acts)
 }
 WAGGLE_SAFE = {name for name, (action, _why) in WAGGLE_TOOLS.items() if action == ALLOW}
 
@@ -372,6 +373,8 @@ def _base_decide(tool_name, args=None, settings=None, cwd=None):
     if name.startswith("mcp__waggle__"):
         if base == "hermes_tool":
             return _base_decide(str(args.get("name", "")), args.get("args") or {}, settings, cwd)
+        if base == "settings" and args.get("action") == "get":  # reading the comfort settings changes nothing
+            return Decision(ALLOW)
         action, why = WAGGLE_TOOLS.get(base, (ASK, "a Waggle tool the policy does not know"))
         return Decision(action) if action == ALLOW else Decision(ASK, f"Waggle tool {base}: {why}", kind="waggle")
     if name == "computer_use":
@@ -1055,6 +1058,8 @@ def owner_acts(tool_name, args, base, settings=None, cwd=None):
             return [_Act("destroy", ("delete", "edit"), _arg_targets(args), "changing what Waggle knows about you")]
         if b == "routine_remove":
             return [_Act("destroy", ("delete",), _arg_targets(args), "deleting a routine")]
+        if b == "settings":  # comfort settings only (waggle/comfort.py allowlist); the tool refuses the rest itself
+            return [_Act("free", free="your own comfort settings (voice, speed, quiet hours)")]
         if b == "skill_install":
             return [_Act("system", ("run",), _arg_targets(args), "installing a community skill", verbs=("install",))]
         return [_Act("never")]
