@@ -612,8 +612,10 @@ def handle_inbound(chat, text, *, kind="text", media=None, platform="telegram", 
     elif voice and (text or "").strip():  # a transcript that still carries Hermes's media marker: words only
         words, k = voice_turn.parse(text, getattr(s, "voice_fixes", None))
         if k == "voice":
-            vinfo = {"voice": True, "transcript_source": "hermes gateway", "audio_path": voice_turn.audio_path(text)}
-            text = words
+            vinfo = {"voice": True, "transcript_source": "hermes gateway", "audio_path": voice_turn.audio_path(text),
+                     "transcript_raw": voice_turn.parse(text, apply_fixes=False)[0]}
+            text = stt.clean_transcript(words)
+            vinfo["transcript_cleaned"] = text
     body = (text or "").strip()
     extra = media_note(media) if media else ""
     if extra:
@@ -649,7 +651,8 @@ def handle_inbound(chat, text, *, kind="text", media=None, platform="telegram", 
 
 def transcribe_note(path, settings):
     """(transcript, voice info) for a voice note's audio file: the engine's own speech-to-text (waggle/stt.py),
-    with the known mishearings fixed. The info records where the words came from and how long it took."""
+    with the known mishearings fixed and the fillers and false starts taken out (stt.clean_transcript). The info
+    records where the words came from, how long it took, and both the raw and the cleaned transcript."""
     res = stt.transcribe(path)
     info = {"voice": True, "transcript_source": res.get("source") or stt.SOURCE, "audio_path": str(path),
             "stt_s": res.get("seconds"),
@@ -658,7 +661,9 @@ def transcribe_note(path, settings):
         info["stt_error"] = str(res.get("error") or "")[:200]
         events.log("engine_stt_failed", error=info["stt_error"])
         return "", info
-    return voice_turn.fix(res["text"], getattr(settings, "voice_fixes", None)), info
+    cleaned = stt.clean_transcript(voice_turn.fix(res["text"], getattr(settings, "voice_fixes", None)))
+    info.update(transcript_raw=res["text"], transcript_cleaned=cleaned)  # the model reads the cleaned words; both are kept
+    return cleaned, info
 
 
 def _audio_path(media):
