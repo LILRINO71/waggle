@@ -14,7 +14,7 @@ learning and orchestration.
 | 6 | Memory + retrieval | `memory.py`, `vault.py`, `learn.py`, `memory_care.py`, `traces.py` | Embeddings over the vault, facts, recall of past conversations, dedupe |
 | 7 | Learning + evaluation | `learning.py`, `bench/`, `prompts.py` | Analysis, skill discovery, bench-gated prompt optimisation, rollback |
 | 8 | Project awareness | `projects.py`, `proactive.py` | Structured project notes, audit, watchers |
-| 9 | Scheduling | Hermes cron + `routines.py` | 8 Waggle cron jobs; user routines with recovery and quiet monitors |
+| 9 | Scheduling | Core timers (`waggle/core/timers.py`) + `routines.py` | No Waggle jobs left in Hermes cron (`install.py` removes them); user routines with recovery and quiet monitors |
 | 10 | Messaging | Hermes gateway (Telegram), `notify.py` | Tiered notifications, iPhone push via ntfy, quiet hours |
 | 11 | Voice + multimodal | Hermes voice, `voice/kokoro_say.py`, `voice_ack.py`, `screen.py` | Wake word, Kokoro, fillers, local vision |
 | 12 | Desktop + computer control | `desktop.py`, cua-driver via bridge | App targeting, fast screen read, protected windows |

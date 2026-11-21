@@ -605,20 +605,27 @@ def stats():
     return {"nodes": sum(by.values()), "by_type": by, "edges": edges}
 
 
-def main():
-    """Cron entry. Prints nothing: Hermes sends a script job's stdout to the phone."""
+def refresh(settings=None, vault_too=True):
+    """The six-hourly graph pass (core job duty.graph): one-time cleanup, the vault part (skipped when the intake
+    already did it), chat extraction with the local model, stats. Writes graph_last.json and returns it."""
     con = _db()
     if not con.execute("SELECT 1 FROM meta WHERE k='cleanup_v3'").fetchone():
         cleanup(con)
         con.commit()
     con.close()
-    out = {"time": time.time(), "vault": build_from_vault()}
+    out = {"time": time.time(), "vault": build_from_vault(settings) if vault_too else "built by the knowledge intake"}
     try:
-        out["chat"] = extract_from_traces()
+        out["chat"] = extract_from_traces(settings=settings)
     except Exception as e:  # local model down: the vault part still counts
         out["chat"] = {"error": f"{type(e).__name__}: {e}"}
     out["stats"] = stats()
     data_path("graph_last.json").write_text(json.dumps(out), encoding="utf-8")
+    return out
+
+
+def main():
+    """Command line: one full refresh. Prints nothing."""
+    refresh()
 
 
 MCP_TOOLS = [

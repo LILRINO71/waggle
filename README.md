@@ -158,7 +158,7 @@ Every turn leaves a record in `traces.db`: origin, who really answered, timings,
 | Single "Waggle off" command | Not built | `core stop` does not pause the watchdog |
 | End-to-end test client | Not built | Plan step 5; needs the owner's one-time Telegram login |
 | Closed learning loop | Not built | Plan step 7 |
-| Cron jobs moved to core timers | Not built | Plan step 10 |
+| Cron jobs moved to core timers | Built | `waggle/duties_core.py`; `install.py` removes the Hermes entries (backup of jobs.json) |
 | Evaluation suites, autonomous work, self-edits | Not built | Plan steps 11 to 13 |
 
 ## Install and run (Windows)

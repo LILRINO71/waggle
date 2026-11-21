@@ -118,9 +118,30 @@ def check_twilio(c, opener=None):
     return {"ready": True, "missing": "", "facts": facts}
 
 
+OFF_WHY = "phone calls are turned off (turn on: python -m waggle.call enable)"
+
+
+def enabled(settings=None):
+    """The owner's switch for phone calls (config calls_enabled, off by default)."""
+    try:
+        return bool((settings or Settings.load()).calls_enabled)
+    except Exception:  # noqa: BLE001 - an unreadable config means calls stay off
+        return False
+
+
+def set_enabled(on):
+    s = Settings.load()
+    s.calls_enabled = bool(on)
+    s.save()
+    return s.calls_enabled
+
+
 def provisioned(refresh=False, opener=None, now=None):
-    """Can a call be placed at all? Cached (6 h when ready, 30 min otherwise). No credentials -> no network."""
+    """Can a call be placed at all? Cached (6 h when ready, 30 min otherwise). No credentials -> no network.
+    Calls turned off (calls_enabled) -> no network, no event, no cache write: nothing to do and nothing to log."""
     now = now or time.time()
+    if not enabled():
+        return {"ready": False, "missing": OFF_WHY, "checked": now, "facts": {}, "off": True}
     c = creds()
     if not c:
         return {"ready": False, "missing": "calls are not set up: run Setup Calls.bat (free Twilio trial)",
@@ -383,6 +404,9 @@ def main(argv=None):
     if args[:1] == ["due"]:  # old cron entry: scheduled calls are core timers now
         from . import tick
         tick.main([])
+        return 0
+    if args[:1] in (["enable"], ["disable"]):
+        print(json.dumps({"calls_enabled": set_enabled(args[0] == "enable")}))
         return 0
     if args[:1] == ["status"]:
         print(json.dumps(provisioned(refresh=True), indent=1))

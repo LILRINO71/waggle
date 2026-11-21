@@ -73,6 +73,7 @@ class Settings:
     extra_repos: list = field(default_factory=list)
     max_verifications_per_day: int = 4
     max_calls_per_day: int = 2
+    calls_enabled: bool = False  # phone calls (Twilio) are off until `python -m waggle.call enable`; off = no check, no log
     vision_model: str = "gemma4"
     # The Drop folder (waggle/dropbox_ingest.py): summaries and the weekly tidy use this local Ollama model (empty =
     # local_model); pictures are described by vision_model. Claude is never used for dropped files.

@@ -29,41 +29,66 @@ def hermes(*args):
     return r
 
 
-SCRIPT = '''import sys
-sys.path.insert(0, r"{repo}")
-sys.argv = [sys.argv[0]{extra}]
-from waggle.{module} import main
-main()
-'''
-
-CRON_JOBS = [  # (name, schedule, script, extra argv, module)
-    ("waggle-proactive", "every 1h", "waggle_proactive.py", "", "proactive"),
-    ("waggle-digest", "0 8,17 * * *", "waggle_digest.py", ', "digest"', "proactive"),
-    ("waggle-consolidate", "0 18 * * 0", "waggle_consolidate.py", ', "consolidate"', "proactive"),
-    ("waggle-calls", "every 1m", "waggle_calls.py", ', "due"', "call"),  # places "call me in N min" calls
-    ("waggle-hq", "every 1m", "waggle_hq.py", "", "hq"),  # keeps the Obsidian HQ dashboard live
-    ("waggle-brief", "30 7 * * *", "waggle_brief.py", "", "brief"),  # proactive morning brief -> Telegram
-    ("waggle-learn", "0 19 * * 0", "waggle_learn.py", "", "learning"),  # weekly: traces -> skills, prompt tuning
-    ("waggle-routines", "every 5m", "waggle_routines.py", "", "routines"),  # routines + objectives supervisor
-    ("waggle-graph", "0 */6 * * *", "waggle_graph.py", "", "graph"),  # knowledge graph from vault + chats (local)
-    ("waggle-ingest", "every 1h", "waggle_ingest.py", "", "ingest"),  # thin: ingest.run_due() decides what is due
-]
+# Hermes cron entries Waggle used to have. Every one now runs from a core timer (waggle/tick.py,
+# waggle/knowledge_core.py, waggle/duties_core.py) or was only a shim for one, so install removes them.
+RETIRED_CRON = {  # Hermes job name -> (script it had in HERMES_HOME/scripts, the core timers that do its work now)
+    "waggle-proactive": ("waggle_proactive.py", ("outreach.look",)),  # only ran tick.main()
+    "waggle-digest": ("waggle_digest.py", ("outreach.look", "knowledge.digest")),  # only ran tick.main()
+    "waggle-calls": ("waggle_calls.py", ("outreach.look",)),  # only ran tick.main(); calls are one-shot core timers
+    "waggle-brief": ("waggle_brief.py", ("outreach.brief",)),  # only ran tick.main()
+    "waggle-ingest": ("waggle_ingest.py", ("knowledge.intake",)),
+    "waggle-hq": ("waggle_hq.py", ("duty.hq",)),
+    "waggle-routines": ("waggle_routines.py", ("duty.routines",)),
+    "waggle-graph": ("waggle_graph.py", ("duty.graph", "knowledge.intake")),
+    "waggle-learn": ("waggle_learn.py", ("duty.learn",)),
+    "waggle-consolidate": ("waggle_consolidate.py", ("duty.consolidate",)),
+}
 
 
-def install_cron(s):
-    """Script-only Hermes cron jobs: stdout goes to the phone, empty stdout = silent."""
-    scripts = HERMES_HOME / "scripts"
-    scripts.mkdir(parents=True, exist_ok=True)
-    for name, schedule, script, extra, module in CRON_JOBS:
-        (scripts / script).write_text(SCRIPT.format(repo=REPO, extra=extra, module=module), encoding="utf-8")
-    existing = hermes("cron", "list").stdout
-    for name, schedule, script, extra, module in CRON_JOBS:
-        if name in existing:
-            print(f"cron {name}: already there")
-            continue
-        hermes("cron", "create", schedule, "--name", name, "--no-agent", "--script", script,
-               "--deliver", s.phone_target, "--failure-deliver", "local", "--no-wrap-response",
-               "--catch-up", "off")
+def _cron_entries(jobs_file):
+    """[(name, id)] of the Hermes cron jobs in jobs.json; [] when the file is missing or unreadable."""
+    import json
+    try:
+        data = json.loads(Path(jobs_file).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    rows = data.get("jobs", data) if isinstance(data, dict) else data
+    rows = list(rows.values()) if isinstance(rows, dict) else rows
+    return [(j.get("name"), j.get("id")) for j in rows if isinstance(j, dict)]
+
+
+def retire_cron(home=None, run=None, now=None):
+    """Remove Waggle's jobs from Hermes cron (they run from core timers now), so nothing runs twice.
+
+    Idempotent: with none of them left it does nothing and writes no backup. Before the first removal jobs.json
+    is copied to cron/jobs.json.bak-cron2core-<time>. Removal goes through `hermes cron remove`, never by editing
+    jobs.json while the gateway may be writing it. Returns {"removed": [...], "failed": [...], "backup": path|None}."""
+    home = Path(home or HERMES_HOME)
+    run = run or hermes
+    jobs_file = home / "cron" / "jobs.json"
+    found = [(n, i) for n, i in _cron_entries(jobs_file) if n in RETIRED_CRON]
+    out = {"removed": [], "failed": [], "backup": None}
+    if not found:
+        return out
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now or time.time()))
+    backup = jobs_file.with_name(f"jobs.json.bak-cron2core-{stamp}")
+    shutil.copy2(jobs_file, backup)
+    out["backup"] = str(backup)
+    for name, job_id in found:
+        r = run("cron", "remove", str(job_id))
+        if getattr(r, "returncode", 1):
+            out["failed"].append(name)
+    left = {n for n, _ in _cron_entries(jobs_file)}
+    out["removed"] = [n for n, _ in found if n not in left]
+    out["failed"] = [n for n, _ in found if n in left]
+    for name in out["removed"]:  # the script the old job ran (ours: it imports waggle)
+        script = home / "scripts" / RETIRED_CRON[name][0]
+        try:
+            if script.exists() and "from waggle." in script.read_text(encoding="utf-8"):
+                script.unlink()
+        except OSError:
+            pass
+    return out
 
 
 UNUSED_TOOLSETS = ["image_gen", "todo", "memory", "session_search", "delegation", "connections"]
@@ -138,8 +163,10 @@ def main():
     soul = HERMES_HOME / "SOUL.md"
     shutil.copyfile(REPO / "persona" / "SOUL.md", soul)
     print("persona:", soul)
-    if "--cron" in sys.argv:
-        install_cron(s)
+    gone = retire_cron()  # their work runs from core timers now; each deploy re-checks, so none comes back twice
+    if gone["removed"] or gone["failed"]:
+        print("cron: removed", ", ".join(gone["removed"]) or "none", "| still there:", ", ".join(gone["failed"]) or "none",
+              "| backup:", gone["backup"])
     install_skills()
     try:
         from waggle import skills
