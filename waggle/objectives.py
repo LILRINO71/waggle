@@ -327,7 +327,25 @@ def _defer(con, oid, reason, until):
 
 
 def run_step(oid, idx=None, settings=None, run_fn=None, verify_fn=None):
-    """Run one runnable step (or step idx). Returns the step's new status, or None if nothing to run."""
+    """Run one runnable step (or step idx). Returns the step's new status, or None if nothing to run. A step that ran
+    for an objective that is not autonomy's own leaves a session record (autonomy records itself)."""
+    status = _run_step(oid, idx, settings, run_fn, verify_fn)
+    if status not in (None, "waiting_budget"):
+        try:
+            if _origin(oid) != "autowork":
+                from . import session_records
+                con = _db()
+                try:
+                    row = con.execute("SELECT title FROM objectives WHERE id=?", (oid,)).fetchone()
+                finally:
+                    con.close()
+                session_records.record("objective", oid, status, title=(row["title"] if row else ""), settings=settings)
+        except Exception:  # noqa: BLE001
+            pass
+    return status
+
+
+def _run_step(oid, idx=None, settings=None, run_fn=None, verify_fn=None):
     s = settings or Settings.load()
     con = _db()
     obj = con.execute("SELECT * FROM objectives WHERE id=?", (oid,)).fetchone()

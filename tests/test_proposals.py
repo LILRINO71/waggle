@@ -1141,3 +1141,61 @@ def test_the_real_env_gates_and_one_message_per_event(settings):
     n.notify("Waggle proposal ABCD: fix it", ref="p1:ready", asked=True)  # the same event twice: one row
     rows_ = [r for r in outbox.list(limit=50) if r["origin"] == "proposal"]
     assert len(rows_) == 1 and rows_[0]["body"] == "Waggle proposal ABCD: fix it"
+
+
+# ---- Context7 for build jobs, pyright warning in the merge message ------------------------------------------------
+
+def test_build_job_gets_context7_only_when_on_and_chat_never(settings, tmp_path, monkeypatch):
+    import waggle.jobs as build_jobs
+    monkeypatch.setattr(build_jobs, "launch", lambda jid: None)
+    e = Env(settings=settings, repo=tmp_path / "live", write_root=tmp_path / "wt")
+    wt = tmp_path / "wt" / "p1"
+    wt.mkdir(parents=True)
+    jid = e.start_job("Proposal ABCD: x", "P", "sonnet", wt, "r")
+    cfg = json.loads(Path(build_jobs.load()[jid]["mcp_config"]).read_text())
+    assert cfg == {"mcpServers": {"context7": {"type": "http", "url": "https://mcp.context7.com/mcp"}}}
+    from waggle import chat_session
+    chat_cfg = json.loads(Path(chat_session.mcp_config("telegram:1", settings)).read_text())
+    assert "context7" not in chat_cfg["mcpServers"]
+    settings.proposals_context7 = False
+    jid2 = e.start_job("Proposal EFGH: y", "P", "sonnet", wt, "r")
+    assert "mcp_config" not in build_jobs.load()[jid2]
+
+
+def test_job_run_passes_mcp_config_to_claude(settings, monkeypatch, tmp_path):
+    import waggle.jobs as build_jobs
+    from waggle import claude_cli
+    seen = []
+
+    class Proc:
+        def wait(self):
+            return 0
+
+    def fake_start(prompt, model, cwd, log, system_append=None, permission_mode="bypassPermissions", mcp_config=None):
+        seen.append(mcp_config)
+        Path(log).write_text(json.dumps({"type": "result", "result": "ok", "is_error": False}) + "\n", encoding="utf-8")
+        return Proc()
+    monkeypatch.setattr(claude_cli, "start_session", fake_start)
+    work = tmp_path / "w"
+    work.mkdir()
+    jid = build_jobs.create("t", "p", "r", settings)
+    build_jobs.update(jid, workdir=str(work), model="sonnet", quiet=True, mcp_config="C:/x/context7.json")
+    build_jobs.run(jid)
+    assert seen == ["C:/x/context7.json"]
+
+
+def test_build_prompt_mentions_context7_and_its_privacy_rule(settings, tmp_path):
+    e = Env(settings=settings, repo=tmp_path / "live", write_root=tmp_path / "wt")
+    p = {"branch": "proposals/x", "evidence": "e", "title": "t"}
+    assert "context7" in proposals.build_prompt(e, p, tmp_path, "b" * 40) and "never Waggle's code" in proposals.build_prompt(e, p, tmp_path, "b" * 40)
+    settings.proposals_context7 = False
+    assert "context7" not in proposals.build_prompt(e, p, tmp_path, "b" * 40)
+
+
+def test_ready_text_carries_the_pyright_line():
+    p = {"code": "ABCD", "id": "p", "title": "t", "evidence": "e", "safety": [],
+         "diff": {"files": ["waggle/a.py"], "added": 1, "deleted": 0},
+         "tests": {"targeted": {"passed": 2}, "full": {"passed": 9, "failed": 0},
+                   "pyright": "Type check (pyright, warning only): 2 new errors in the files it touched."}}
+    text = proposals.ready_text(p)
+    assert "warning only): 2 new errors" in text and text.index("Type check") < text.index("It touches no safety")

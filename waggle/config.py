@@ -142,6 +142,21 @@ class Settings:
                                                       "WebFetch"])
     # Wolfram's free cloud MCP (no key): checked maths and science for the chat brain. false = not offered.
     wolfram_mcp: bool = True
+    # python -m waggle.feedwatch: new posts and releases from the owner's feed list (FIRST blog, FTC SDK, Ollama...).
+    feedwatch_enabled: bool = True
+    # Drop folder: scans, .xlsx and pictures read by markitdown-ocr with the local vision model (waggle/dropbox_markitdown.py).
+    # install.py also fetches rss-feeds and the Obsidian Bases / JSON Canvas / CLI skills through Hermes's hub.
+    hub_skills: bool = True
+    drop_ocr: bool = True
+    # python -m waggle.usage_view: ccusage's by-block and by-session token view beside the quota line (read-only, offline).
+    ccusage_enabled: bool = True
+    # Autonomy and objective runs leave a record (waggle/session_records.py); 4 useless runs in a row show in the evening note.
+    session_records_enabled: bool = True
+    # Proposal build jobs (not chat) may read current library docs from Context7's free hosted MCP (waggle/proposals.py).
+    proposals_context7: bool = True
+    # Proposal verify step: pyright errors in the touched files are listed in the merge message (a warning, never a gate).
+    proposals_pyright: bool = True
+    drop_ocr_model: str = ""  # empty = local_model
     # Nightly local backup of the data home (waggle/backup.py): dated zips here, the newest backup_keep kept. Not a
     # cloud folder, because the data includes tokens. Empty = %USERPROFILE%\WaggleBackups.
     backup_dir: str = ""

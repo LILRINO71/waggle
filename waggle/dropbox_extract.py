@@ -25,7 +25,8 @@ TEXT_EXT = {".txt", ".text", ".md", ".markdown", ".log", ".json", ".yaml", ".yml
 HTML_EXT = {".html", ".htm", ".xhtml"}
 CSV_EXT = {".csv", ".tsv"}
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
-SUPPORTED = sorted({".pdf", ".docx", ".pptx", *TEXT_EXT, *HTML_EXT, *CSV_EXT, *IMAGE_EXT})
+SUPPORTED = sorted({".pdf", ".docx", ".pptx", ".xlsx", *TEXT_EXT, *HTML_EXT, *CSV_EXT, *IMAGE_EXT})
+MIN_TEXT = 40  # fewer characters than this from a PDF's text layer sends it to local OCR
 INSTALL_HINT = "pypdf"  # the library to install for PDFs (pip install pypdf)
 
 
@@ -53,6 +54,8 @@ def kind_of(path):
         return "docx"
     if ext == ".pptx":
         return "pptx"
+    if ext == ".xlsx":
+        return "xlsx"
     if ext in HTML_EXT:
         return "html"
     if ext in CSV_EXT:
@@ -300,6 +303,19 @@ def pdf_text(path):
                        f"`py -3.14 -m pip install {INSTALL_HINT}`, then move this file back into the Drop folder")
 
 
+def _ocr(path, kind, notes):
+    """Text from markitdown + the local vision model, or "" (off, not set up, or it failed: said in notes)."""
+    from . import dropbox_markitdown as mk
+    if not mk.enabled():
+        return ""
+    text, why = mk.convert(path, kind)
+    if text:
+        notes.append("read with local OCR (markitdown-ocr, the local vision model)")
+    elif why:
+        notes.append(f"local OCR gave nothing ({why[:100]})")
+    return text
+
+
 # ---- entry point ---------------------------------------------------------------------------------
 
 def extract(path):
@@ -312,14 +328,30 @@ def extract(path):
     notes = []
     pages = 0
     fence = ""
-    if kind == "image":
-        return Extracted("image", "", notes=notes)
-    if kind == "pdf":
-        text, pages, read = pdf_text(path)
-        if read < pages:
-            notes.append(f"only the first {read} of {pages} pages were read")
-        if not _clean(text):
-            notes.append("the PDF has no text layer (a scan?); nothing could be extracted from it")
+    if kind == "image":  # the vision model describes it; local OCR (markitdown-ocr) adds the text, if set up
+        return Extracted("image", _clean(_ocr(path, "image", notes)), notes=notes)
+    if kind == "xlsx":
+        text = _ocr(path, "xlsx", notes)
+        if not text:
+            raise ExtractError("an .xlsx needs the markitdown venv (see waggle/dropbox_markitdown.py) and `drop_ocr` on")
+    elif kind == "pdf":
+        no_reader = None
+        try:
+            text, pages, read = pdf_text(path)
+            if read < pages:
+                notes.append(f"only the first {read} of {pages} pages were read")
+        except ExtractError as e:
+            if not str(e).startswith("no PDF reader"):
+                raise
+            text, pages, no_reader = "", 0, e
+        if len(_clean(text)) < MIN_TEXT:  # a scan, or no reader: let local OCR try before giving up
+            ocr = _ocr(path, "pdf", notes)
+            if ocr:
+                text = ocr
+            elif no_reader:
+                raise no_reader
+            elif not _clean(text):
+                notes.append("the PDF has no text layer (a scan?); nothing could be extracted from it")
     elif kind == "docx":
         text = docx_text(path)
     elif kind == "pptx":

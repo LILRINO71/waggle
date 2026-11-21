@@ -187,6 +187,13 @@ def evening_note(settings=None, now=None, activity=None):
         fixes = ""
     if fixes:
         lines.append(fixes)
+    try:  # the last 4 autonomous runs all did nothing useful: one line, only then (waggle/session_records.py)
+        from . import session_records
+        streak_line = session_records.evening_line(now, s)
+    except Exception:  # noqa: BLE001
+        streak_line = ""
+    if streak_line:
+        lines.append(streak_line)
     try:  # a weekly answer-quality check that got worse: one line, only then (waggle/evals.py)
         from . import evals
         eval_line = evals.evening_lines(now, settings=s)

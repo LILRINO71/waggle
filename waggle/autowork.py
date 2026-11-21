@@ -452,8 +452,18 @@ def _units(objective_ids, since):
 
 # ---- the loop ---------------------------------------------------------------------------------------------------
 
-def run_once(settings=None, now=None, asker=None, run_fn=None, fetch=None, goal_id=None, gate=None,
-             judge_seams=None):
+def run_once(*args, **kwargs):
+    """One work-loop pass (see _run_once); a pass that picked a goal also leaves a session record."""
+    res = _run_once(*args, **kwargs)
+    if res.get("goal"):
+        from . import session_records
+        session_records.record("autonomy", res["goal"], res.get("outcome") or "skipped", title=res.get("why", ""),
+                               commits=res.get("commits", 0), detail=res.get("why", ""), settings=kwargs.get("settings"))
+    return res
+
+
+def _run_once(settings=None, now=None, asker=None, run_fn=None, fetch=None, goal_id=None, gate=None,
+              judge_seams=None):
     """At most one step toward one goal. Returns a small report of what happened (and why not, when nothing).
     gate: a zero-argument check replacing the default one in front of the pick call (gates.evaluate), or False.
     judge_seams: {"asker":, "local":, "pressure":} handed to the checklist judge's cascade (tests)."""
@@ -558,7 +568,8 @@ def run_once(settings=None, now=None, asker=None, run_fn=None, fetch=None, goal_
             con.commit()
         finally:
             con.close()
-    return {"goal": goal["id"], "outcome": outcome, "objective": oid, "why": why, "indicators": readings}
+    return {"goal": goal["id"], "outcome": outcome, "objective": oid, "why": why, "indicators": readings,
+            "commits": sum(1 for c in checks if c.get("ok") and c.get("type") == "commit_exists")}
 
 
 # ---- evening note -----------------------------------------------------------------------------------------------

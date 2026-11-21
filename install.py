@@ -169,6 +169,10 @@ def main():
               "| backup:", gone["backup"])
     install_skills()
     try:
+        install_hub_skills()
+    except Exception as e:  # noqa: BLE001
+        print("hub skills skipped:", e)
+    try:
         from waggle import skills
         print("skills:", skills.reindex())
     except Exception as e:
@@ -193,6 +197,34 @@ def install_skills(dest=None):
         target.write_bytes(new)
         done.append(src.parent.name)
     print("waggle skills installed:", ", ".join(done) or "up to date")
+    return done
+
+
+# Skills fetched through Hermes's own hub (it scans each one). (identifier, category or None, folder it lands in).
+# rss-feeds is Hermes's official optional skill (standard library only). The Obsidian ones are obsidianmd/obsidian-skills
+# (MIT, reviewed at commit b110b2f); Waggle's registry lists hub installs as "unreviewed". blogwatcher is not here: it
+# needs a separate Go program (blogwatcher-cli) and Waggle's feedwatch keeps its own seen-list instead.
+HUB_SKILLS = [
+    ("official/research/rss-feeds", None, "research/rss-feeds"),
+    ("skills-sh/obsidianmd/obsidian-skills/skills/obsidian-bases", "note-taking", "note-taking/obsidian-bases"),
+    ("skills-sh/obsidianmd/obsidian-skills/skills/json-canvas", "note-taking", "note-taking/json-canvas"),
+    ("skills-sh/obsidianmd/obsidian-skills/skills/obsidian-cli", "note-taking", "note-taking/obsidian-cli"),
+]
+
+
+def install_hub_skills(run=None, home=None, settings=None):
+    """Install the HUB_SKILLS that are not there yet; returns the identifiers it asked Hermes for. Off: config hub_skills."""
+    run = run or hermes
+    home = Path(home or HERMES_HOME)
+    if not getattr(settings or Settings.load(), "hub_skills", True):
+        return []
+    done = []
+    for ident, category, rel in HUB_SKILLS:
+        if (home / "skills" / rel / "SKILL.md").exists():
+            continue
+        run("skills", "install", ident, *(["--category", category] if category else []), "--yes")
+        done.append(ident)
+    print("hub skills installed:", ", ".join(done) or "up to date")
     return done
 
 

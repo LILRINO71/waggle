@@ -37,6 +37,10 @@ def isolated_home(tmp_path, monkeypatch):
         text, *a, post=post or (lambda url, body: sent.append("ntfy:" + body["message"]) or True), **k))
     monkeypatch.setattr(notify, "PHONE_LOG", PhoneLog(sent), raising=False)
     monkeypatch.setattr(notify, "_synth", lambda text, out, settings=None: False)  # no real Kokoro in tests
+    import waggle.pyright_check as pyc
+    monkeypatch.setattr(pyc, "available", lambda: False)  # never the real pyright (tests opt in)
+    import waggle.dropbox_markitdown as dmk
+    monkeypatch.setattr(dmk, "venv_python", lambda: None)  # never the real markitdown venv (tests opt in)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))  # never the real Hermes state, cron or `hermes send`
     import waggle.wincred as wincred
     vault_ = {}  # never the real Windows Credential Manager
