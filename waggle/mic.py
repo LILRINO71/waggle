@@ -24,6 +24,7 @@ RATE = 16000
 FRAME_MS = 30
 FRAME_SAMPLES = RATE * FRAME_MS // 1000
 FRAME_BYTES = FRAME_SAMPLES * 2
+TURN_FRAMES = 8000 // FRAME_MS  # the end-of-turn model reads the last 8 s
 
 
 # ---- levels -----------------------------------------------------------------------------------------------
@@ -81,8 +82,20 @@ class Endpointer:
     FLOOR_WINDOW_S, FLOOR_PERCENTILE = 5.0, 0.2
     WARMUP_FRAMES = 5
 
-    def __init__(self, end_silence_s=1.2, max_s=30.0, floor=None, min_on=None, min_off=None):
+    ASK_EVERY_MS = 90  # while a pause lasts, the end-of-turn model is asked again this often
+
+    def __init__(self, end_silence_s=1.2, max_s=30.0, floor=None, min_on=None, min_off=None, *, turn=None,
+                 turn_max_silence_s=1.6, turn_pause_ms=200, turn_min_p=0.5):
+        """`turn` (optional): an end-of-turn model with `complete(pcm) -> P(finished)`. With it, the utterance ends
+        when a pause of at least `turn_pause_ms` is judged finished (P >= `turn_min_p`) or when the pause reaches
+        `turn_max_silence_s`, whichever comes first; `end_silence_s` is then only the fallback if the model fails.
+        Without it the utterance ends after `end_silence_s` of silence, as always."""
         self.end_silence_s, self.max_s = end_silence_s, max_s
+        self.turn, self.turn_max_silence_s = turn, turn_max_silence_s
+        self.turn_pause_ms, self.turn_min_p = turn_pause_ms, turn_min_p
+        self.ended_by, self.voiced, self.turn_asks, self.turn_p = "", False, 0, None
+        self.mode = "energy+silence"
+        self._asked_at = -1
         self.min_on = self.MIN_ON if min_on is None else float(min_on)
         self.min_off = self.MIN_OFF if min_off is None else float(min_off)
         self._quiet = collections.deque(maxlen=int(self.FLOOR_WINDOW_S * 1000 / FRAME_MS))
@@ -114,8 +127,9 @@ class Endpointer:
         if len(self.levels) < 20000:
             self.levels.append((round(rms, 1), peak))
         self._quiet.append(rms)
+        self._observe(frame, rms)
         if not self.in_speech:
-            if rms >= self.on_bar() and len(self._quiet) > self.WARMUP_FRAMES:
+            if self._hot(frame, rms):
                 self._loud_run.append(frame)
                 if len(self._loud_run) * FRAME_MS >= self.START_MS:
                     self.in_speech = True
@@ -133,15 +147,58 @@ class Endpointer:
         self.peak = max(self.peak, peak)
         self._sum_sq += rms * rms
         self._n += 1
-        if rms < self.off_bar():
+        if self._silent(frame, rms):
             self._silent_ms += FRAME_MS
+            self.voiced = False
         else:
             self._silent_ms = 0
+            self._asked_at = -1
+            self.voiced = True
             self.speech_ms += FRAME_MS
-        if self._silent_ms >= self.end_silence_s * 1000 or len(self._frames) * FRAME_MS >= self.max_s * 1000:
+        if self._finished():
             self.done = True
             return "end"
         return None
+
+    # -- what counts as speech: the energy gate here, a neural one in SileroGate
+    def _observe(self, frame, rms):
+        pass
+
+    def _hot(self, frame, rms):
+        """Can this frame start speech?"""
+        return rms >= self.on_bar() and len(self._quiet) > self.WARMUP_FRAMES
+
+    def _silent(self, frame, rms):
+        """Is this frame (inside speech) a pause?"""
+        return rms < self.off_bar()
+
+    def _finished(self):
+        """Is the utterance over? Sets `ended_by`: "max length", "silence" or "turn" (the model said finished)."""
+        if len(self._frames) * FRAME_MS >= self.max_s * 1000:
+            self.ended_by = "max length"
+            return True
+        if self.turn is None:
+            if self._silent_ms >= self.end_silence_s * 1000:
+                self.ended_by = "silence"
+                return True
+            return False
+        if self._silent_ms < self.turn_pause_ms:
+            return False
+        if self._silent_ms >= self.turn_max_silence_s * 1000:
+            self.ended_by = "silence"
+            return True
+        if self._asked_at < 0 or self._silent_ms - self._asked_at >= self.ASK_EVERY_MS:
+            self._asked_at = self._silent_ms
+            try:
+                self.turn_p = self.turn.complete(b"".join(self._frames[-TURN_FRAMES:]))
+                self.turn_asks += 1
+            except Exception:  # noqa: BLE001 (the model failed: back to the fixed silence for this utterance)
+                self.turn = None
+                return self._finished()
+            if self.turn_p >= self.turn_min_p:
+                self.ended_by = "turn"
+                return True
+        return False
 
     def speech_rms(self):
         return math.sqrt(self._sum_sq / self._n) if self._n else 0.0
@@ -151,6 +208,65 @@ class Endpointer:
         drop = max(0, self._silent_ms - int(keep_tail_s * 1000)) // FRAME_MS
         frames = self._frames[: len(self._frames) - drop] if drop else self._frames
         return b"".join(frames)
+
+
+class SileroGate(Endpointer):
+    """The same endpointer with a neural speech detector deciding what is speech: a frame starts speech when Silero
+    VAD gives it P(speech) >= START_P (held for START_MS) AND it is at least `min_on` loud (the same level floor as the
+    energy gate, so a distant television in another room does not become a new source of utterances), and counts as a
+    pause only when P < END_P (hysteresis in between, as the Silero authors recommend). Music, a steady fan, typing and
+    thumps that the energy gate takes for speech do not start an utterance, and once speaking, a pause is a pause
+    whatever the room sounds like (the energy gate never sees one while music plays). `stream` is a
+    vad.SileroStream (one per microphone stream)."""
+    START_P, END_P = 0.5, 0.35
+    PREROLL_S = 0.5  # the model needs a moment of a soft first word before it is sure: keep more sound before the start
+    START_MS = 60  # two frames: the model is the judge, and its first window of a word is often still below 0.5
+
+    def __init__(self, stream, *args, **kw):
+        super().__init__(*args, **kw)
+        self.stream, self.prob = stream, 0.0
+
+    def _observe(self, frame, rms):
+        try:
+            self.prob = self.stream.feed(frame)
+        except Exception:  # noqa: BLE001 (a failing model must not stop the microphone: this frame is not speech)
+            self.prob = 0.0
+
+    def _hot(self, frame, rms):
+        return self.prob >= self.START_P and rms >= self.min_on and len(self._quiet) > self.WARMUP_FRAMES
+
+    def _silent(self, frame, rms):
+        return self.prob < self.END_P
+
+
+def make_endpointer(end_silence_s=1.2, max_s=30.0, min_on=None, min_off=None, *, vad="energy", endturn="silence",
+                    turn_max_silence_s=1.6, turn_pause_ms=200, turn_min_p=0.5, note=None):
+    """An endpointer for the settings pc_voice_vad ("silero" | "energy") and pc_voice_endturn ("smart" | "silence").
+    A model that is not available (file missing or not the pinned one, onnxruntime missing) means the energy gate
+    and the fixed silence, with `note(text)` told once per call. The returned object has `.mode`, for example
+    "silero+smart" or "energy+silence"."""
+    from waggle import vad as vadmod
+    stream = turn = None
+    if str(vad).lower() == "silero":
+        model = vadmod.silero()
+        if model is not None:
+            try:
+                stream = model.stream()
+            except Exception as e:  # noqa: BLE001
+                model = None
+                if note:
+                    note(f"silero stream: {type(e).__name__}: {e}")
+        if model is None and note:
+            note("silero VAD unavailable: using the energy gate")
+    if str(endturn).lower() == "smart":
+        turn = vadmod.smart_turn()
+        if turn is None and note:
+            note("smart turn unavailable: using the fixed silence")
+    kw = dict(end_silence_s=end_silence_s, max_s=max_s, min_on=min_on, min_off=min_off, turn=turn,
+              turn_max_silence_s=turn_max_silence_s, turn_pause_ms=turn_pause_ms, turn_min_p=turn_min_p)
+    ep = SileroGate(stream, **kw) if stream is not None else Endpointer(**kw)
+    ep.mode = ("silero" if stream is not None else "energy") + "+" + ("smart" if turn is not None else "silence")
+    return ep
 
 
 # ---- sources ----------------------------------------------------------------------------------------------
