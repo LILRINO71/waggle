@@ -83,6 +83,11 @@ class Settings:
     max_selfbuilds_per_day: int = 3
     ntfy_server: str = "https://ntfy.sh"
     ntfy_topic: str = ""  # generated on first use; private channel for urgent push alerts
+    # Dead-man switch (waggle/deadman.py, cloud/deadman/): the free Cloudflare Worker that delivers reminders and says
+    # "Waggle is down" while the PC is off. Empty deadman_url = off. deadman_hide_text: the Worker holds "Reminder due"
+    # instead of the reminder's words.
+    deadman_url: str = ""
+    deadman_hide_text: bool = False
     brief_time: str = "30 7 * * *"  # morning brief (cron)
     stale_days: int = 7
     # Initiative (waggle/tick.py, initiative.py, watchers.py, followups.py): what Waggle tells the user unprompted.

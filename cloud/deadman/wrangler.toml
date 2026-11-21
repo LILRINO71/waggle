@@ -1,0 +1,16 @@
+# Waggle dead-man switch. Deployed by tools/deadman-setup.ps1, which adds the KV namespace id in a copy
+# (wrangler.deploy.toml, not committed). Secrets are never here: BEAT_TOKEN, TELEGRAM_BOT_TOKEN,
+# TELEGRAM_CHAT_ID and NTFY_TOPIC are set with `wrangler secret put`.
+name = "waggle-deadman"
+main = "src/worker.js"
+compatibility_date = "2025-09-01"
+workers_dev = true
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+[vars]
+NTFY_SERVER = "https://ntfy.sh"
+TZ_NAME = "America/Los_Angeles"
+WAKE_START = "07:00"
+WAKE_END = "22:30"

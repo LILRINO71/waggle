@@ -33,6 +33,7 @@ Each piece can be switched off on its own. To switch something off:
 | `python -m waggle.usage_view` shows the usage window plus tokens by 5-hour block and by session (ccusage, offline, read-only) | `ccusage_enabled` |
 | Every autonomy and objective run is recorded; if the last 4 did nothing useful the evening note says so in one line (`python -m waggle.session_records` lists them) | `session_records_enabled` |
 | New tools: CAD convert/measure, print estimate, notes/Office to PDF, video/image convert, GitHub portfolio audit, explain any file, FTC team stats | one `git rm` line per tool in `skills/README.md` ("Removing a tool pack") |
+| Dead-man switch (needs you): a free Cloudflare Worker sends your reminders if the PC is off and says "Waggle is down since HH:MM" (07:00-22:30). Does nothing until you do the steps in `docs/DEADMAN.md` (about 10 minutes, no card) | leave `deadman_url` empty; after setup, `npx wrangler delete` then `"deadman_url": ""` |
 
 ## Also fixed overnight (nothing to decide)
 

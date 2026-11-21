@@ -226,6 +226,10 @@ def reminder_due(payload, *, settings=None, now=None, synth=None):
     item = followups.get(payload.get("id"))
     if not item or item["status"] != "open":
         return {"skipped": "no open reminder"}
+    from . import deadman
+    if deadman.worker_sent(item["id"], s):  # the backup Worker sent it while the PC was off: never twice
+        followups.mark(item["id"], "sent", now, None, "already sent by the backup service")
+        return {"skipped": "sent by the backup service"}
     text = f"⏰ {item['what']}"
     if _late(payload):
         at = dt.datetime.fromtimestamp(payload.get("scheduled_ts") or item["due"])
@@ -243,6 +247,7 @@ def reminder_due(payload, *, settings=None, now=None, synth=None):
     if why:
         notes.append(why)
     followups.mark(item["id"], "sent" if row["id"] else "suppressed", now, row["id"], "; ".join(notes))
+    deadman.ack(item["id"], s)  # tell the backup Worker at once (no-op when it is not set up)
     return {"outbox": row["id"], "late": _late(payload), "voice_outbox": voice_id, **({"voice_error": why} if why else {})}
 
 

@@ -1,0 +1,10 @@
+{
+  "name": "waggle-deadman",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Dead-man switch and reminder fallback for Waggle (Cloudflare Worker, free plan)",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}
