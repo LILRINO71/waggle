@@ -10,7 +10,7 @@ import pytest
 from engine_fakes import FakeClaude
 from test_pcvoice import FakeClient, rig, source, wake_run  # noqa: F401  (rig is a fixture)
 from test_voice2 import HOTKEY_TALK, SILENCE, StreamClient, StreamLine, config, follow_up_source, smart  # noqa: F401
-from test_voice2 import sline  # noqa: F401  (a fixture)
+from test_voice2 import only_sentences, sline  # noqa: F401  (sline is a fixture)
 
 from waggle import chat_engine, chat_jobs, chat_session, chat_store, mic, pcvoice, voice_intent
 from waggle.chat_session import ChatSession, SessionPool
@@ -217,7 +217,7 @@ def test_the_fallback_says_why_in_the_log_and_never_logs_the_words(rig, tmp_path
 
 def test_the_streams_last_line_carries_what_the_core_measured(sline, monkeypatch):
     from waggle import stt
-    monkeypatch.setattr(stt, "transcribe", lambda path, **k: {"ok": True, "text": "what is the time", "seconds": 0.12,
+    monkeypatch.setattr(stt, "transcribe", lambda path, **k: {"ok": True, "text": "read me the headline", "seconds": 0.12,
                                                               "audio_s": 1.0, "confidence": {"confident": True}})
     sline.reply = "SPOKEN: It is six, sir.\nANSWER:\nIt is six."
     code, lines = sline.stream(mic.wav_bytes(bytes(16000)), content_type="audio/wav")
@@ -234,7 +234,7 @@ def test_the_client_reads_the_core_timings_and_ignores_anything_else():
 def test_a_voice_turn_gives_the_notes_search_less_time_than_a_typed_one(sline, monkeypatch):
     seen = []
     monkeypatch.setattr(chat_engine, "build_context", lambda *a, **k: seen.append(k.get("budget_s")) or "")
-    sline.stream({"text": "what is the time"})
+    sline.stream({"text": "read me the headline"})
     assert seen == [chat_engine.VOICE_CONTEXT_BUDGET_S] and chat_engine.VOICE_CONTEXT_BUDGET_S < chat_engine.CONTEXT_BUDGET_S
 
 
@@ -440,3 +440,17 @@ def test_the_recogniser_is_kept_loaded_while_listening_even_in_a_quiet_room(rig,
     pv = smart(rig, client, wake=True, source=source(tmp_path, [(6.0, 0)]))  # silence only: nobody talks
     pv.warm_models()
     assert until(lambda: client.warms >= 1)
+
+
+def test_a_spoken_clock_question_is_answered_on_the_stream_without_claude_and_says_which_tier(sline):
+    sline.reply = "SPOKEN: Claude must not be asked.\nANSWER:\nNo."
+    t = time.monotonic()
+    code, lines = sline.stream({"text": "Waggle, what time is it?"})
+    assert code == 200 and time.monotonic() - t < 2.0
+    sentences = only_sentences(lines)
+    assert len(sentences) == 1 and sentences[0].startswith("It is ") and sentences[0].endswith(", sir.")
+    final = lines[-1][1]
+    assert final["done"] and final["status"] == "done" and final["timings"]["tier"] == "code"
+    assert final["timings"]["fast_s"] < 1.0 and "model_first_s" not in final["timings"]
+    assert sline.prompts == []  # no message ever reached the Claude process
+    assert pcvoice.core_timings(final["timings"])["tier"] == "code"

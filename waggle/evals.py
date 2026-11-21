@@ -1,10 +1,11 @@
 """Answer-quality evaluation (rebuild plan step 11): a small golden set that is run every week, so a change that
 makes Waggle's answers worse is noticed.
 
-The set lives in waggle/evals_golden.json (versioned, made-up inputs, no secrets). About 40 cases in seven
+The set lives in waggle/evals_golden.json (versioned, made-up inputs, no secrets). About 60 cases in eight
 categories: memory (vault answers), mail (triage), reminder (time parsing), outreach (decide / skip and the send
-guard), guard (the owner-permission policy), routing (which path a message takes) and safety (never spend money,
-never print secrets).
+guard), guard (the owner-permission policy), routing (which path a message takes), safety (never spend money,
+never print secrets) and voice_fast (which tier answers a spoken request: code, the local model or Claude, and the
+answer where it can be checked; a request that needs Claude must never be answered locally).
 
 Scoring is deterministic: exact, in, contains, regex, number with a tolerance, "no secret in the reply". There is no
 model judge. The default run costs $0 and works at 100 % Claude usage: pure-code paths plus the local Ollama model
@@ -39,7 +40,7 @@ from .config import Settings, data_path
 
 GOLDEN = Path(__file__).with_name("evals_golden.json")
 SOUL = Path(__file__).resolve().parent.parent / "persona" / "SOUL.md"
-CATEGORIES = ("memory", "mail", "reminder", "outreach", "guard", "routing", "safety")
+CATEGORIES = ("memory", "mail", "reminder", "outreach", "guard", "routing", "safety", "voice_fast")
 REGRESSION_DROP = 2  # cases lost in one category that count as a regression
 CLAUDE_MAX_PCT = 0.60  # --claude only while the real 5-hour window is under this
 LLM_TIMEOUT_S = 240  # the first call loads the model
@@ -361,6 +362,27 @@ def run_route_claude(c, ctx):
         return router.classify(c["input"]["text"], settings=ctx.settings, asker=asker)
 
 
+def run_voice_route(c, ctx):
+    """voice_fast.route() for one spoken request: {"tier", "answer", "why", "ms"}. input.now (ISO) fixes the clock and
+    input.reminders ([{"what", "at"}]) stands in for the reminders store, so the code cases are exact."""
+    from . import voice_fast
+    inp = c["input"]
+    now = dt.datetime.fromisoformat(inp["now"]) if inp.get("now") else None
+    rows = [{"id": str(i), "what": r["what"], "due": dt.datetime.fromisoformat(r["at"]).timestamp(), "chat": ""}
+            for i, r in enumerate(inp.get("reminders") or [])]
+    s = dataclasses.replace(ctx.settings, voice_fast_path=True, voice_fast_local=True,
+                            **({"voice_fast_model": ctx.model} if ctx.override else {}))
+    ask = loaded = None
+    if c["needs"] == "local":
+        ctx.need_llm()
+        if ctx.llm != ctx._ollama_chat:  # a test's fake model
+            ask = lambda msgs, model, timeout, schema=None, temperature=0.0: ctx.llm(msgs, schema or voice_fast.SCHEMA)  # noqa: E731
+            loaded = lambda: [voice_fast.model_for(s)]  # noqa: E731
+    voice_fast._backoff.worked()  # one slow case must not make the next ones skip the model
+    r = voice_fast.route(inp["text"], s, now=now, rows=rows, ask=ask, loaded=loaded)
+    return {"tier": r.tier, "answer": r.fast.spoken if r.fast else "", "why": r.why, "ms": r.ms}
+
+
 def run_secret_scan(c, ctx):
     from . import policy
     return policy.has_secret(c["input"]["text"])
@@ -389,7 +411,7 @@ RUNNERS = {"memory_search": run_memory_search, "memory_answer": run_memory_answe
            "money_tools": run_money_tools, "route_connected": run_route_connected,
            "route_heuristic": run_route_heuristic, "route_specialist": run_route_specialist,
            "route_sort": run_route_sort, "route_claude": run_route_claude, "secret_scan": run_secret_scan,
-           "secret_redact": run_secret_redact, "chat_reply": run_chat_reply}
+           "secret_redact": run_secret_redact, "chat_reply": run_chat_reply, "voice_route": run_voice_route}
 
 
 # ---- Claude (only with --claude, only through the budget) ---------------------------------------------------
@@ -450,8 +472,13 @@ def run_case(case, ctx):
     res = {"id": case["id"], "category": case["category"], "status": "fail", "detail": "", "model": ""}
     if case["needs"] == "local":
         res["model"] = ctx.mail_model() if case["kind"] == "mail_triage" else ctx.model
+        if case["kind"] == "voice_route" and not ctx.override:
+            from . import voice_fast
+            res["model"] = voice_fast.model_for(ctx.settings)  # the voice judge's model, not local_model
     try:
         got = RUNNERS[case["kind"]](c, ctx)
+        if case["kind"] == "voice_route":
+            res.update(tier=got["tier"], route_ms=got["ms"])
         ok, why = check(c["expect"], got)
         res.update(status="pass" if ok else "fail", detail=why if ok else f"{why} | got {_short(got)}")
     except Skip as e:
@@ -521,6 +548,10 @@ def run(settings=None, now=None, categories=None, ids=None, quick=False, claude=
     up = ollama_up if ollama_up is not None else (True if chat else _ollama_up(s))
     if not up and any(c["needs"] == "local" for c in cases):
         notes.append("Ollama is not reachable: the local-model cases were skipped")
+    local_kinds = {c["kind"] for c in cases if c["needs"] == "local"}
+    if model is None and local_kinds == {"voice_route"}:
+        from . import voice_fast
+        model = voice_fast.model_for(s)  # the model already loaded for the voice judge: not local_model (a 22 GB load)
     ctx = Ctx(s, model=model, chat=chat, mail_chat=mail_chat, ollama_up=up, asker=asker, embedder=embedder)
     if up and chat is None and any(c["needs"] == "local" for c in cases):
         ctx.ollama_up = _warm(ctx, notes)
@@ -783,6 +814,16 @@ def _print_status(st, out=print):
         out("Earlier: " + "; ".join(f"#{h['id']} {h['passed']}/{h['total']} ({h['model']})" for h in st["history"][1:]))
 
 
+def _voice_timing(results):
+    """["code median 0 (n=7)", ...]: the median time in ms of the voice_fast cases by the tier that answered them."""
+    import statistics
+    by = {}
+    for r in results:
+        if r.get("tier") and r["status"] != "skip":
+            by.setdefault(r["tier"], []).append(r["ms"])
+    return [f"{t} median {int(statistics.median(v))} (n={len(v)})" for t, v in sorted(by.items())]
+
+
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
     cmd = args[0] if args else "status"
@@ -805,6 +846,9 @@ def main(argv=None):
             print(f"  {r['status'].upper():<4} {r['id']:<11} {r['ms']:>6} ms  {r['detail'][:110]}", flush=True)
         out = run(categories=opt("--category", True), ids=opt("--case", True), quick="--quick" in args,
                   claude="--claude" in args, code_only="--code-only" in args, model=opt("--model"), save="--no-save" not in args, on_result=show)
+        timing = _voice_timing(out["results"])
+        if timing:
+            print("\nvoice_fast time per tier (ms, whole case): " + "; ".join(timing))
         print(f"\n{out['passed']}/{out['total']} passed, {out['skipped']} skipped (mode {out['mode']}, model {out['model']})")
         for cat, r in out["categories"].items():
             print(f"  {cat:<9} {r['passed']}/{r['total']}" + (f"  ({r['skipped']} skipped)" if r["skipped"] else ""))

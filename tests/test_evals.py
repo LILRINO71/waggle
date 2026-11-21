@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from waggle import evals
+from waggle import evals, voice_fast
 from waggle.config import Settings
 from waggle.core import cron, jobs, plugins, timers
 
@@ -56,7 +56,8 @@ def test_any_endswith_and_no_secret():
 def test_golden_set_is_valid_and_sized():
     data = evals.load_golden()
     default = [c for c in data["cases"] if c["needs"] != "claude"]
-    assert 30 <= len(default) <= 45 and data["version"] >= 1
+    assert 30 <= len(default) <= 70 and data["version"] >= 1
+    assert 15 <= sum(c["category"] == "voice_fast" for c in default) <= 20
     for cat in evals.CATEGORIES:
         assert sum(c["category"] == cat for c in default) >= 4, cat
     assert {c["kind"] for c in data["cases"]} <= set(evals.RUNNERS)
@@ -400,3 +401,43 @@ def test_the_job_waits_out_quiet_hours_and_a_running_learning_loop(monkeypatch):
     assert res["deferred"] == "the learning loop is running" and not ran
     res = evals.job({"scheduled_ts": NOW, "waited": evals.WAIT_MAX}, settings=s, now=NOW)  # an hour passed: go on
     assert ran and "deferred" not in res
+
+
+# ---- voice_fast: which tier answers a spoken request ---------------------------------------------------------
+
+def test_the_voice_fast_cases_that_need_no_model_pass_on_the_real_code():
+    out = evals.run(Settings(), now=NOW, code_only=True, categories=["voice_fast"], save=False, ollama_up=False)
+    bad = [(r["id"], r["detail"]) for r in out["results"] if r["status"] != "pass"]
+    assert not bad and out["total"] >= 12 and {r["tier"] for r in out["results"]} == {"code", "claude"}
+
+
+def test_the_voice_fast_local_cases_score_the_routing_and_the_answer():
+    cases = [c for c in evals.load_golden()["cases"] if c["category"] == "voice_fast" and c["needs"] == "local"]
+    assert {c["id"] for c in cases} >= {"vf-local-1", "vf-trap-1"}
+
+    def model(messages, schema):
+        if schema is voice_fast.VERIFY_SCHEMA:
+            return {"well_known": True, "answers_question": True, "correct": True}
+        q = messages[-1]["content"]
+        if "France" in q:
+            return {"needs_tools": False, "answer": "The capital of France is Paris.", "confident": True}
+        return {"needs_tools": False, "answer": "", "confident": False}
+    ctx = evals.Ctx(Settings(vault=""), chat=model)
+    got = {c["id"]: evals.run_case(c, ctx) for c in cases}
+    assert got["vf-local-1"]["status"] == "pass" and got["vf-local-1"]["tier"] == "local"
+    assert got["vf-local-2"]["status"] == "fail" and "claude" in got["vf-local-2"]["detail"]  # a model that will not answer
+    assert got["vf-trap-1"]["status"] == "pass" and got["vf-trap-2"]["status"] == "pass"  # doubt goes to Claude
+    # a model that answers a trap question is caught: a wrong local answer is a failure
+    ctx.llm = lambda messages, schema: ({"well_known": True, "answers_question": True, "correct": True} if schema is voice_fast.VERIFY_SCHEMA else
+                                        {"needs_tools": False, "answer": "It is about the size of a large parking lot.", "confident": True})
+    assert evals.run_case(next(c for c in cases if c["id"] == "vf-trap-1"), ctx)["status"] == "fail"
+
+
+def test_a_voice_fast_only_run_warms_the_voice_model_not_local_model(monkeypatch):
+    seen = []
+    monkeypatch.setattr(evals, "_ollama_up", lambda s: True)
+    monkeypatch.setattr(evals, "_warm", lambda ctx, notes: seen.append(ctx.model) or True)
+    s = Settings(local_model="a-22gb-model")
+    out = evals.run(s, now=NOW, categories=["voice_fast"], save=False, ollama_up=True)
+    assert seen == ["gemma4:latest"] and out["model"] == "gemma4:latest"
+    assert evals._voice_timing(out["results"])[0].startswith("claude median")

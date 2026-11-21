@@ -589,7 +589,7 @@ def test_a_reply_without_a_spoken_part_is_streamed_at_the_end_from_the_answer(sl
 
 def test_audio_in_works_on_the_stream_path_as_it_does_on_voice(sline, monkeypatch, tmp_path):
     from waggle import stt
-    monkeypatch.setattr(stt, "transcribe", lambda path, **k: {"ok": True, "text": "what is the time", "seconds": 0.1,
+    monkeypatch.setattr(stt, "transcribe", lambda path, **k: {"ok": True, "text": "read me the headline", "seconds": 0.1,
                                                               "audio_s": 1.0, "confidence": {"confident": True}})
     sline.reply = "SPOKEN: It is six, sir.\nANSWER:\nIt is six."
     code, lines = sline.stream(mic.wav_bytes(b"\x00\x00" * 8000), content_type="audio/wav")

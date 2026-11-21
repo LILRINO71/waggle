@@ -550,7 +550,14 @@ def _timings(rec):
     voice = (getattr(rec, "voice", None) or {})
     got = {"stt_s": voice.get("stt_s"), "context_s": voice.get("context_s"),
            "model_first_s": (getattr(rec, "session", None) or {}).get("model_first_text_s")}
-    return {k: round(float(v), 2) for k, v in got.items() if isinstance(v, (int, float)) and not isinstance(v, bool)}
+    out = {k: round(float(v), 2) for k, v in got.items() if isinstance(v, (int, float)) and not isinstance(v, bool)}
+    if voice.get("fast_tier") in ("code", "local"):  # answered without Claude (waggle/voice_fast.py): which tier, how fast
+        out["tier"] = voice["fast_tier"]
+        if isinstance(voice.get("fast_s"), (int, float)):
+            out["fast_s"] = round(float(voice["fast_s"]), 2)
+    elif out.get("model_first_s") is not None:
+        out["tier"] = "claude"
+    return out
 
 
 def _serve_stream(headers, rfile, query, accepting, length):
