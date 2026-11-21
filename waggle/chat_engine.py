@@ -30,9 +30,9 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
-from . import chat_store, claude_cli, events, quota, traces
+from . import chat_store, claude_cli, events, quota, stt, traces, voice_reply, voice_turn
 from .chat_session import VOICE_STYLE, ChatSession, SessionPool
-from .config import Settings
+from .config import Settings, data_path
 from .delivery import StreamWriter, Typing, plain_text
 
 ORIGINS = traces.ORIGINS
@@ -120,12 +120,20 @@ class TurnRecord:
     failure_notice: bool = False
     trace_id: int = None
     session: dict = field(default_factory=dict)
+    voice: dict = field(default_factory=dict)  # a voice turn: transcript source, stage times, the spoken reply
+
+    def _voice_why(self):
+        """A voice turn whose spoken reply was asked for but not sent is degraded, with the reason."""
+        if not self.voice.get("voice_requested") or self.voice.get("voice_delivered") or self.failure_notice:
+            return ()
+        return (f"spoken reply not sent: {self.voice.get('voice_error') or 'unknown'}",)
 
     def settle(self):
         """Outcome and claims from what happened (no model)."""
         self.outcome, self.outcome_why = traces.turn_outcome(
             answered_by=self.answered_by, delivered=self.delivered, queued=self.outbox_id is not None,
-            steps=self.steps, partial=self.partial, failure_notice=self.failure_notice)
+            steps=self.steps, partial=self.partial, failure_notice=self.failure_notice,
+            degraded_why=self._voice_why())
         self.claims = traces.extract_claims("" if self.failure_notice else self.reply, self.steps)
         return self
 
@@ -305,7 +313,7 @@ def local_answer(chat, text, context, settings):
 
 def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=None, note="", context=None,
              settings=None, session=None, local=None, stream=True, record=True, address=None, turn_id=None,
-             typing=None, attempt=1):
+             typing=None, attempt=1, voice_info=None):
     """Answer one user message into `delivery`. Never raises; returns a TurnRecord (also written to traces).
 
     typing: a running delivery.Typing (else one is started here); it stops when the first words are posted.
@@ -314,6 +322,13 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
     s = settings or Settings.load()
     t0 = t0 or time.time()
     rec = TurnRecord(chat=chat, text=text, origin=origin or origin_for(platform), platform=platform or "")
+    rec.voice = dict(voice_info or {})
+    vr = None
+    if voice and getattr(delivery, "can_voice", False):  # a chat that takes voice messages: spoken answer + text
+        vr = voice_reply.VoiceReply(data_path("voice_out"), voice=s.voice_note_voice, speed=s.voice_note_speed,
+                                    synth=voice_reply.synth_wav, convert=voice_reply.to_ogg)
+        rec.voice.update(voice=True, voice_requested=True)
+        stream = False  # the voice message comes first, then the whole text
     if turn_id:
         rec.turn_id = turn_id
     keeper = typing or Typing(delivery, every=TYPING_EVERY_S).start()
@@ -327,16 +342,20 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
         note = (note + " " if note else "") + INTERRUPTED_NOTE
     reply, why = "", ""
     try:
-        ctx = context if context is not None else build_context(chat, text, voice, s, since=prev_user)
+        ctx = context if context is not None else build_context(chat, text, voice and vr is None, s, since=prev_user)
     except Exception as e:
         ctx = ""
         events.log("engine_error", stage="context", error=str(e)[:200])
-    message = (ctx + "\n\n" if ctx else "") + ("<waggle_note>" + note + "</waggle_note>\n\n" if note else "") + text
+    message = ((ctx + "\n\n" if ctx else "") + ("<waggle_note>" + note + "</waggle_note>\n\n" if note else "")
+               + ("<voice_reply_format>" + voice_reply.FORMAT_NOTE + "</voice_reply_format>\n\n" if vr else "") + text)
     ok, why = claude_available(s)
     if ok:
         try:
             sess = session or pool(s).get(chat)
-            res = sess.turn(message, on_text=writer.update, on_tool=writer.tool, origin=rec.origin)
+            t_model = time.time()
+            res = sess.turn(message, on_text=vr.feed if vr else writer.update, on_tool=None if vr else writer.tool,
+                            origin=rec.origin)
+            rec.voice["model_s"] = round(time.time() - t_model, 2) if vr else None
         except Exception as e:  # a bug in the session layer is a failed turn, never a silent one
             res = None
             why = f"error: {type(e).__name__}: {e}"
@@ -374,9 +393,13 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
             reply, rec.answered_by, rec.model = answer + "\n\n" + LOCAL_LABEL.format(why=_why_short(why)), "local", s.local_model
         else:
             reply, rec.answered_by, rec.failure_notice = FAILED.format(why=_why_short(why)), "none", True
+    if vr and not rec.failure_notice:
+        reply, _ = vr.finish(reply)  # the written answer without its SPOKEN part
     if attempt and attempt >= 2 and not rec.failure_notice:
         reply += INTERRUPTED_LINE
     rec.reply = reply
+    if vr:
+        send_spoken(rec, vr, delivery, t0)
     out = writer.finish(reply)
     keeper.stop()
     rec.delivered = bool(out["delivered"])
@@ -396,6 +419,31 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
     if record:
         rec.trace_id = record_turn(rec, voice=voice, note=note)
     return rec
+
+
+def send_spoken(rec, vr, delivery, t0):
+    """The voice message of a voice turn, before its text: waits for the audio the speech started while the model
+    wrote, sends it, and records what happened (stage times, message id) in rec.voice and the capability ledger.
+    A failure never fails the turn: the text goes out alone and the turn is marked degraded with the reason."""
+    if rec.failure_notice:
+        rec.voice.update(voice_delivered=False, voice_error="no answer to speak")
+        return
+    try:
+        info = vr.send(delivery)
+    except Exception as e:  # nothing about audio may fail the turn
+        info = {"voice_delivered": False, "voice_message_id": None, "voice_error": f"{type(e).__name__}: {e}"[:200]}
+    rec.voice.update(info)
+    rec.voice["voice_sent_s"] = round(time.time() - t0, 2)
+    try:
+        from waggle.core import ledger
+        if info.get("voice_delivered"):
+            ledger.record("telegram_voice", True, method="bot api message id",
+                          evidence_ref=f"voice message id {info.get('voice_message_id')} in {rec.chat}")
+        else:
+            ledger.record("telegram_voice", False, method="bot api voice message",
+                          detail=str(info.get("voice_error") or "not sent")[:200])
+    except Exception as e:
+        events.log("engine_error", stage="voice_ledger", error=str(e)[:200])
 
 
 def queue_reply(rec, address=None):
@@ -442,7 +490,7 @@ def record_turn(rec, voice=False, note="", route="chat"):
                              ttfw_s=rec.ttfw_s, total_s=rec.total_s, delivered=rec.delivered, delivery=rec.delivery,
                              delivery_error=rec.delivery_error or None, message_ids=rec.message_ids,
                              turn_outcome=rec.outcome, outcome_why=rec.outcome_why, claims=rec.claims,
-                             extra={"voice": voice, "note": bool(note), "outbox": rec.outbox_id,
+                             extra={"voice": voice, "voice_turn": rec.voice or None, "note": bool(note), "outbox": rec.outbox_id,
                                     "session": rec.session, "tools": tool_calls(rec.steps),
                                     "first_visible_s": rec.first_visible_s})
     except Exception as e:
@@ -451,7 +499,7 @@ def record_turn(rec, voice=False, note="", route="chat"):
 
 
 def record_direct(chat, text, reply, *, platform="", origin=None, t0=None, route="direct", delivered=True,
-                  delivery="block", message_ids=None, failure_notice=False, address=None, turn_id=None):
+                  delivery="block", message_ids=None, failure_notice=False, address=None, turn_id=None, voice=None):
     """A reply Waggle gave without a model (approval answers, feedback acks): still one full turn record.
     An undelivered one is queued in the core outbox first."""
     t0 = t0 or time.time()
@@ -460,6 +508,7 @@ def record_direct(chat, text, reply, *, platform="", origin=None, t0=None, route
                      answered_by="none", delivered=delivered, delivery=delivery, total_s=took,
                      ttfw_s=took if delivered else None, message_ids=list(message_ids or []),
                      failure_notice=failure_notice)
+    rec.voice = dict(voice or {})
     if turn_id:
         rec.turn_id = turn_id
     if not delivered:
@@ -518,12 +567,14 @@ NO_TEXT = ("I got your message but couldn't read anything in it{what}. Could you
 
 
 def handle_inbound(chat, text, *, kind="text", media=None, platform="telegram", origin="user", delivery=None,
-                   settings=None, session=None, t0=None, local=None, turn_id=None, attempt=1, address=None):
+                   settings=None, session=None, t0=None, local=None, turn_id=None, attempt=1, address=None,
+                   audio=None):
     """One inbound message, end to end: the typing indicator at once, approvals first, then the chat's Claude
     session, streamed into the chat's delivery, the reply queued in the core outbox if delivery fails, and the
     full turn record.
 
-    kind: "text" | "voice" (text is the transcript; the reply is written to be spoken) | anything else with
+    kind: "text" | "voice" (text is the transcript, or empty with `audio` = the voice note's file, which is
+    transcribed here; the reply is a short spoken version plus the full text) | anything else with
     `media` (paths, or dicts with path/kind) the brain is told about. origin: "user" only for the owner's own
     channel. attempt 2: a restart interrupted the first run (see run_turn); a turn already delivered under the
     same turn_id is not answered again. Never raises for turn failures; returns the TurnRecord."""
@@ -549,6 +600,14 @@ def handle_inbound(chat, text, *, kind="text", media=None, platform="telegram", 
             events.log("engine_turn_already_done", turn_id=turn_id, trace_id=done.get("id"))
             return rec
     voice = kind == "voice"
+    vinfo = {}
+    if voice and audio and not (text or "").strip():
+        text, vinfo = transcribe_note(audio, s)
+    elif voice and (text or "").strip():  # a transcript that still carries Hermes's media marker: words only
+        words, k = voice_turn.parse(text, getattr(s, "voice_fixes", None))
+        if k == "voice":
+            vinfo = {"voice": True, "transcript_source": "hermes gateway", "audio_path": voice_turn.audio_path(text)}
+            text = words
     body = (text or "").strip()
     extra = media_note(media) if media else ""
     if extra:
@@ -562,10 +621,12 @@ def handle_inbound(chat, text, *, kind="text", media=None, platform="telegram", 
         rec = record_direct(chat, body, reply, platform=platform, origin=origin, t0=t0, route=route,
                             delivered=out["delivered"], delivery=getattr(d, "name", "delivery"),
                             message_ids=out.get("message_ids"), failure_notice=failure_notice, address=address,
-                            turn_id=turn_id)
+                            turn_id=turn_id, voice=vinfo or ({"voice": True} if voice else None))
         return rec
 
     if not body:
+        if voice and vinfo:
+            return direct(voice_turn.FAILED_REPLY, "empty", failure_notice=True)
         what = " (the voice note could not be transcribed)" if voice else ""
         return direct(NO_TEXT.format(what=what), "empty", failure_notice=True)
     try:
@@ -577,7 +638,29 @@ def handle_inbound(chat, text, *, kind="text", media=None, platform="telegram", 
         return direct(pre[1], "approval")
     return run_turn(chat, body, d, platform=platform, origin=origin, voice=voice, t0=t0,
                     note=pre[1] if pre else "", settings=s, session=session, local=local, address=address,
-                    turn_id=turn_id, typing=keeper, attempt=attempt)
+                    turn_id=turn_id, typing=keeper, attempt=attempt, voice_info=vinfo)
+
+
+def transcribe_note(path, settings):
+    """(transcript, voice info) for a voice note's audio file: the engine's own speech-to-text (waggle/stt.py),
+    with the known mishearings fixed. The info records where the words came from and how long it took."""
+    res = stt.transcribe(path)
+    info = {"voice": True, "transcript_source": res.get("source") or stt.SOURCE, "audio_path": str(path),
+            "stt_s": res.get("seconds"),
+            "stt_load_s": res.get("load_s"), "input_audio_s": res.get("audio_s"), "stt_ok": bool(res.get("ok"))}
+    if not res.get("ok"):
+        info["stt_error"] = str(res.get("error") or "")[:200]
+        events.log("engine_stt_failed", error=info["stt_error"])
+        return "", info
+    return voice_turn.fix(res["text"], getattr(settings, "voice_fixes", None)), info
+
+
+def _audio_path(media):
+    for m in (media if isinstance(media, (list, tuple)) else [media]):
+        path = (m.get("path") or m.get("file")) if isinstance(m, dict) else m
+        if path and str(path).strip():
+            return str(path)
+    return None
 
 
 def on_inbound(msg):
@@ -592,7 +675,10 @@ def on_inbound(msg):
     if not chat:
         raise ValueError("inbound message without chat or address")
     address = address or address_for(chat, platform)
-    rec = handle_inbound(chat, msg.get("text") or "", kind=msg.get("kind") or "text", media=msg.get("media"),
+    kind, text, media, audio = msg.get("kind") or "text", msg.get("text") or "", msg.get("media"), None
+    if kind == "voice" and not text.strip():
+        audio, media = _audio_path(media), None  # the note's file is transcribed in the turn, not shown to the brain
+    rec = handle_inbound(chat, text, kind=kind, media=media, audio=audio,
                          platform=platform, origin=origin, delivery=delivery_for(chat, platform, address),
                          t0=msg.get("received_ts"), turn_id=msg.get("turn_id"), attempt=int(msg.get("attempt") or 1),
                          address=address)

@@ -5,7 +5,8 @@ The turn engine (waggle/chat_engine.py) only ever talks to a `Delivery`. A trans
     post(text)              -> handle or None      new message; the handle identifies it for edits
     edit(handle, text)      -> bool                replace that message's text in place
     send_file(path, caption="") -> bool            a document / image
-    send_voice(path, caption="") -> bool           a voice note (.ogg/Opus)
+    send_voice(path, caption="", duration=None) -> message id or False    a voice message (.ogg/Opus); only where
+                                                    the class says can_voice
     typing()                                        "typing..." indicator, best effort
 
 plus two attributes: `can_edit` (False = edits are not shown in place, so stream nothing and post the final
@@ -30,6 +31,7 @@ import time
 class Delivery:
     """Interface. Subclasses override what their transport supports."""
     can_edit = True
+    can_voice = False  # True: send_voice(path, duration=) really sends a voice message and returns its message id
     max_len = 4000
     name = "delivery"
 
@@ -42,7 +44,7 @@ class Delivery:
     def send_file(self, path, caption=""):
         return False
 
-    def send_voice(self, path, caption=""):
+    def send_voice(self, path, caption="", duration=None):
         return False
 
     def typing(self):
@@ -466,6 +468,7 @@ class BotApiDelivery(Delivery):
     - max_len 4096 (Telegram's limit): StreamWriter continues a longer reply in a new message.
     The first message of a turn can reply to the user's message (`reply_to`)."""
     can_edit = True
+    can_voice = True  # send_voice returns the voice message's id
     max_len = 4096
     name = "telegram"
     MAX_WAIT_S = 30.0
