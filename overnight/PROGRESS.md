@@ -189,3 +189,20 @@ Live checks (through the gateway with `hermes chat -q`; the Telegram app itself 
   kokoro_say.py also writes Ogg/Opus itself for .ogg outputs (0ff5ef8), a fallback if ffmpeg is ever missing.
   Desktop playback stays WAV (Hermes plays WAV through sounddevice on Windows; other formats need ffplay).
 - Not yet heard on the phone: the first spoken reply needs the user to send a voice note.
+
+## Repository watchers, 2026-11-20 evening (66a770b, deployed)
+
+Found on the live machine while Waggle was looking at a day of work in thirty checkouts:
+
+- "N commit(s) not pushed" was `@{u}..HEAD`, so a branch cut from origin/main and pushed under its own name was
+  reported as not pushed (four branches, 5 to 19 commits each), and a branch with no upstream was never
+  reported. Now `proactive.unpushed_count`: commits of HEAD that are on no remote.
+- Each look asked git two questions per repository and the day's log on top: 87 processes a pass with 29
+  checkouts. Answers that depend only on refs are kept until a signature of the refs changes
+  (`proactive.git_signature`, `_git_refs`). Measured with the real settings: first look 87 git processes in
+  2.7 s, every later look 0 in 0.1 s, same answers.
+- Suite 1126 passed. Live core restarted on 66a770b, healthy in 8 s; guard verify clean.
+
+Still open from the 12:10 list: the other processes a look starts (the `gh` calls of the GitHub watcher run
+on their own timer and are not kept), `core stop` does not pause the watchdog, the knowledge builder with its
+origin filter, an outreach "later" outcome, the README.

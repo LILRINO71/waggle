@@ -38,6 +38,14 @@ asleep or busy. Make the assistant better, not just the infrastructure bigger.
   active (`python -m waggle.cli learn` history; rollback with prompts.rollback("router")). Chat benchmark:
   `python bench/chat_bench.py waggle` (results in ~/.waggle/bench). Voice: turbo STT + voice_turn fixes.
 
+## Read this first (2026-11-20)
+This file's list below is from 2026-11-19 morning. Since then Waggle was rebuilt around an always-on core
+(`REBUILD_PLAN.md`, its Status section, and the last sections of `PROGRESS.md` are current). Open now:
+the knowledge builder (it must filter what it learns by origin), an outreach "later" outcome, `core stop`
+should pause the watchdog, the README, and the user's own checks in `USER_TESTS.md`.
+Usage: on 2026-11-20 evening the plan's weekly limit stood at 94 % until 2026-11-25 06:00 PT, and Waggle's own
+answers draw on the same allowance: no agent waves until it resets; small solo changes only.
+
 ## Next tasks, in order
 0. **User checks on the phone**: the voice note worked (10:23); the text never reached the gateway, so get one
    typed message through, and one voice note to hear the first spoken reply (af_heart 1.05x, voice_only
