@@ -175,14 +175,30 @@ def _payload(day, rows, s, limit=40000):
 
 def distill(day, rows, settings=None, asker=None, model=None):
     """One background call. Returns the model's JSON (raises budget.Deferred / ClaudeError)."""
-    from . import budget, claude_cli
+    from . import budget, cascade, claude_cli
     s = settings or Settings.load()
+    if asker is None and model is None and cascade.enabled(s):
+        # Haiku first, Sonnet when Haiku is unsure (the local model is skipped: a day's digest is long and the facts
+        # it files go through the quote check below, so a weak digest would quietly lose knowledge). Whatever it
+        # files is verified in file_results, so an answer that is a little off costs nothing.
+        with budget.background("digest"):
+            res = cascade.ask("digest", _payload(day, rows, s), DISTILL_SCHEMA, "answer", system=DISTILL_SYSTEM,
+                              check=_distilled_ok, purpose="digest", start="haiku", effort="medium", timeout=300,
+                              settings=s, baseline=s.deep_model)
+        return res.get("json") or {}
     model = model or s.deep_model
     asker = asker or claude_cli.ask
     with budget.spend(model, purpose="digest"):
         res = asker(_payload(day, rows, s), model=model, system=DISTILL_SYSTEM, schema=DISTILL_SCHEMA,
                     purpose="digest", timeout=300)
     return res.get("json") or {}
+
+
+def _distilled_ok(data):
+    """The rule a cheap digest must pass: a real summary, and the lists it is asked for."""
+    if not isinstance(data, dict) or len(str(data.get("summary") or "").strip()) < 10:
+        return False, "no summary"
+    return all(isinstance(data.get(k), list) for k in ("conversations", "facts", "outcomes")), "a list is missing"
 
 
 def _norm(text):

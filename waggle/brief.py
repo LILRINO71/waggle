@@ -164,6 +164,13 @@ def evening_note(settings=None, now=None, activity=None):
         gate_line = ""
     if gate_line:
         lines.append(gate_line)
+    try:  # how many background answers stayed local or on Haiku today (waggle/cascade.py)
+        from . import cascade
+        cascade_line = cascade.evening_line(now, s)
+    except Exception:  # noqa: BLE001
+        cascade_line = ""
+    if cascade_line:
+        lines.append(cascade_line)
     try:  # suggestions held back because the owner usually ignores that kind (waggle/outreach_ev.py)
         from . import outreach_ev
         held_line = outreach_ev.evening_line(now, s)

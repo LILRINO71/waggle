@@ -28,7 +28,7 @@ import time
 import uuid
 from pathlib import Path
 
-from . import agents, budget, claude_cli, events, notify, projects, quota, vault
+from . import agents, budget, checklist, claude_cli, events, notify, projects, quota, vault
 from .config import Settings, data_path
 
 ACTIVE = ("planning", "active")
@@ -45,7 +45,8 @@ MAX_INTERRUPTS = 3  # a step that dies mid-run this often blocks instead of loop
 VERIFY_RETRY_S = 15 * 60
 MIGRATIONS = {"objectives": (("lease_until", "REAL"), ("deferred_until", "REAL"), ("defer_reason", "TEXT"),
                              ("approval_ids", "TEXT")),
-              "steps": (("interrupts", "INTEGER DEFAULT 0"), ("approved", "TEXT"))}
+              "steps": (("interrupts", "INTEGER DEFAULT 0"), ("approved", "TEXT"), ("checklist", "TEXT"),
+                        ("proof", "TEXT"))}
 
 
 def _db():
@@ -93,12 +94,17 @@ web research, browser, the user's email/calendar, their notes). Break the goal i
 is done by one specialist agent: general, coder, researcher, robotics, planner, tutor, monitor. For each step give a
 short title, precise instructions, what "done" looks like (checkable), and which earlier steps (by number, from 1)
 it needs. Prefer fewer, bigger steps; do not add steps for asking the user things you can find out. The last step
-should produce the deliverable the user asked for (a vault note, file, or message). Reply JSON only."""
+should produce the deliverable the user asked for (a vault note, file, or message). For each step also give 2-5
+requirements: concrete things that must be true when it is done and that can be checked from the files it leaves behind
+(give the file's path when one must exist) or, with content=true, from its final output. Reply JSON only."""
 PLAN_SCHEMA = {"type": "object", "properties": {
     "title": {"type": "string", "description": "3-7 word title"},
     "steps": {"type": "array", "items": {"type": "object", "properties": {
         "title": {"type": "string"}, "detail": {"type": "string"}, "agent": {"type": "string"},
-        "done_when": {"type": "string"}, "depends_on": {"type": "array", "items": {"type": "integer"}}},
+        "done_when": {"type": "string"}, "depends_on": {"type": "array", "items": {"type": "integer"}},
+        "requirements": {"type": "array", "items": {"type": "object", "properties": {
+            "text": {"type": "string"}, "path": {"type": "string"}, "content": {"type": "boolean"}},
+            "required": ["text"]}}},
         "required": ["title", "detail", "agent", "done_when", "depends_on"]}}},
     "required": ["title", "steps"]}
 
@@ -132,10 +138,11 @@ def create_planned(goal, steps, project=None, title=None, origin="autowork"):
     for i, st in enumerate(steps[:MAX_STEPS], 1):
         deps = sorted({int(x) for x in st.get("depends_on") or [] if 0 < int(x) < i})
         agent = st.get("agent") if st.get("agent") in agents.AGENTS else "general"
-        con.execute("INSERT INTO steps (objective_id, idx, title, detail, agent, depends, done_when, status) "
-                    "VALUES (?,?,?,?,?,?,?,?)", (oid, i, str(st["title"])[:120], str(st.get("detail", ""))[:3000],
-                                                 agent, json.dumps(deps), str(st.get("done_when", ""))[:600],
-                                                 "pending"))
+        con.execute("INSERT INTO steps (objective_id, idx, title, detail, agent, depends, done_when, status, "
+                    "checklist) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (oid, i, str(st["title"])[:120], str(st.get("detail", ""))[:3000], agent, json.dumps(deps),
+                     str(st.get("done_when", ""))[:600], "pending",
+                     json.dumps(checklist.normalize(st.get("requirements")))))
     _log(con, oid, "created", f"{goal} ({len(steps)} given steps, origin {origin})")
     con.commit()
     con.close()
@@ -210,9 +217,10 @@ def plan(oid, asker=None, settings=None, context=""):
     for i, st in enumerate(steps, 1):
         deps = sorted({int(x) for x in st.get("depends_on") or [] if 0 < int(x) < i})
         agent = st.get("agent") if st.get("agent") in agents.AGENTS else "general"
-        con.execute("INSERT INTO steps (objective_id, idx, title, detail, agent, depends, done_when, status) "
-                    "VALUES (?,?,?,?,?,?,?,?)", (oid, i, st["title"][:120], st["detail"][:3000], agent,
-                                                 json.dumps(deps), st.get("done_when", "")[:600], "pending"))
+        con.execute("INSERT INTO steps (objective_id, idx, title, detail, agent, depends, done_when, status, "
+                    "checklist) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (oid, i, st["title"][:120], st["detail"][:3000], agent, json.dumps(deps),
+                     st.get("done_when", "")[:600], "pending", json.dumps(checklist.normalize(st.get("requirements")))))
     title = (d.get("title") or obj["title"])[:80]
     _set(con, oid, status="active", title=title, error=None, deferred_until=None)
     _log(con, oid, "planned", f"{len(steps)} steps")
@@ -244,6 +252,43 @@ INTERRUPTED_NOTE = ("\nAn earlier run of this step was interrupted before it fin
                     "did not already happen.\n")
 
 
+def step_requirements(step):
+    """The step's checklist: [{"id", "text", "path"?, "content"?}] (empty for steps planned without one)."""
+    try:
+        reqs = json.loads(step["checklist"] or "[]")
+    except (KeyError, IndexError, TypeError, ValueError):
+        return []
+    return [r for r in reqs if isinstance(r, dict) and r.get("text")]
+
+
+def _named_files(step, reqs, s):
+    """Existing files the step's text or requirements name (vault-relative paths are looked up in the vault)."""
+    root = vault.root(s)
+    text = f"{step['detail']}\n{step['done_when']}\n" + "\n".join(f"{r['text']} {r.get('path') or ''}" for r in reqs)
+    out = []
+    for rel in VAULT_PATH.findall(text) + ABS_PATH.findall(text):
+        p = Path(rel) if ABS_PATH.fullmatch(rel) else root / rel
+        if p.is_file() and str(p) not in out:
+            out.append(str(p))
+    return out[:6]
+
+
+def _judge_step(con, oid, step, reqs, s):
+    """(complete, missing) for a step with a checklist: files by code, the rest by the evidence-only judge, which
+    sees the files the step named and (for [content] requirements) its final output, never its report. (None, why)
+    when the judge could not run: the step waits, as it does for any check that could not run."""
+    root = vault.root(s)
+    for r in reqs:  # a requirement's vault-relative path means that file inside the vault
+        if r.get("path") and not ABS_PATH.fullmatch(str(r["path"])):
+            r["path"] = str(root / str(r["path"]))
+    out = checklist.evaluate(reqs, started=step["started"] or 0, settings=s, files=_named_files(step, reqs, s),
+                             deliverable=step["result"], objective=oid, undecided_as_unmet=False)
+    _set_step(con, oid, step["idx"], proof=json.dumps(out["checks"]))
+    if out["undecided"]:
+        return None, out["undecided"]
+    return out["proven"], out["missing"]
+
+
 def _step_prompt(con, obj, step):
     rows = con.execute("SELECT idx, title, status, result FROM steps WHERE objective_id=? ORDER BY idx",
                        (obj["id"],)).fetchall()
@@ -259,6 +304,10 @@ def _step_prompt(con, obj, step):
     if step["approved"]:
         retry += (f"\nThe user approved exactly these actions for this step: {step['approved']}. Make those calls "
                   "with the same arguments; anything else that needs approval will be asked again.\n")
+    reqs = step_requirements(step)
+    if reqs:
+        retry += ("\nREQUIREMENTS, checked afterwards against the files you leave behind and your final output, never "
+                  "against your own report:\n" + "\n".join(f"{r['id']}. {r['text']}" for r in reqs) + "\n")
     root = vault.root()
     return (f"You are working on step {step['idx']} of a longer objective for the user.\n\nOBJECTIVE: {obj['goal']}\n"
             + (f"PROJECT: {obj['project']}\n" if obj["project"] else "")
@@ -423,6 +472,7 @@ def _verify_and_record(oid, idx, s, verify_fn=None):
     con = _db()
     step = con.execute("SELECT * FROM steps WHERE objective_id=? AND idx=?", (oid, idx)).fetchone()
     task = f"{step['title']}: {step['detail']}\nDone when: {step['done_when']}"
+    reqs = step_requirements(step)
     facts, absent = artifact_facts(step, s)
     report = (step["result"] or "") + (f"\n\n[Checked by Waggle on disk: {facts}]" if facts else "")
     if absent:  # the step promised a file that isn't there: no need to ask a model
@@ -432,6 +482,8 @@ def _verify_and_record(oid, idx, s, verify_fn=None):
         with budget.background("objective-verify", oid, idx):
             if verify_fn:
                 complete, missing = verify_fn(task, report, settings=s)
+            elif reqs and checklist.enabled(s):
+                complete, missing = _judge_step(con, oid, step, reqs, s)
             else:
                 complete, missing = agents.verify(task, report, settings=s, strict=True)
     if complete is None:  # the check couldn't run: keep the saved result and try the check again later

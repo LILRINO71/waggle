@@ -106,6 +106,14 @@ class Settings:
     gates_enabled: bool = True  # a pre-check may skip a background Claude call when it is very sure (P >= 0.95)
     gates_local: bool = True  # the pre-check may ask the local model (only when Ollama already has a model loaded)
     notify_check_enabled: bool = True  # a local yes/no decides if a background result is worth a message now
+    # Cheap-first cascade for background Claude calls (waggle/cascade.py): local model, then Haiku, then Sonnet, the
+    # first answer that passes a self-check wins; usage steers it. false = every caller takes its old direct call.
+    cascade_enabled: bool = True
+    cascade_local: bool = True  # the cascade may try the local model first (false: it starts at Haiku)
+    # Objective and autonomy steps are judged on a checklist of requirements: code checks what it can, an
+    # evidence-only judge reads the step's artifacts for the rest, and files changed outside the write roots fail the
+    # step (waggle/checklist.py). false = the old proof / Haiku check on the agent's report.
+    checklist_judge: bool = True
     # Outreach timing and choice (waggle/holdq.py, outreach_ev.py). Each switch is independent; false = the old behaviour.
     hold_for_breaks: bool = True  # an unprompted, non-urgent message waits for the owner's next natural break
     hold_max_wait_min: float = 90.0  # ...and goes out anyway after this long

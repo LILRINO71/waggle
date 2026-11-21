@@ -58,11 +58,14 @@ no messages, posts, pushes, purchases or accounts. Name the evidence that will p
                  "cwd":<folder inside a write root>}
   commit_exists {"type":"commit_exists","repo":<repository folder inside a write root>}
   url_ok        {"type":"url_ok","url":<https URL that should answer>}
-If nothing useful and provable fits the charter, return action "none". Reply JSON only."""
+Also give "requirements": 2-5 short, concrete things that must be true when the step is done (a file holds X, a
+test passes, a note has a section Y). Each must be checkable from the files the step leaves behind, not from what
+the worker says. If nothing useful and provable fits the charter, return action "none". Reply JSON only."""
 PICK_SCHEMA = {"type": "object", "properties": {
     "action": {"type": "string"}, "title": {"type": "string"}, "instructions": {"type": "string"},
     "workdir": {"type": "string"}, "why": {"type": "string"},
-    "evidence": {"type": "array", "items": {"type": "object"}}},
+    "evidence": {"type": "array", "items": {"type": "object"}},
+    "requirements": {"type": "array", "items": {"type": "string"}}},
     "required": ["action", "title", "instructions", "evidence"]}
 
 
@@ -344,16 +347,23 @@ def idle_check(goal, now):
 def pick_step(goal, settings=None, now=None, asker=None):
     """One model call inside the background allowance. Returns the proposal dict, or {"refused": why} when the
     allowance says no, or {"error": why}."""
-    from . import budget, claude_cli
+    from . import budget, cascade, claude_cli
     s = settings or Settings.load()
     model = s.deep_model
     tag = f"goal-{goal['id']}"
+    now = store_.now_or(now)
     try:
         with budget.background("autowork", objective=tag):
-            with budget.spend(model, purpose="autowork-pick", objective=tag, settings=s):
-                res = (asker or claude_cli.ask)(_context(goal, s, store_.now_or(now)), model=model,
-                                                system=PICK_SYSTEM, schema=PICK_SCHEMA, purpose="autowork-pick",
-                                                effort="low")
+            if asker is None and cascade.applies(s):
+                # Cheap first: the local model, then Haiku, then Sonnet. A wrong pick costs nothing: the charter
+                # check and the proof below refuse it, so it only has to pass the charter rule to be accepted.
+                res = cascade.ask("autowork-pick", _context(goal, s, now), PICK_SCHEMA, "answer", system=PICK_SYSTEM,
+                                  check=lambda d: _pick_rule(goal, d, s, now), purpose="autowork-pick",
+                                  objective=tag, effort="low", settings=s, baseline=model, strict_last=False)
+            else:
+                with budget.spend(model, purpose="autowork-pick", objective=tag, settings=s):
+                    res = (asker or claude_cli.ask)(_context(goal, s, now), model=model, system=PICK_SYSTEM,
+                                                    schema=PICK_SCHEMA, purpose="autowork-pick", effort="low")
     except budget.Deferred as e:
         return {"refused": e.reason}
     except claude_cli.ClaudeError as e:
@@ -364,6 +374,16 @@ def pick_step(goal, settings=None, now=None, asker=None):
     if not isinstance(prop, dict) or not prop.get("action"):
         return {"error": "the model returned no step"}
     return prop
+
+
+def _pick_rule(goal, prop, s, now):
+    """The rule a cheap pick must pass to be taken without asking a stronger model: it names an action, and a step
+    inside the charter with evidence (or says there is nothing to do)."""
+    if not isinstance(prop, dict) or not prop.get("action"):
+        return False, "no action"
+    if prop.get("action") == "none":
+        return True, ""
+    return check_proposal(goal, {**prop, "title": prop.get("title") or "next step"}, s, now)
 
 
 def check_proposal(goal, prop, settings=None, now=None):
@@ -405,11 +425,18 @@ def check_proposal(goal, prop, settings=None, now=None):
 
 def _step_text(goal, prop, roots):
     ev = "; ".join(json.dumps(e) for e in prop.get("evidence") or [])
+    rq = "; ".join(str(x) for x in prop.get("requirements") or [] if x)
     return (f"{prop.get('instructions', '')}\n\nThis step serves the standing goal '{goal['title']}' and runs while "
             f"the owner is away. Limits: write only inside {', '.join(str(r) for r in roots)}"
             + (f" (work in {prop['workdir']})" if prop.get("workdir") else "")
             + ". Do not send messages, post, push, publish, buy anything or create accounts. "
-            f"Waggle checks the result itself, by code: {ev}. Your own report is not taken as proof.")
+            f"Waggle checks the result itself, by code: {ev}. Your own report is not taken as proof."
+            + (f" The files you leave behind must meet: {rq}." if rq else ""))
+
+
+def _label(c):
+    """How a check is named in a 'why': its evidence type, or the requirement text for a judged one."""
+    return (c.get("text") or c["type"]) if c.get("by") == "judge" or c.get("type") == "side_damage" else c["type"]
 
 
 def _units(objective_ids, since):
@@ -425,10 +452,12 @@ def _units(objective_ids, since):
 
 # ---- the loop ---------------------------------------------------------------------------------------------------
 
-def run_once(settings=None, now=None, asker=None, run_fn=None, fetch=None, goal_id=None, gate=None):
+def run_once(settings=None, now=None, asker=None, run_fn=None, fetch=None, goal_id=None, gate=None,
+             judge_seams=None):
     """At most one step toward one goal. Returns a small report of what happened (and why not, when nothing).
-    gate: a zero-argument check replacing the default one in front of the pick call (gates.evaluate), or False."""
-    from . import objectives
+    gate: a zero-argument check replacing the default one in front of the pick call (gates.evaluate), or False.
+    judge_seams: {"asker":, "local":, "pressure":} handed to the checklist judge's cascade (tests)."""
+    from . import checklist, objectives
     s = settings or Settings.load()
     now = store_.now_or(now)
     if not goals.autonomy_enabled():
@@ -470,8 +499,16 @@ def run_once(settings=None, now=None, asker=None, run_fn=None, fetch=None, goal_
     roots = goals.expand_roots(goal["charter"], goal["id"], s)
     before = before_state(evidence)
     proof = {}
+    judged = checklist.enabled(s)
+    reqs = checklist.normalize(prop.get("requirements"), evidence) if judged else []
+    snap = checklist.watch(roots, s) if judged else None
 
     def verify(task, report, settings=None):  # the engine's check, done by code instead of a model
+        if judged:  # requirements: code where it can, an evidence-only judge for the rest, and no side damage
+            out = checklist.evaluate(reqs, started=started, settings=s, goal=goal, roots=roots, before_git=before,
+                                     before=snap, fetch=fetch, objective=tag, **(judge_seams or {}))
+            proof["result"] = (out["proven"], out["checks"])
+            return out["proven"], out["missing"]
         proof["result"] = prove(evidence, goal, started, before, s, fetch)
         okk, checks = proof["result"]
         return okk, "" if okk else "; ".join(f"{c['type']}: {c.get('why')}" for c in checks if not c["ok"])
@@ -496,17 +533,20 @@ def run_once(settings=None, now=None, asker=None, run_fn=None, fetch=None, goal_
     elif str(step_row.get("verify") or "").startswith("agent error") or st is None:
         outcome = "failed"
     else:  # the engine stopped before the proof (a promised file missing): prove it anyway, by code
-        proof["result"] = prove(evidence, goal, started, before, s, fetch)
+        if judged:
+            verify("", "")
+        else:
+            proof["result"] = prove(evidence, goal, started, before, s, fetch)
         outcome = "proven" if proof["result"][0] else "unproven"
     checks = proof.get("result", (False, []))[1]
     if outcome != "proven":
         why = {"refused": f"background allowance: {info.get('defer_reason') or info.get('error') or 'no room'}",
                "needs_approval": "the step needed the owner's approval",
                "failed": step_row.get("verify") or "the agent did not finish"}.get(
-            outcome, "; ".join(f"{c['type']}: {c.get('why')}" for c in checks if not c["ok"]) or "not proven")
+            outcome, "; ".join(f"{_label(c)}: {c.get('why')}" for c in checks if not c["ok"]) or "not proven")
         objectives.conclude_unproven(oid, why)
     else:
-        why = "; ".join(f"{c['type']}: {c.get('why')}" for c in checks)
+        why = "; ".join(f"{_label(c)}: {c.get('why')}" for c in checks)
     sid = record_step(goal["id"], outcome, title=prop["title"], action=prop["action"], objective_id=oid,
                       detail=why, evidence=checks, units=_units([tag, oid], started), now=now, settings=s)
     readings = {}
@@ -522,6 +562,12 @@ def run_once(settings=None, now=None, asker=None, run_fn=None, fetch=None, goal_
 
 
 # ---- evening note -----------------------------------------------------------------------------------------------
+
+def _missing(row):
+    """The unmet requirements of a recorded step, as short texts (from the checks stored with it)."""
+    return [f"{c.get('text') or c.get('type')} ({str(c.get('why') or '')[:90]})" for c in row.get("evidence") or []
+            if isinstance(c, dict) and c.get("ok") is False]
+
 
 def goal_line(goal, rows, s, since):
     """One line for one goal: steps and outcomes since `since`, indicators with their change."""
@@ -553,6 +599,9 @@ def goal_line(goal, rows, s, since):
         line += "; proven: " + "; ".join(t[:60] for t in proven)
     if changes:
         line += "; " + ", ".join(changes)
+    missing = [f"{r['title'][:40]}: {m}" for r in rows if r["outcome"] == "unproven" for m in _missing(r)[:2]]
+    if missing:  # what the checklist found unmet, so the note says why a step was not proven
+        line += "; missing: " + "; ".join(missing[:3])
     return line
 
 
