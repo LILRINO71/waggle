@@ -514,3 +514,56 @@ def test_every_statement_must_be_covered(home):
     assert sh(home, cmd, said).action == ASK
     cmd = f"rm -rf {U(home, 'Claude/sim-bench')} $(rm -rf {U(home, 'Documents')})"
     assert sh(home, cmd, said).action == ASK  # a command substitution is a statement too
+
+
+# ---- a file named through a simple variable in the same command (seen live 2026-11-20) -------------------------
+
+def ps(home, command, text):
+    return policy.decide("PowerShell", {"command": command}, cwd=str(home / "Claude"), turn=owner(text))
+
+
+def test_a_variable_holding_the_named_file_is_the_named_file(home):
+    (home / "Desktop").mkdir(exist_ok=True)
+    (home / "Desktop" / "waggle-permission-test.txt").write_text("hello", encoding="utf-8")
+    f = U(home, "Desktop/waggle-permission-test.txt")
+    text = "delete waggle-permission-test.txt from my desktop"
+    assert ps(home, f'$p = "{f}"; Remove-Item $p', text).action == ALLOW
+    assert ps(home, f"$p = '{f}'; Remove-Item -LiteralPath $p -Force", text).action == ALLOW
+    assert ps(home, f'$d = "{U(home, "Desktop")}"; $p = Join-Path $d "waggle-permission-test.txt"; Remove-Item $p',
+              text).action == ALLOW
+    assert sh(home, f'p="{f}"; rm "$p"', text).action == ALLOW
+
+
+def test_a_variable_holding_another_file_still_asks(home):
+    text = "delete waggle-permission-test.txt from my desktop"
+    other = U(home, "Documents/plan.docx")
+    assert ps(home, f'$p = "{other}"; Remove-Item $p', text).action == ASK
+
+
+@pytest.mark.parametrize("trick", [
+    '$p = "{f}"; $p = "{o}"; Remove-Item $p',                       # assigned twice
+    '$p = "{f}"; $p += "x"; Remove-Item $p',                         # changed after
+    '$p = "{f}"; Set-Variable p "{o}"; Remove-Item $p',               # set another way
+    '$p = "{f}"; foreach ($p in @("{o}")) {{ Remove-Item $p }}',     # a loop variable
+    '$p = "{f}"; iex \'$p = "{o}"\'; Remove-Item $p',                 # set inside a string that runs
+    '$p = Get-ChildItem "{d}"; Remove-Item $p',                      # not a literal
+])
+def test_variable_tricks_never_resolve(home, trick):
+    text = "delete waggle-permission-test.txt from my desktop"
+    cmd = trick.format(f=U(home, "Desktop/waggle-permission-test.txt"), o=U(home, "Documents/plan.docx"),
+                       d=U(home, "Documents"))
+    assert ps(home, cmd, text).action == ASK
+
+
+def test_an_unresolved_variable_tells_the_agent_to_retry_not_to_ask(home):
+    d = ps(home, "$p = Get-Item x; Remove-Item $p", "delete waggle-permission-test.txt from my desktop")
+    assert d.action == ASK and d.kind == "unresolved"
+    from waggle import agent_hook
+
+    class D:
+        allowed, action, reason, approval_id, kind = False, ASK, d.reason, "", "unresolved"
+    import unittest.mock as um
+    with um.patch.object(policy, "check", lambda *a, **k: D()):
+        out = agent_hook.handle({"tool_name": "PowerShell", "tool_input": {"command": "x"}})
+    why = out["hookSpecificOutput"]["permissionDecisionReason"]
+    assert why.startswith("RETRY_LITERAL") and "Do not ask the owner" in why and "NEEDS_APPROVAL" not in why

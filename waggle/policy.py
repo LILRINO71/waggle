@@ -887,13 +887,113 @@ def _shell_act(verb, rest, why, cwd, stmt):
 _SECRETISH = re.compile(next(p for p, why in ASK_SHELL if why == "touching a secrets file"), re.I)
 
 
+# ---- simple variables inside one command (`$p = "C:\...\x.txt"; Remove-Item $p`) ------------------------------
+
+_PS_ASSIGN = re.compile(r"^\$([A-Za-z_]\w*)\s*=(?!=)\s*(.+)$", re.S)
+_SH_ASSIGN = re.compile(r"^([A-Za-z_]\w*)=(\S.*)?$", re.S)
+# Ways to set a variable other than one plain assignment. Command words only count as words (not inside a path such
+# as AppData\Local), so they are matched where a command can start or as a whole word between spaces/quotes/(.
+_W = r"(?<![\w/\\.:-])"
+_VAR_TRICKS = re.compile(rf"(?i){_W}(set-variable|new-variable|get-variable|clear-variable|remove-variable|sv|nv|"
+                         rf"declare|typeset|local|export|readonly|eval|invoke-expression|iex|read|mapfile|"
+                         rf"readarray|source)(?![\w/\\.:-])|\s-(outvariable|ov|errorvariable|ev|pipelinevariable|pv|"
+                         rf"warningvariable|wv|informationvariable|iv)\b|\[ref\]|variable:|"
+                         rf"(?<![\w/\\])\.\s+\S")  # `. script.ps1` / `. file.sh` runs code in this scope
+_ARG = re.compile(r'"[^"]*"|\'[^\']*\'|[^\s"\']+')
+
+
+def _known_folder(name):
+    """[Environment]::GetFolderPath('Desktop') and friends, from the user's shell folders (OneDrive moves them)."""
+    reg = {"desktop": "Desktop", "desktopdirectory": "Desktop", "mydocuments": "Personal", "personal": "Personal",
+           "mypictures": "My Pictures", "mymusic": "My Music", "myvideos": "My Video"}.get(name.lower())
+    if not reg:
+        return None
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders") as k:
+            v = winreg.QueryValueEx(k, reg)[0]
+        return guard.expand(str(v))
+    except Exception:
+        return None
+
+
+def _subst(text, known):
+    """Replace $name / ${name} (not $env:) of variables assigned once in this command."""
+    def rep(m):
+        name = (m.group(1) or m.group(2) or "").lower()
+        return known.get(name, m.group(0))
+    return re.sub(r"\$\{([A-Za-z_]\w*)\}|\$(?!env:)([A-Za-z_]\w*)", rep, text, flags=re.I)
+
+
+def _value_of(expr, known, depth=0):
+    """The literal value of a simple right-hand side, or None when it is anything else."""
+    expr = expr.strip().rstrip(";").strip()
+    if not expr or depth > 3:
+        return None
+    m = re.fullmatch(r'"([^"`$]*(?:\$(?:env:)?\{?[A-Za-z_]\w*\}?[^"`$]*)*)"', expr, re.I)
+    if m:
+        return _subst(m.group(1), known)
+    m = re.fullmatch(r"'([^']*)'", expr)
+    if m:
+        return m.group(1)
+    m = re.fullmatch(r"\[(?:System\.)?Environment\]::GetFolderPath\(\s*(?:\[[\w.]+\]::)?['\"]?(\w+)['\"]?\s*\)",
+                     expr, re.I)
+    if m:
+        return _known_folder(m.group(1))
+    m = re.fullmatch(r"(?i)join-path\s+(.+)", expr, re.S)
+    if m:
+        args = [a for a in _ARG.findall(m.group(1)) if a.lower() not in ("-path", "-childpath")]
+        if len(args) == 2:
+            a, b = (_value_of(x, known, depth + 1) for x in args)
+            if a and b:
+                return a.rstrip("/\\") + "/" + b.lstrip("/\\")
+        return None
+    if re.fullmatch(r"[^\s|;&()`\"'{}@,]+", expr):  # a bare word: $env:USERPROFILE\Desktop\x.txt, $d\x.txt
+        v = _subst(expr, known)
+        return None if re.search(r"\$(?!env:)", v, re.I) else v
+    return None
+
+
+def _assigned_once(command, name):
+    """The command assigns `name` exactly once, by a plain statement (no loops, read, Set-Variable, ...)."""
+    n = re.escape(name)
+    ps = len(re.findall(rf"\$(?:\w+:)?{n}\s*(?:[-+*/%]|\?\?)?=(?!=)", command, re.I))
+    sh = len(re.findall(rf"(?<![\w$.-]){n}\+?=(?!=)", command))
+    loops = re.search(rf"(?i)\bforeach\s*\(\s*\${n}\b|\bfor\s+{n}\b|\bselect\s+{n}\b", command)
+    return ps + sh == 1 and not loops
+
+
+def _with_variables(stmts, command):
+    """The statements with simple variables replaced by their values (see _value_of); a statement that only
+    assigns stays as it is. Anything unusual about how a variable is set leaves it unreplaced, so it still asks."""
+    if _VAR_TRICKS.search(command):
+        return stmts
+    known, out = {}, []
+    for st in stmts:
+        st0 = st.strip()
+        m = _PS_ASSIGN.match(st0)
+        sh = None if m else _SH_ASSIGN.match(st0)
+        if m or sh:
+            name, rhs = (m.group(1), m.group(2)) if m else (sh.group(1), sh.group(2) or "")
+            v = _value_of(rhs, known) if _assigned_once(command, name) else None
+            if v is not None:
+                known[name.lower()] = v
+            else:
+                known.pop(name.lower(), None)
+            out.append(st)
+            continue
+        out.append(_subst(st, known) if known else st)
+    return out
+
+
 def _shell_acts(tool, command, cwd):
     """One _Act per statement that asks; None when a statement is refused outright."""
     name = (tool or "").lower().split("__")[-1]
     acts = []
     for stmts, _dialect in guard._parse(command, guard.SHELL_DIALECTS.get(name, guard.ALL_DIALECTS)):
         here = cwd or os.getcwd()
-        for st in stmts:
+        for st in _with_variables(stmts, command):
             st = st.strip()  # the ask patterns anchor at the start of a statement
             action, why = classify_shell(st)
             ctoks, _read = guard._command_tokens(guard._tokens(st))
@@ -1018,6 +1118,11 @@ def owner_rule(tool_name, args, base, turn, settings=None, cwd=None):
                                      f"{a.what}", kind="hearing")
             ok, why = covers(text, a, settings)
             if not ok:
+                hidden = [t.get("label") for t in (a.targets or []) if "$" in str(t.get("label") or "")
+                          or "$" in str(t.get("path") or "")]
+                if hidden and a.kind in ("destroy", "outbound"):  # not a permission question: name it plainly
+                    return Decision(ASK, f"{a.what}: the command names {hidden[0]} through a variable, so it can't "
+                                         f"be checked against the owner's words", kind="unresolved")
                 if a.kind in ("destroy", "outbound"):
                     return Decision(ASK, f"{a.what}: this goes beyond what you asked ({why})", kind="beyond")
                 return Decision(ASK, f"{base.reason} ({why})", kind=base.kind)

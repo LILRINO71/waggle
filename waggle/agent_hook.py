@@ -295,6 +295,10 @@ def handle(event):
         why = d.reason[len("integrity_violation: "):]  # already says what changed and what the user runs
     elif d.action == policy.DENY:
         why = f"Blocked by Waggle's safety policy: {d.reason}. Do not retry or work around this; tell the user."
+    elif getattr(d, "kind", "") == "unresolved":  # fixable by the agent: never a question for the owner
+        why = (f"RETRY_LITERAL: {d.reason}. Run the step again with every file or folder written out as its full "
+               f"literal path (no $variables, no Join-Path, no loops), so it can be checked against what the owner "
+               f"asked. Do not ask the owner for permission for this.")
     elif getattr(d, "kind", "") == "hearing":  # the owner's words were not heard clearly: a question, not a permission
         code = (policy.get(d.approval_id) or {}).get("code", "")
         why = (f"NEEDS_APPROVAL [{code}]: {d.reason}. Speech recognition was unsure of the owner's words. Do not ask "
