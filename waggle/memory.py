@@ -36,8 +36,10 @@ BAND = 0.06  # and how close to the best hit
 MIN_SPREAD = 0.025  # floor for the spread, so a tiny or uniform index can't make everything "stand out"
 KW_BONUS = 0.015  # per distinctive query word found in the chunk (max 3)
 
-EXCLUDE_PREFIXES = ("Objectives/", "Inbox/", "Jobs/", "Archive/", "Waggle/", "Me/History/", "Me/Specialists/",
-                    ".trash/", "_archive/")
+# Histories and quarantines (what was removed from a note, retired versions) are never indexed or retrieved: a
+# removed line must not come back through the folder that records its removal.
+HISTORY_PREFIXES = ("Me/History/", "Archive/", "Quarantine/", ".trash/", "_archive/")
+EXCLUDE_PREFIXES = ("Objectives/", "Inbox/", "Jobs/", "Waggle/", "Me/Specialists/", *HISTORY_PREFIXES)
 EXCLUDE_FILES = {"Waggle HQ.md", "Ideas/Digest.md"}
 ROUTE_LINE = re.compile(r"^\s*- \d{1,2}:\d{2} route=\S+.*$\n?", re.M)
 MARKER = re.compile(r"<!--\s*waggle:[^>]*-->\n?")
@@ -458,6 +460,8 @@ def read_note(name, settings=None, session="", max_chars=8000):
     if not p:
         return {"error": f"no note named {name!r}"}
     rel = p.relative_to(vault.root(s)).as_posix()
+    if rel.startswith(HISTORY_PREFIXES):
+        return {"error": f"{name!r} is in an archive folder; archives are not read"}
     text = clean(p.read_text(encoding="utf-8", errors="replace"))
     _log("read", name, rel, [{"path": rel, "score": None}], {}, session)
     return {"path": rel, "text": text[:max_chars], "truncated": len(text) > max_chars}

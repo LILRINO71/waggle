@@ -851,7 +851,17 @@ def cleanup(settings=None, apply=False, now=None):
     return {"moved": moved, "id": stamp, "manifest": str(manifest)}
 
 
+def purge(settings=None, apply=False, phrases=(), **kw):
+    """Take everything derived from non-user turns out of the vault, facts, graph and index (waggle/purge.py):
+    a dry run unless apply=True, with an undo record under the Waggle home. `python -m waggle.ingest purge`."""
+    from . import purge as purge_mod
+    return purge_mod.purge(settings, apply=apply, phrases=phrases, **kw)
+
+
 def restore(cleanup_id, settings=None):
+    if str(cleanup_id).startswith("purge-"):  # the id of a purge, not of a vault cleanup
+        from . import purge as purge_mod
+        return purge_mod.restore(cleanup_id, settings)
     s = settings or Settings.load()
     root = vault.root(s)
     items = json.loads(data_path(f"cleanup-{cleanup_id}.json").read_text(encoding="utf-8"))
@@ -889,6 +899,10 @@ def main():
         print(json.dumps(status(), indent=1, default=str))
     elif args[0] == "cleanup":
         print(json.dumps(cleanup(apply="--apply" in args), indent=1))
+    elif args[0] == "purge":
+        phrases = [args[i + 1] for i, a in enumerate(args[:-1]) if a == "--phrase"]
+        print(json.dumps(purge(apply="--apply" in args, phrases=phrases), indent=1, default=str,
+                         ensure_ascii=False))
     elif args[0] == "restore" and len(args) > 1:
         print(json.dumps(restore(args[1]), indent=1))
     else:
