@@ -123,9 +123,8 @@ Every turn leaves a record in `traces.db`: origin, who really answered, timings,
 
 ## How it is tested
 
-- Run with `python -m pytest -q -p no:cacheprovider`. On this branch the last full run was 1298 passed, 2 skipped, 4 xfailed in 3 min 46 s (my own
-  run; one real-process timing test failed once while the machine was busy and passed on re-run). The plan
-  recorded 550 passing tests when the core was first integrated, so the suite has grown since.
+- Run with `python -m pytest -q -p no:cacheprovider`. Use `py -3.14 tools/locked_suite.py`: it takes a machine-wide lock so only one full
+  run happens at a time, and re-runs any failure alone. The last full run is recorded in `overnight/HANDOFF.md`.
 - It includes real-process tests: they start a real core (`python -m waggle.core run`) in a temporary home,
   kill it mid-job, freeze it, and check that the watchdog replaces it (`tests/test_runtime_core.py`).
 - Tests never touch the real Waggle home (an autouse fixture redirects it), never call Ollama or Claude unless
@@ -142,24 +141,28 @@ Every turn leaves a record in `traces.db`: origin, who really answered, timings,
 
 ## Status
 
+Updated 2026-11-21. Detail and live proofs are in `overnight/HANDOFF.md`; the owner's keep-or-remove list with
+every off switch is `overnight/MORNING.md`.
+
 | Area | Status | Evidence or gap |
 |---|---|---|
 | Core, watchdog, crash recovery | Live and proven | Kill and freeze measured on the machine (HANDOFF) |
-| Typed turns and voice notes through the engine | Live and proven | Answered on real Telegram; two real voice replies delivered (2.8 s and 14.2 s of audio) |
+| Typed turns, voice notes, photos and files through the engine | Live and proven | Real Telegram turns; test client (`tools/testclient/ask.py --file`) |
+| Videos and locations | Built, not yet seen live | Same path as photos (`media_intake`: frames, length, local speech); location as turn data |
 | No visible windows from Waggle's processes | Live and proven | Probe run, 242 process starts (HANDOFF) |
-| GitHub CLI from the gateway | Live and proven | Private repositories listed (HANDOFF) |
-| Removing a false fact from every store | Live and proven | Done for one fact learned from a test prompt (HANDOFF) |
-| Reminders | Live but unproven in full | One asked by voice fired on time and was delivered, as text, and was missed. Voice-first delivery is in code and tests, not yet seen live |
-| Outreach judgement (what to say, when) | Live but unproven | No real-model evidence: the real check was refused by Waggle's own budget check |
-| Knowledge intake, digest, quiz | Live but unproven | Scheduled; HANDOFF records no real result |
-| Chat session context | Live, known wrong | Carried a stale belief about GitHub; fresh session per day not built |
-| Background work budget | Live, design open | Deferred while the 5-hour window reads above 60%, shared with every Claude session |
-| Phone calls | Code exists, not proven | Readiness comes only from the capability ledger |
-| Single "Waggle off" command | Not built | `core stop` does not pause the watchdog |
-| End-to-end test client | Not built | Plan step 5; needs the owner's one-time Telegram login |
-| Closed learning loop | Not built | Plan step 7 |
-| Cron jobs moved to core timers | Built | `waggle/duties_core.py`; `install.py` removes the Hermes entries (backup of jobs.json) |
-| Evaluation suites, autonomous work, self-edits | Not built | Plan steps 11 to 13 |
+| Reminders | Live and proven | Test-client reminder, plus the daily 12:30 canary sets and receives one |
+| Mail alerts | Live and proven | IMAP + rules + local model, no Claude; grouped per sender |
+| PC voice | Live, tested by the owner | "Good, a little slow"; speed work 2026-11-21 (judge on gemma4, warm models, timing line per turn) |
+| Outgoing secrets | Live | Every outgoing channel (Telegram, outbox, ntfy, streaming, speech) runs `policy.redact` (`waggle/outredact.py`) |
+| Learning loop | Live | Corrections, quiz misses and failed turns -> checked fix, kept or reverted, `undo L<n>` in the evening note |
+| Self-fix proposals | Live and proven | Proposal 7XJP: built, verified, deployed, rolled back on a canary failure, redeployed |
+| Autonomy | Live | Charters, at most 2 steps a day, only under 60% of the 5-hour window |
+| Answer evaluation | Built | `python -m waggle.evals run|status`: 41 local cases, deterministic scoring, weekly Sunday run; first run 40/41 |
+| Scheduled work | Core timers only | `waggle/duties_core.py`; `install.py` removes the old Hermes cron entries (backup of jobs.json) |
+| Off switch | Live and proven | `python -m waggle.core off [--for 2h] [--all]` / `on` |
+| Outreach judgement (what to say, when) | Live, no real-model evidence | `tools/decision_check.py --real` waits for a quiet usage window |
+| Calendar watch | Idle by choice | The owner does not use Google Calendar |
+| Phone calls | Off by choice | Code kept; `python -m waggle.call enable` after Twilio setup |
 
 ## Install and run (Windows)
 
