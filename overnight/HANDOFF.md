@@ -41,7 +41,7 @@ recorded block (`quota._state()["blocked_until"]`) and the local model answers t
 ### Next, in order
 1. Deploy 1dc0d71, then prove with ask.py: a normal question, a reminder, a file create+delete (owner permission rule).
 2. Fix the window estimate for background work (it reads ~2x the real usage), or read the real usage if any local source has it.
-3. Group repeated identical mail alerts in one pass (3 Google security alerts = 3 texts).
+3. Mail alert polish, seen live 2026-11-20 20:35: 4 Google security alerts became 4 texts (group same sender+subject within an hour into one); the summary says "He needs"/"The user needs" (write to the owner as "you"); the model invented "Deadline: Tue Nov 24" from "early next week" (only state a deadline written as a date in the mail).
 4. Infrastructure still to build: learning loop from feedback; Waggle proposing its own code changes (owner approves merges);
    daily automatic end-to-end checks with ask.py; cron jobs -> core timers + one off switch; photos/files/commands on
    the engine; autonomy switched on with charters (money experiment: lawful, $0, honest); calendar without Claude;
