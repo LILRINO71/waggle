@@ -50,8 +50,8 @@ def fix(text, fixes=None):
     return text
 
 
-def parse(message, fixes=None):
-    """(text, kind): kind is "text", "voice" or "voice_failed"."""
+def parse(message, fixes=None, apply_fixes=True):
+    """(text, kind): kind is "text", "voice" or "voice_failed". apply_fixes=False gives the words as recognised."""
     msg = message or ""
     if FAILED.search(msg) and not NOTE.search(msg):
         return FAILED.sub("", msg).strip(), "voice_failed"
@@ -60,5 +60,5 @@ def parse(message, fixes=None):
         return msg, "text"
     caption = NOTE.sub("", msg).strip()
     spoken = " ".join(t.strip() for t in notes if t.strip())
-    text = fix(spoken, fixes)
+    text = fix(spoken, fixes) if apply_fixes else spoken
     return (f"{caption}\n\n{text}".strip() if caption else text), "voice"

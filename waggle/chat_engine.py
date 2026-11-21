@@ -329,11 +329,16 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
     t0 = t0 or time.time()
     rec = TurnRecord(chat=chat, text=text, origin=origin or origin_for(platform), platform=platform or "")
     rec.voice = dict(voice_info or {})
+    if voice:
+        heard = heard_line(rec.voice.get("transcript_cleaned") or text)
+        if heard:
+            rec.voice["heard_line"] = heard  # shown at the top of the written reply, never spoken
     vr = None
     if voice and getattr(delivery, "can_voice", False):  # a chat that takes voice messages: spoken answer + text
+        ext, convert, wants_audio = voice_reply.pipeline(getattr(delivery, "voice_format", "ogg"))
         vr = voice_reply.VoiceReply(data_path("voice_out"), voice=s.voice_note_voice, speed=s.voice_note_speed,
-                                    synth=voice_reply.synth_wav, convert=voice_reply.to_ogg)
-        rec.voice.update(voice=True, voice_requested=True)
+                                    synth=voice_reply.synth_wav, convert=convert, ext=ext, audio=wants_audio)
+        rec.voice.update(voice=True, voice_requested=wants_audio)
         stream = False  # the voice message comes first, then the whole text
     if turn_id:
         rec.turn_id = turn_id
@@ -359,7 +364,8 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
         try:
             sess = session or pool(s).get(chat)
             t_model = time.time()
-            res = sess.turn(message, on_text=vr.feed if vr else writer.update, on_tool=None if vr else writer.tool,
+            res = sess.turn(message, on_text=vr.feed if vr else _after_heard(writer.update, rec.voice.get("heard_line")),
+                            on_tool=None if vr else writer.tool,
                             origin=rec.origin)
             rec.voice["model_s"] = round(time.time() - t_model, 2) if vr else None
         except Exception as e:  # a bug in the session layer is a failed turn, never a silent one
@@ -406,7 +412,7 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
     rec.reply = reply
     if vr:
         send_spoken(rec, vr, delivery, t0)
-    out = writer.finish(reply)
+    out = writer.finish(shown_reply(rec))
     keeper.stop()
     rec.delivered = bool(out["delivered"])
     rec.message_ids = list(out.get("message_ids") or [])
@@ -440,6 +446,8 @@ def send_spoken(rec, vr, delivery, t0):
         info = {"voice_delivered": False, "voice_message_id": None, "voice_error": f"{type(e).__name__}: {e}"[:200]}
     rec.voice.update(info)
     rec.voice["voice_sent_s"] = round(time.time() - t0, 2)
+    if not vr.audio or getattr(delivery, "voice_capability", "telegram_voice") is None:
+        return  # only the spoken text was wanted, or this is not a Telegram voice message: the ledger is not about it
     try:
         from waggle.core import ledger
         if info.get("voice_delivered"):
@@ -452,11 +460,37 @@ def send_spoken(rec, vr, delivery, t0):
         events.log("engine_error", stage="voice_ledger", error=str(e)[:200])
 
 
+HEARD_MAX = 200
+
+
+def heard_line(transcript):
+    """The first line of the written reply to a voice turn: what Waggle heard, in quotes, cut to HEARD_MAX
+    characters with an ellipsis. "" when there is nothing to show."""
+    t = " ".join(str(transcript or "").split())
+    if not t:
+        return ""
+    if len(t) > HEARD_MAX:
+        t = t[:HEARD_MAX - 1].rstrip() + "…"
+    return f'Heard: "{t}"'
+
+
+def shown_reply(rec):
+    """The reply as the user sees it: a voice turn's text starts with its Heard line and a blank line; the record
+    keeps the answer alone (its claims are read from the answer, not from the user's own words)."""
+    line = rec.voice.get("heard_line") if rec.voice else ""
+    return f"{line}\n\n{rec.reply}" if line else rec.reply
+
+
+def _after_heard(update, line):
+    """A streaming callback that shows the Heard line above the text so far (no line: the callback itself)."""
+    return (lambda text: update(f"{line}\n\n{text}")) if line else update
+
+
 def queue_reply(rec, address=None):
     """Put an undelivered reply into the core outbox (once per turn); returns the row id, or None."""
     from waggle.core import outbox
     try:
-        return outbox.enqueue("text", plain_text(rec.reply), chat=rec.chat, idem_key=f"turn:{rec.turn_id}",
+        return outbox.enqueue("text", plain_text(shown_reply(rec)), chat=rec.chat, idem_key=f"turn:{rec.turn_id}",
                               origin="turn", meta={"kind": "reply", "turn_id": rec.turn_id, "platform": rec.platform,
                                                    "address": address or "", "turn_origin": rec.origin,
                                                    "partial_ids": rec.message_ids})
@@ -574,7 +608,7 @@ NO_TEXT = ("I got your message but couldn't read anything in it{what}. Could you
 
 def handle_inbound(chat, text, *, kind="text", media=None, platform="telegram", origin="user", delivery=None,
                    settings=None, session=None, t0=None, local=None, turn_id=None, attempt=1, address=None,
-                   audio=None):
+                   audio=None, voice_source=""):
     """One inbound message, end to end: the typing indicator at once, approvals first, then the chat's Claude
     session, streamed into the chat's delivery, the reply queued in the core outbox if delivery fails, and the
     full turn record.
@@ -612,8 +646,17 @@ def handle_inbound(chat, text, *, kind="text", media=None, platform="telegram", 
     elif voice and (text or "").strip():  # a transcript that still carries Hermes's media marker: words only
         words, k = voice_turn.parse(text, getattr(s, "voice_fixes", None))
         if k == "voice":
-            vinfo = {"voice": True, "transcript_source": "hermes gateway", "audio_path": voice_turn.audio_path(text)}
-            text = words
+            vinfo = {"voice": True, "transcript_source": "hermes gateway", "audio_path": voice_turn.audio_path(text),
+                     "transcript_raw": voice_turn.parse(text, apply_fixes=False)[0]}
+            text = stt.clean_transcript(words)
+            vinfo["transcript_cleaned"] = text
+            vinfo.update(stt_confident=False, stt_confident_why=["the gateway gave no recogniser numbers"])
+        elif voice_source:  # words dictated elsewhere (the phone's own dictation): cleaned, but no recogniser numbers
+            raw = text.strip()
+            text = stt.clean_transcript(voice_turn.fix(raw, getattr(s, "voice_fixes", None)))
+            vinfo = {"voice": True, "transcript_source": voice_source, "transcript_raw": raw,
+                     "transcript_cleaned": text, "stt_confident": False,
+                     "stt_confident_why": [f"{voice_source}: no recogniser numbers"]}
     body = (text or "").strip()
     extra = media_note(media) if media else ""
     if extra:
@@ -623,11 +666,15 @@ def handle_inbound(chat, text, *, kind="text", media=None, platform="telegram", 
     def direct(reply, route, failure_notice=False):
         keeper.stop()
         chat_store.touch_chat(chat, platform, address=address, user=True)
-        out = StreamWriter(d, stream=False).finish(reply)
+        line = heard_line(vinfo.get("transcript_cleaned") or body) if voice and body else ""
+        info = dict(vinfo) or ({"voice": True} if voice else {})
+        if line:
+            info["heard_line"] = line  # a voice turn's written reply starts with what was heard; the record keeps the answer
+        out = StreamWriter(d, stream=False).finish(f"{line}\n\n{reply}" if line else reply)
         rec = record_direct(chat, body, reply, platform=platform, origin=origin, t0=t0, route=route,
                             delivered=out["delivered"], delivery=getattr(d, "name", "delivery"),
                             message_ids=out.get("message_ids"), failure_notice=failure_notice, address=address,
-                            turn_id=turn_id, voice=vinfo or ({"voice": True} if voice else None))
+                            turn_id=turn_id, voice=info or None)
         return rec
 
     if not body:
@@ -649,7 +696,8 @@ def handle_inbound(chat, text, *, kind="text", media=None, platform="telegram", 
 
 def transcribe_note(path, settings):
     """(transcript, voice info) for a voice note's audio file: the engine's own speech-to-text (waggle/stt.py),
-    with the known mishearings fixed. The info records where the words came from and how long it took."""
+    with the known mishearings fixed and the fillers and false starts taken out (stt.clean_transcript). The info
+    records where the words came from, how long it took, and both the raw and the cleaned transcript."""
     res = stt.transcribe(path)
     info = {"voice": True, "transcript_source": res.get("source") or stt.SOURCE, "audio_path": str(path),
             "stt_s": res.get("seconds"),
@@ -658,7 +706,13 @@ def transcribe_note(path, settings):
         info["stt_error"] = str(res.get("error") or "")[:200]
         events.log("engine_stt_failed", error=info["stt_error"])
         return "", info
-    return voice_turn.fix(res["text"], getattr(settings, "voice_fixes", None)), info
+    conf = res.get("confidence") or {}
+    info.update(stt_confident=bool(conf.get("confident")), stt_avg_logprob=conf.get("avg_logprob"),
+                stt_no_speech_prob=conf.get("no_speech_prob"), stt_compression_ratio=conf.get("compression_ratio"),
+                stt_segments=conf.get("segments"), stt_confident_why=list(conf.get("why") or []))
+    cleaned = stt.clean_transcript(voice_turn.fix(res["text"], getattr(settings, "voice_fixes", None)))
+    info.update(transcript_raw=res["text"], transcript_cleaned=cleaned)  # the model reads the cleaned words; both are kept
+    return cleaned, info
 
 
 def _audio_path(media):

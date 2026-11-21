@@ -1,4 +1,4 @@
-"""python -m waggle.core run | stop | restart | status | watch [--loop | --once | --stop] [--stale-s N]"""
+"""python -m waggle.core run | stop | restart | status | voice-setup | watch [--loop | --once | --stop] [--stale-s N]"""
 import argparse
 import sys
 
@@ -10,6 +10,7 @@ def main(argv=None):
     sub.add_parser("stop", help="stop the running core gracefully (killed after 20 s)")
     sub.add_parser("restart", help="stop, then start the core")
     sub.add_parser("status", help="print health; exit 0 healthy, 1 unhealthy, 2 not running")
+    sub.add_parser("voice-setup", help="print the hands-free line's URL path and token (copy them on your own screen)")
     w = sub.add_parser("watch", help="start or restart the core when it is down or its heartbeat is stale")
     w.add_argument("--stale-s", type=float, default=None)
     w.add_argument("--every-s", type=float, default=None, help="seconds between passes of --loop (default 10)")
@@ -22,6 +23,11 @@ def main(argv=None):
     if args.cmd == "run":
         from waggle.core import runtime
         return runtime.main()
+    if args.cmd == "voice-setup":
+        from waggle.core import voiceline
+        for line in voiceline.setup_lines():
+            print(line)
+        return 0
     from waggle.core import control
     if args.cmd == "stop":
         return 0 if control.stop() else 1

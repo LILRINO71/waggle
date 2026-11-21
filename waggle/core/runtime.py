@@ -31,7 +31,7 @@ import time
 from pathlib import Path
 
 from waggle.core import (events, health, inbound, jobs, ledger, metrics, outbox, plugins, procs, sender, settings,
-                         store, timers)
+                         store, timers, voiceline)
 
 REPO = settings.REPO
 RETENTION_S = 30 * 86400
@@ -275,6 +275,10 @@ class Core:
         log.info("recovered jobs %s, turns %s, outbox rows %s; catch-up fired %s", recovered, turns, resent,
                  len(report["fired"]))
 
+        try:
+            voiceline.token()  # the hands-free line's own secret (voice.token): created here when missing
+        except Exception as e:
+            log.error("voice.token could not be created: %s", type(e).__name__)
         try:
             self.server = health.serve(self.loops_view, accepting_fn=self.accepting_turns)
             ledger.record("core.health_endpoint", True, method="bound 127.0.0.1 at core start", ttl_s=7 * 86400)
