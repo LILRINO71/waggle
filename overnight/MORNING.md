@@ -21,6 +21,7 @@ Each piece can be switched off on its own. To switch something off:
 | New facts compared with old ones: add / update / replace / skip | `memory_fact_decide` |
 | Non-urgent suggestions wait for a natural break (max 90 min); learns which kinds you like | `hold_for_breaks`, `outreach_ev_enabled` |
 | PC voice ignores TV/room talk and its own voice; "stop" stops it; speaks sentence by sentence | `pc_voice_smart` |
+| PC voice hears speech with a small neural model (Silero) instead of loudness: music and door thumps no longer start a turn, and noise no longer keeps it listening (synthetic tests; not tried on your voice yet) | `"pc_voice_vad": "energy"` |
 | Background stops above 85% of the weekly Claude limit | `"seven_day_stop_at": 0` |
 | Wolfram math checks | `wolfram_mcp` |
 | Nightly backup of Waggle's data at 3:30 AM to `C:\Users\hiheo\WaggleBackups` (14 kept) | remove `"waggle.backup"` from `MODULES` in `waggle/core/plugins.py`, then delete the folder |
@@ -39,8 +40,8 @@ Each piece can be switched off on its own. To switch something off:
 1. **Calendar**: one-time Google login, steps in `overnight/USER_TESTS.md` (Calendar section). Until then the
    calendar watch stays quiet.
 2. **Phone calls**: a free Twilio trial, then double-click `Setup Calls.bat`. Skip it if texts are enough.
-3. **PC voice**: say "Waggle, what time is it?" with the TV on; say "stop" while it talks. Tell me if it reacts to the
-   TV or misses you.
+3. **PC voice**: say "Waggle, what time is it?" with the TV on, then with music playing; say "stop" while it
+   talks; pause to think mid-sentence once. Tell me if it reacts to the TV, misses you, or cuts you off.
 4. **Money goal**: most freelance and payment platforms need you to be 18+ or use a parent's account. The plan is in
    `WaggleVault/Goals/money/plan-shortlist.md`; nothing was signed up for and $0 was spent.
 5. **Disk space (optional)**: models no longer needed:

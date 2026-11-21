@@ -84,7 +84,9 @@ Deployed later the same night, each proven live with ask.py or the module's own 
   revert was reverted. Proven live: canary started during an ask.py run waited 27 s and passed. Suite 3138 passed.
   The stale "reply merge 7XJP" text (outbox id 22) was expired as superseded.
 
-Still open at the time of writing: rebuild/voice3 (Silero VAD + Smart Turn v3 for PC voice; Sonnet worker).
+- e6151a4 (about 01:40): voice3. Silero VAD gate in PC voice (`waggle/vad.py`, `mic.SileroGate`, default `pc_voice_vad` silero; off: "energy"); Smart Turn v3.2 built but `pc_voice_endturn` stays "silence" (it cut 163/184 thinking pauses on the synthetic bench). Models fetched with `python -m waggle.vad fetch` into ~/.waggle/models, sha256-pinned; pcvoice.log shows no fallback after the restart; Silero on tests/fixtures/endturn/complete.wav 49/51 frames speech, silence 0.01. Untried on a real voice. Bench: tools/endturn_eval.py, docs/PC_VOICE.md.
+
+Nothing from the overnight list is still open.
 
 Research reports (Claude\reports): open-source-jarvis-2026-11.md, tools-mcp-skills-2026-11.md,
 research-for-waggle-2026-11.md, adopt-vs-build-2026-11.md; vault summaries in WaggleVault/Sources/2026-11/.
