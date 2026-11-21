@@ -8,7 +8,7 @@ from waggle import skills
 REPO_SKILLS = Path(__file__).resolve().parent.parent / "skills"
 PLANNING = {"verified-computer-use", "verified-browser-task", "research-brief", "objective-planning"}
 TOOL_SKILLS = {"cad-files", "documents-to-pdf", "media-convert", "github-portfolio-audit", "explain-this-file"}  # rebuild/tools
-NAMES = PLANNING | TOOL_SKILLS
+NAMES = PLANNING | TOOL_SKILLS | {"watch-feeds"}
 
 
 def test_skills_parse_and_have_no_scripts():
@@ -49,3 +49,19 @@ def test_search_finds_them(tmp_path):
         assert want in hits, (q, hits)
     loaded = json.loads(skills.load("verified-computer-use"))
     assert "observe" in json.dumps(loaded).lower()
+
+
+def test_install_hub_skills_only_fetches_missing_ones(tmp_path):
+    from waggle.config import Settings
+    calls = []
+    got = install.install_hub_skills(run=lambda *a: calls.append(a), home=tmp_path)
+    assert len(got) == 4 and calls[0][:3] == ("skills", "install", "official/research/rss-feeds")
+    assert "--category" in calls[1] and calls[1][-1] == "--yes"
+    for _i, _c, rel in install.HUB_SKILLS[:2]:  # two of them "already installed"
+        (tmp_path / "skills" / rel).mkdir(parents=True)
+        (tmp_path / "skills" / rel / "SKILL.md").write_text("x")
+    calls.clear()
+    assert len(install.install_hub_skills(run=lambda *a: calls.append(a), home=tmp_path)) == 2
+    s = Settings()
+    s.hub_skills = False
+    assert install.install_hub_skills(run=lambda *a: calls.append(a), home=tmp_path / "none", settings=s) == []

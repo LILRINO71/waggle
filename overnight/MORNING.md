@@ -25,6 +25,13 @@ Each piece can be switched off on its own. To switch something off:
 | Background stops above 85% of the weekly Claude limit | `"seven_day_stop_at": 0` |
 | Wolfram math checks | `wolfram_mcp` |
 | Nightly backup of Waggle's data at 3:30 AM to `C:\Users\hiheo\WaggleBackups` (14 kept) | remove `"waggle.backup"` from `MODULES` in `waggle/core/plugins.py`, then delete the folder |
+| Feeds worth watching: `python -m waggle.feedwatch check` lists new posts and releases from the FIRST blog, the FTC SDK, Ollama, faster-whisper and Hermes (remove any with `... remove NAME`); uses Hermes's `rss-feeds` skill, no model | `feedwatch_enabled`; `hermes skills uninstall rss-feeds` |
+| Drop folder reads scans: scanned PDFs, .xlsx and pictures become text on this PC (MarkItDown + OCR through Ollama, in the small venv `~/.waggle-markitdown`) | `drop_ocr` (delete the venv folder to remove it) |
+| Proposal builds can look up current library docs on Context7 (free, no key; only library names go out, never your code) | `proposals_context7` |
+| Obsidian skills (Bases, JSON Canvas, Obsidian CLI) for the vault, installed in Hermes by deploy | `hub_skills`; `hermes skills uninstall obsidian-bases` (or json-canvas / obsidian-cli) |
+| Proposal merge texts list new pyright type errors in the files a change touched (a warning, never blocks) | `proposals_pyright` |
+| `python -m waggle.usage_view` shows the usage window plus tokens by 5-hour block and by session (ccusage, offline, read-only) | `ccusage_enabled` |
+| Every autonomy and objective run is recorded; if the last 4 did nothing useful the evening note says so in one line (`python -m waggle.session_records` lists them) | `session_records_enabled` |
 | New tools: CAD convert/measure, print estimate, notes/Office to PDF, video/image convert, GitHub portfolio audit, explain any file, FTC team stats | one `git rm` line per tool in `skills/README.md` ("Removing a tool pack") |
 
 ## Also fixed overnight (nothing to decide)

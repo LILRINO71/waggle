@@ -115,6 +115,8 @@ def run(job_id, resume=False):
             claude = claude_cli.find_claude()
             cmd = [claude, "-p", "--resume", job["session_id"], "--model", claude_cli.MODEL_IDS.get(model, model),
                    "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions"]
+            if job.get("mcp_config"):
+                cmd += ["--mcp-config", job["mcp_config"]]
             with open(log, "a", encoding="utf-8") as fh:
                 proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=fh, stderr=subprocess.STDOUT, text=True,
                                         env=claude_cli.clean_env(), cwd=job["workdir"], encoding="utf-8",
@@ -123,8 +125,9 @@ def run(job_id, resume=False):
                 proc.stdin.close()
                 proc.wait()
         else:
+            extra = {"mcp_config": job["mcp_config"]} if job.get("mcp_config") else {}
             proc = claude_cli.start_session(prompt, model, job["workdir"], log,
-                                            system_append=security.JOB_GUARDRAILS)
+                                            system_append=security.JOB_GUARDRAILS, **extra)
             proc.wait()
     except Exception as e:
         update(job_id, status="failed", error=str(e), finished=time.time())

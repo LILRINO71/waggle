@@ -485,7 +485,8 @@ def stream(prompt, model="sonnet", system=None, effort="low", purpose="stream", 
                      error_kind=kind)
 
 
-def start_session(prompt, model, cwd, log_path, system_append=None, permission_mode="bypassPermissions"):
+def start_session(prompt, model, cwd, log_path, system_append=None, permission_mode="bypassPermissions",
+                  mcp_config=None):
     """Launch a full Claude Code run (tools on, session saved) as a detached background process."""
     claude = find_claude()
     if not claude:
@@ -494,6 +495,8 @@ def start_session(prompt, model, cwd, log_path, system_append=None, permission_m
            "--verbose", "--permission-mode", permission_mode]
     if system_append:
         cmd += ["--append-system-prompt", system_append]
+    if mcp_config:  # an extra MCP server file for this run only (a proposal build: Context7)
+        cmd += ["--mcp-config", str(mcp_config)]
     flags = 0
     if os.name == "nt":
         flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
