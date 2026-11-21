@@ -17,7 +17,7 @@ import os
 import re
 import time
 
-from . import claude_cli, events, kstore, ollama, quota, vault, vault_git
+from . import claude_cli, events, factdecide, kstore, ollama, quota, vault, vault_git
 from .config import Settings, data_path
 
 FILES = {"like": "Me/Likes.md", "dislike": "Me/Dislikes.md", "preference": "Me/Learned.md",
@@ -331,27 +331,55 @@ def file_fact(fact, settings=None, source="", evidence="", ref=None, embedder=No
     elif f["kind"] == "about" and f["key"] in SINGLE:
         pass  # replaced below
     else:
+        # "Has 2 cats" and "Has 3 cats" share every word of 3+ letters: with the decision step on, a changed number
+        # is no duplicate (it is an UPDATE, decided below).
+        if getattr(s, "memory_fact_decide", True):
+            def same(text):
+                return _similar(text, f["text"]) and factdecide.numbers(text) == factdecide.numbers(f["text"])
+        else:
+            def same(text):
+                return _similar(text, f["text"])
         for a in active:
-            if (a["kind"] != "about" or a["key"] == f.get("key")) and _similar(a["text"], f["text"]):
+            if (a["kind"] != "about" or a["key"] == f.get("key")) and same(a["text"]):
                 _log("rejected", f, "duplicate of a known fact", source, existing=a["id"])
                 return False, "duplicate of a known fact"
         rel = FILES.get(f["kind"])
         if rel and f["kind"] != "about":
             lines = [l[2:].split(" (")[0] for l in vault.read(rel, s).splitlines() if l.startswith("- ")]
-            if any(_similar(l, f["text"]) for l in lines) or _embed_dup(lines, f["text"], embedder):
+            if any(same(l) for l in lines) or _embed_dup(lines, f["text"], embedder):
                 _log("rejected", f, f"already in {rel}", source)
                 return False, f"already in {rel}"
+    decision = None
+    if not supersedes and getattr(s, "memory_fact_decide", True) and not (f["kind"] == "about"
+                                                                         and f["key"] in SINGLE):
+        decision = _decide(f, s, embedder, source)  # compare with the 10 closest known facts: ADD/UPDATE/INVALIDATE/SKIP
+        target = decision["target"]
+        if decision["action"] == factdecide.SKIP and target:
+            _log("rejected", f, f"duplicate: {decision['reason']}", source, existing=target["id"])
+            return False, "duplicate of a known fact"
+        if decision["action"] in (factdecide.UPDATE, factdecide.INVALIDATE) and target:
+            supersedes = [target["id"]]  # the older-statement rule below applies to it like to any other
     newer = _stale_against(f, supersedes)
     if newer:  # an older statement that arrived late never replaces a newer one
         _log("rejected", f, f"older than fact #{newer['id']}, which was stated later", source, existing=newer["id"])
         return False, f"older than fact #{newer['id']}, which was stated later"
+    if decision and decision["action"] == factdecide.INVALIDATE and decision["target"]:
+        old = decision["target"]  # the statement only says the old fact stopped being true: nothing new to file
+        _set_status(old["id"], "invalidated", None, invalid_at=day)
+        _unfile_line(old, s)
+        _log("invalidated", old, decision["reason"], source, by_text=f["text"][:200])
+        if old["kind"] in EVENT_KINDS:
+            render_upcoming(s)
+        return False, f"invalidated fact #{old['id']}: {decision['reason']}"
     fid = _insert({**f, "source": source, "evidence": evidence})
+    replaced = set()
     if f["kind"] == "about" and f["key"] in SINGLE:
         for a in active:
             if a["key"] == f["key"] and a["id"] != fid:
                 _set_status(a["id"], "replaced", fid, invalid_at=day)
                 _log("replaced", a, f"new {f['key']}", source, by=fid)
-    closing = {int(i) for i in (supersedes or []) if str(i).lstrip("-").isdigit()} - {fid}
+                replaced.add(a["id"])
+    closing = {int(i) for i in (supersedes or []) if str(i).lstrip("-").isdigit()} - {fid} - replaced
     if f["kind"] in OPPOSITE:
         for a in facts("active", OPPOSITE[f["kind"]]):
             sa, sf = _subject(a["text"]), _subject(f["text"])
@@ -368,6 +396,20 @@ def file_fact(fact, settings=None, source="", evidence="", ref=None, embedder=No
         vault.append(FILES[f["kind"]], f"- {f['text']} ({dt.date.today():%Y-%m-%d})", s)
     _log("filed", f, "", source, id=fid, date=f.get("date"))
     return True, fid
+
+
+def _decide(f, s, embedder, source):
+    """factdecide's verdict on candidate `f` against the active facts, logged. Never raises: a failure is ADD."""
+    try:
+        pool = [a for a in facts("active") if a.get("text")][-300:]
+        embed = embedder or (lambda texts: ollama.embed(texts, "document", s))
+        d = factdecide.decide(f, pool, s, embed)
+    except Exception as e:
+        d = {"action": factdecide.ADD, "target": None, "reason": f"decision failed: {type(e).__name__}",
+             "via": "fallback", "neighbours": []}
+    _log("decided", f, f"{d['action']} via {d['via']}: {d['reason']}", source,
+         target=(d["target"] or {}).get("id"), neighbours=d.get("neighbours"))
+    return d
 
 
 def _embed_dup(lines, text, embedder, threshold=0.9):
