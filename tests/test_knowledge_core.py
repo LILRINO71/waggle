@@ -49,7 +49,8 @@ def test_register_core_adds_jobs_and_timers_with_their_catch_up_rules_once(s):
         h = jobs.handler(kind)
         assert h.detached and h.timeout_s and h.max_attempts == 2
     first = {t["id"]: t for t in timers.list(origin="knowledge")}
-    assert set(first) == {"knowledge.intake", "knowledge.digest", "knowledge.quiz", "knowledge.digest.am"}
+    assert set(first) == {"knowledge.intake", "knowledge.digest", "knowledge.quiz", "knowledge.digest.am",
+                          "knowledge.mailwatch"}
     intake = first["knowledge.intake"]
     assert (intake["kind"], intake["spec"], intake["catch_up"]) == ("interval", "30m", "skip")
     for tid in ("knowledge.digest", "knowledge.quiz"):

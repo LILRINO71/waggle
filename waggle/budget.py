@@ -16,6 +16,11 @@ Before a background call, reserve() runs one exclusive SQLite transaction that c
     and the user has not chatted in the last interactive_yield_s seconds,
 then writes a reservation. settle() swaps it for the real usage row. A crashed worker's reservation expires after
 RESERVATION_TTL. The day resets at background_reset_hour (local time). Interactive calls are never blocked here.
+
+OWN_ALLOWANCE: a few named purposes have their own narrow allowance instead of the shared daily units and the
+background_stop_at line (mail watch: telling the user about important mail must not wait for a quiet window). They
+still pass every other check (switched off, running workers, the user chatting, a real limit hit), stop at their
+own window line, and are recorded in `usage` like any other call.
 """
 import contextlib
 import contextvars
@@ -32,6 +37,9 @@ RESERVATION_TTL = 30 * 60
 # Fallback expected cost per call (weighted units) before there is history for that purpose + model.
 DEFAULT_COST = {"haiku": 0.005, "sonnet": 0.03, "opus": 0.6, "fable": 0.6}
 AGENT_COST = {"haiku": 0.06, "sonnet": 0.2, "opus": 0.8, "fable": 0.8}
+# purpose -> its own allowance: allowed while the 5-hour window stays at or below stop_at, at most daily_calls calls
+# per budget day. Not counted against background_daily_units, not stopped at background_stop_at.
+OWN_ALLOWANCE = {"mailwatch": {"stop_at": 0.92, "daily_calls": 40}}
 
 _ctx = contextvars.ContextVar("waggle_budget_ctx", default=None)
 
@@ -188,6 +196,27 @@ def _open_reservations(con, now):
     return live
 
 
+def _calls_today(con, day, purpose, live):
+    """Calls with this purpose in the budget day: recorded usage rows (failed calls too) plus open reservations."""
+    used = con.execute("SELECT COUNT(*) FROM usage WHERE day=? AND purpose=? AND local=0", (day, purpose)).fetchone()[0]
+    return used + len([r for r in live if r["day"] == day and r["purpose"] == purpose])
+
+
+def allowance(purpose, settings=None, now=None):
+    """{calls, daily_calls, stop_at} today for a purpose with its own allowance (None for every other purpose)."""
+    rule = OWN_ALLOWANCE.get(purpose)
+    if not rule:
+        return None
+    s = settings or Settings.load()
+    now = now or time.time()
+    con = _db()
+    try:
+        calls = _calls_today(con, day_key(now, s), purpose, _open_reservations(con, now))
+    finally:
+        con.close()
+    return {"calls": calls, **rule}
+
+
 def check(model, purpose="", settings=None, now=None, window_used=None, con=None):
     """(ok, reason, retry_at) for a background call, without reserving anything."""
     s = settings or Settings.load()
@@ -201,9 +230,15 @@ def check(model, purpose="", settings=None, now=None, window_used=None, con=None
         reserved = sum(r["units"] for r in live if r["day"] == day)
         cost = expected_cost(model, purpose, con)
         limit = s.background_daily_units
+        rule = OWN_ALLOWANCE.get(purpose)
         if limit <= 0:
             return False, "background Claude use is switched off (background_daily_units = 0)", next_reset(now, s)
-        if spent + reserved + cost > limit:
+        if rule:
+            calls = _calls_today(con, day, purpose, live)
+            if calls >= rule["daily_calls"]:
+                return (False, f"{purpose} allowance used: {calls} of {rule['daily_calls']} calls today",
+                        next_reset(now, s))
+        elif spent + reserved + cost > limit:
             return (False, f"background budget used: {spent:.2f} of {limit:.2f} units today"
                     + (f" (+{reserved:.2f} reserved by running work)" if reserved else ""), next_reset(now, s))
         running = len([r for r in live if r["pid"] != os.getpid()])
@@ -219,6 +254,11 @@ def check(model, purpose="", settings=None, now=None, window_used=None, con=None
         if window_used is None:
             window_used = quota.window_usage(s.window_hours, now)
         cap = quota.window_estimate(s, con)
+        if rule:
+            if window_used + cost > rule["stop_at"] * cap:
+                return (False, f"5-hour window at {window_used / cap:.0%}; {purpose} stops at "
+                               f"{rule['stop_at']:.0%}", now + 1800)
+            return True, f"ok ({purpose}: {calls} of {rule['daily_calls']} calls today)", now
         if window_used + cost > s.background_stop_at * cap:
             return (False, f"5-hour window at {window_used / cap:.0%}; background stops at "
                            f"{s.background_stop_at:.0%} so chat keeps the rest", now + 1800)
