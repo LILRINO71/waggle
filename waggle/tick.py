@@ -17,7 +17,7 @@ It registers
 outreach.look, each step guarded so one failing step never stops the others:
   calls       how placed calls ended (the "call" ledger evidence)
   followups   new commitments and "remind me" from the user's own turns -> check-in and reminder timers
-  watchers    GitHub (github_every_min), Waggle's work, cron failures, unpushed commits (5 min), Upcoming (15 min)
+  watchers    GitHub (every 30 min at most, one repo-list call; a repo's runs, PRs and issues only when it moved), Waggle's work, cron failures, unpushed commits (5 min), Upcoming (15 min)
   responses   which sent messages the user answered
   decide      the reasoning step over pending signals: every initiative_every_min while awake, at once if urgent
 Cadences and cursors live in runtime.db meta ("outreach.last.<step>", "outreach.last_decision"), never in files.
@@ -101,7 +101,7 @@ def look(payload=None, *, settings=None, now=None, asker=None, gh=None, activity
 
     def do_watchers():
         sigs = []
-        if s.github_watch and _every("github", s.github_every_min, now):
+        if s.github_watch and _every("github", max(s.github_every_min, watchers.GITHUB_MIN_EVERY_MIN), now):
             sigs += watchers.github_watch(s, gh=gh, now=now)
         if _every("work", 5, now):
             sigs += watchers.work_watch(s, now) + watchers.cron_watch(s, now) + watchers.unpushed_watch(s, now)
