@@ -526,9 +526,35 @@ def finish(oid, settings=None, asker=None):
             pass
     note = _write_note(oid)
     events.log("objective", id=oid, status="done", title=obj["title"])
+    if _worth_a_message_now(oid, obj, report, s) is False:
+        return report  # kept for the evening note; the vault note has the full result
     _tell(oid, f"✅ Objective done: {obj['title']}\n\n{report[:2500]}" + (f"\n\n(Full notes: {note})" if note else ""),
           urgent=False)
     return report
+
+
+def _worth_a_message_now(oid, obj, report, s):
+    """For a finished research objective the owner started: False when a local yes/no says the result is not worth a
+    message now (or the model could not answer): it is put into the evening note instead. None when this objective
+    is not judged (anything but the owner's own research objective)."""
+    if _origin(oid) != "user":
+        return None
+    con = _db()
+    try:
+        research = con.execute("SELECT 1 FROM steps WHERE objective_id=? AND agent='researcher' LIMIT 1",
+                               (oid,)).fetchone()
+    finally:
+        con.close()
+    if not research:
+        return None
+    from . import initiative, notifycheck
+    nc = notifycheck.decide(obj["goal"], report, settings=s, subject=obj["title"])
+    if nc["notify"]:
+        return True
+    initiative.keep_for_evening(f"objective-done:{oid}", "objective",
+                                f"Objective done: {obj['title']}: {(report or '').splitlines()[0] if report else ''}",
+                                report or "", time.time())
+    return False
 
 
 def _tell(oid, text, urgent=False):

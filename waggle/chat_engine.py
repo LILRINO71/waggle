@@ -323,6 +323,11 @@ def claude_available(settings):
     """(ok, reason). A known quota block goes straight to the honest failure; a missing or broken CLI is found
     when the chat's process starts."""
     key = chat_model(settings)
+    from . import cooldowns
+    rest = cooldowns.describe("claude", settings=settings)
+    if rest:  # it just failed (a limit, billing, overload or sign-in error): the local model answers at once
+        _available.pop(key, None)
+        return False, f"{cooldowns.cooling('claude', settings=settings)[1]}: Claude is {rest}"
     cached = _available.get(key)
     if cached and time.time() - cached < AVAILABLE_TTL_S:
         return True, ""
@@ -423,6 +428,11 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
                 if res.kind == "limit":
                     _available.clear()  # the next message is checked against the new block
                     quota.note_limit_hit(reset_in_hours=claude_cli.parse_reset_hours(res.error))
+                if res.kind and not res.ok:
+                    from . import cooldowns
+                    if cooldowns.note_error("claude", res.kind, res.error, settings=s,
+                                            reset_in_hours=claude_cli.parse_reset_hours(res.error)):
+                        _available.clear()
             except Exception:
                 pass
             answered_by = res.model or chat_model(s)

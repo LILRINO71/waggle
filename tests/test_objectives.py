@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from waggle import agent, notify, objectives, policy, vault
+from waggle import agent, notify, notifycheck, objectives, policy, vault
 
 
 def _planner(steps):
@@ -22,6 +22,8 @@ def quiet(monkeypatch):
     monkeypatch.setattr(objectives.quota, "can_escalate", lambda m, s: (True, ""))
     monkeypatch.setattr(objectives, "kick", lambda oid: None)
     monkeypatch.setattr(objectives.claude_cli, "ask", lambda *a, **k: {"text": "All three found; summary saved."})
+    # a finished research objective asks a local yes/no before it messages (waggle/notifycheck.py): yes here
+    monkeypatch.setattr(notifycheck, "_ask", lambda m, s, t: {"decision": "yes", "reason": "test"})
 
 
 def _runner(log, text="did it", approvals=None, ok=True):

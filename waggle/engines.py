@@ -14,6 +14,7 @@ import time
 import urllib.error
 import urllib.request
 
+from . import cooldowns
 from .config import Settings
 
 DEFAULT_PORTS = {  # kind, base url
@@ -148,7 +149,8 @@ def discover(timeout=0.4):
 
 
 def chat(messages, chain=None, settings=None, timeout=120, engines=None, **opts):
-    """Try (engine, model) pairs in order; returns (text, engine, model). Raises if all fail."""
+    """Try (engine, model) pairs in order; returns (text, engine, model). Raises if all fail. An engine that just
+    failed with a limit, credit, busy, auth, missing or down error rests for a while (waggle/cooldowns.py)."""
     s = settings or Settings.load()
     engines = engines or configured(s)
     chain = chain or [("claude", s.router_model), ("ollama", s.local_model)]
@@ -158,11 +160,19 @@ def chat(messages, chain=None, settings=None, timeout=120, engines=None, **opts)
         if not eng:
             errors.append(f"{eng_name}: not configured")
             continue
+        rest = cooldowns.describe(eng_name, settings=s)
+        if rest:  # it failed a moment ago: go straight to the next engine instead of trying it again
+            errors.append(f"{eng_name}/{model}: {rest}")
+            continue
         try:
             text = eng.chat(messages, model, timeout=timeout, **opts)
             if text:
                 return text, eng_name, model
             errors.append(f"{eng_name}/{model}: empty")
         except Exception as e:
-            errors.append(f"{eng_name}/{model}: {type(e).__name__}: {str(e)[:120]}")
+            kind = None if getattr(e, "resting", False) else cooldowns.note_error(
+                eng_name, getattr(e, "kind", ""), str(e), exc=e, reset_in_hours=getattr(e, "reset_in_hours", None),
+                settings=s)
+            errors.append(f"{eng_name}/{model}: {type(e).__name__}: {str(e)[:120]}"
+                          + (f" (rests after a {kind} error)" if kind else ""))
     raise RuntimeError("all engines failed: " + "; ".join(errors))

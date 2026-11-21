@@ -98,6 +98,8 @@ def main(argv=None):
             return
         flags = subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0
         subprocess.Popen([exe], creationflags=flags)
+        from . import cooldowns
+        cooldowns.clear("claude")  # a sign-in is the fix for a signed-out rest
         print("A Claude window opened. Type /login there, sign in, then close it.")
     elif a.cmd == "doctor":
         from . import doctor

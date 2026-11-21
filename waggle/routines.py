@@ -18,7 +18,7 @@ import re
 import time
 import uuid
 
-from . import agents, notify, quota, vault
+from . import agents, notify, notifycheck, quota, vault
 from .config import Settings, data_path
 
 DAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
@@ -116,7 +116,8 @@ def next_run(schedule, after=None):
 
 # ---- CRUD ----------------------------------------------------------------------------------------
 
-def add(name, schedule, task, agent="general", deliver="telegram", enabled=True, always_report=False, source=""):
+def add(name, schedule, task, agent="general", deliver="telegram", enabled=True, always_report=False, source="",
+        gate=None):
     name = re.sub(r"[^a-z0-9-]+", "-", name.lower()).strip("-")[:50] or "routine"
     nxt = next_run(schedule)  # validates
     if nxt is None:
@@ -125,11 +126,14 @@ def add(name, schedule, task, agent="general", deliver="telegram", enabled=True,
         agent = "general"
     data = _load()
     rid = next((k for k, v in data.items() if v["name"] == name), uuid.uuid4().hex[:8])
+    prior_gate = data.get(rid, {}).get("gate")
     data[rid] = {"name": name, "schedule": schedule, "task": task, "agent": agent, "deliver": deliver,
                  "enabled": enabled, "created": data.get(rid, {}).get("created", time.time()), "next_run": nxt,
                  "last_run": data.get(rid, {}).get("last_run"), "last_status": data.get(rid, {}).get("last_status"),
                  "runs": data.get(rid, {}).get("runs", 0), "always_report": bool(always_report),
                  "source": source or ""}
+    if gate or prior_gate:  # an optional cheap pre-check (see _gate_for): {"question": ...} or {"name": ...}
+        data[rid]["gate"] = gate or prior_gate
     _save(data)
     return rid
 
@@ -192,12 +196,45 @@ def listing():
 
 # ---- running -------------------------------------------------------------------------------------
 
+def _gate_for(r, s):
+    """The cheap pre-check of a routine, as a zero-argument function for gates.evaluate, or None. r["gate"] is
+    {"name": <a function registered with gates.register>} or {"question": <a yes/no question for the local model>}
+    (a plain string is a question). A routine that always reports (it feeds the evening note) never has one."""
+    from . import gates
+    g = r.get("gate")
+    if not g or r.get("always_report"):
+        return None
+    g = {"question": g} if isinstance(g, str) else g
+    fn = gates.registered(g.get("name")) if isinstance(g, dict) and g.get("name") else None
+    if fn:
+        return lambda: fn(routine=r, settings=s)
+    q = g.get("question") if isinstance(g, dict) else None
+    if q and getattr(s, "gates_local", True) and gates.ollama_ready(s):
+        return gates.local_check(q, f"The routine '{r['name']}' is about to run this task:\n{r['task'][:1500]}",
+                                 settings=s)
+    return None
+
+
 def run_one(rid, settings=None, run_fn=None, verify_fn=None, now=None):
     """Run one routine now; returns a status string."""
     s = settings or Settings.load()
     data = _load()
     r = data[rid]
     now = now or time.time()
+    check = _gate_for(r, s)
+    if check is not None:
+        from . import gates
+        gv = gates.evaluate(f"routine.{r['name']}", check, settings=s, now=now,
+                            quiet_hold=r.get("deliver") in ("telegram", "both"), subject=r["name"])
+        if gv.skip:  # nothing to look at: no Claude run, the schedule moves on
+            _finish_run(data[rid], now, f"skipped by the gate: {gv.reason}"[:200])
+            _save(data)
+            return "gate-skipped"
+        if gv.hold:  # would reach the owner in quiet hours: wait for the morning
+            data[rid]["next_run"] = max(gv.until or now + 3600, now + 300)
+            data[rid]["last_status"] = f"held: {gv.reason}"[:200]
+            _save(data)
+            return "held"
     model = agents.model_for(r["agent"], s)
     ok, why = quota.can_escalate(model, s)
     if not ok:
@@ -235,10 +272,22 @@ def run_one(rid, settings=None, run_fn=None, verify_fn=None, now=None):
         if r["deliver"] in ("vault", "both"):
             vault.append(f"Routines/{r['name']}", f"\n## {time.strftime('%Y-%m-%d %H:%M')}\n\n{text}\n")
         if r["deliver"] in ("telegram", "both"):
-            complete, missing = (verify_fn or agents.verify)(r["task"], text, settings=s)
-            note = ("\n\n(Not double-checked: no budget for the check.)" if complete and str(missing).startswith(
-                "(not verified") else "" if complete else f"\n\n(Waggle's check: may be incomplete: {missing[:200]})")
-            notify.send(f"🔁 {r['name']}\n\n{text[:3200]}{note}", origin="routine", source=r.get("source"))
+            # Did the result meet the task, and is it worth a message now? No (or the local model failed): the
+            # evening note carries it, and the full text is kept in the vault. A routine that always reports
+            # already feeds the evening note, so it is not asked.
+            nc = ({"notify": True} if r.get("always_report") else
+                  notifycheck.decide(r["task"], text, settings=s, subject=r["name"]))
+            if not nc["notify"]:
+                if r["deliver"] == "telegram":
+                    vault.append(f"Routines/{r['name']}", f"\n## {time.strftime('%Y-%m-%d %H:%M')}\n\n{text}\n")
+                from . import initiative
+                initiative.keep_for_evening(f"routine-result:{rid}:{int(now)}", "routine",
+                                            f"Routine {r['name']}: {text.splitlines()[0] if text else ''}", text, now)
+            else:
+                complete, missing = (verify_fn or agents.verify)(r["task"], text, settings=s)
+                note = ("\n\n(Not double-checked: no budget for the check.)" if complete and str(missing).startswith(
+                    "(not verified") else "" if complete else f"\n\n(Waggle's check: may be incomplete: {missing[:200]})")
+                notify.send(f"🔁 {r['name']}\n\n{text[:3200]}{note}", origin="routine", source=r.get("source"))
     elif not res.ok and r["deliver"] in ("telegram", "both"):
         notify.send(f"🔁 Routine '{r['name']}' failed: {res.error[:300]}", origin="routine", source=r.get("source"))
     data = _load()

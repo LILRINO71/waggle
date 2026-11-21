@@ -10,13 +10,36 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import quota
+from . import cooldowns, quota
 
 # Exact IDs: an inherited environment can remap short aliases (kalshi bot caught "sonnet" running as Haiku).
 MODEL_IDS = {"haiku": "claude-haiku-5-5", "sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5"}
 # Without these, a headless call loads MCP servers, settings and tool prompts: ~72k tokens instead of ~1.3k.
 LEAN_FLAGS = ["--tools", "", "--no-session-persistence", "--strict-mcp-config",
               "--setting-sources", "", "--disable-slash-commands"]
+
+
+# A resting Claude (waggle/cooldowns.py) raises one of the kinds callers already treat as "try later".
+_REST_KIND = {"limit": "limit", "credit": "limit", "busy": "timeout", "down": "timeout", "auth": "auth",
+              "missing": "missing"}
+
+
+def _resting():
+    """A ClaudeError for a Claude that failed a moment ago (a limit, billing, overload or sign-in problem), raised
+    before any process starts; None when it is free."""
+    on, kind, until, why = cooldowns.cooling("claude")
+    if not on:
+        return None
+    err = ClaudeError(f"Claude is {cooldowns.describe('claude')} ({why[:80]})", _REST_KIND.get(kind, "error"))
+    err.resting = True
+    return err
+
+
+def _rest_after(e):
+    """Start the rest an error of this kind earns. Never raises; a rest itself is not noted again."""
+    if getattr(e, "resting", False):
+        return
+    cooldowns.note_error("claude", e.kind, str(e), reset_in_hours=e.reset_in_hours)
 
 
 class ClaudeError(RuntimeError):
@@ -146,6 +169,9 @@ def ask(prompt, model="sonnet", system=None, schema=None, effort="medium", purpo
     if not claude:
         raise ClaudeError("Claude Code CLI not found. Set CLAUDE_BIN.", "missing")
     wanted = MODEL_IDS.get(model, model)
+    err = _resting()
+    if err:
+        raise err
     from . import budget
     try:  # background work that skipped its own budget check still can't overspend
         budget.guard(wanted, purpose)
@@ -202,6 +228,7 @@ def ask(prompt, model="sonnet", system=None, schema=None, effort="medium", purpo
     except ClaudeError as e:
         if e.kind == "limit":
             quota.note_limit_hit(reset_in_hours=e.reset_in_hours)
+        _rest_after(e)
         raise
     finally:
         quota.record(wanted, usage, purpose, headless=True, ok=ok, error_kind=kind)
@@ -410,6 +437,9 @@ def stream(prompt, model="sonnet", system=None, effort="low", purpose="stream", 
     if not claude:
         raise ClaudeError("Claude Code CLI not found. Set CLAUDE_BIN.", "missing")
     wanted = MODEL_IDS.get(model, model)
+    err = _resting()
+    if err:
+        raise err
     cmd = [claude, "-p", "--model", wanted, "--effort", effort, *STREAM_FLAGS, *LEAN_FLAGS]
     if system:
         cmd += ["--system-prompt", system]
@@ -448,6 +478,7 @@ def stream(prompt, model="sonnet", system=None, effort="low", purpose="stream", 
     except ClaudeError as e:
         if e.kind == "limit":
             quota.note_limit_hit(reset_in_hours=e.reset_in_hours)
+        _rest_after(e)
         raise
     finally:
         quota.record(wanted, (parser.result or {}).get("usage") or {}, purpose, headless=True, ok=ok,
