@@ -1608,6 +1608,10 @@ CONFIG_WRITERS = {("install.py", "main"), ("waggle/budget.py", "set_limit"), ("w
                   ("waggle/notify.py", "ntfy_topic"), ("waggle/comfort.py", "_write")}
 
 
+# `.save(` calls that are not Settings.save (each checked by hand; the inventory stays explicit).
+NOT_CONFIG_SAVES = {("waggle/tools_media.py", "image_convert")}  # Pillow Image.save of the converted picture
+
+
 def test_every_code_path_that_writes_config_json_is_known():
     """Settings.save() is the only writer of config.json; this lists its callers so a new one is seen (and added to
     test_waggles_own_config_writes_keep_the_manifest_clean)."""
@@ -1624,7 +1628,7 @@ def test_every_code_path_that_writes_config_json_is_known():
                 for n in ast.walk(fn):
                     if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "save":
                         found.add((rel, fn.name))
-    assert found == CONFIG_WRITERS
+    assert found - NOT_CONFIG_SAVES == CONFIG_WRITERS
 
 
 def _limit_hit(monkeypatch, used):

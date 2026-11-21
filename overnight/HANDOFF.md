@@ -56,6 +56,38 @@ videos, locations, Hermes's own slash commands (/new /status /model ...), other 
    the evening note should read `calendar_watch` instead of the Claude connector.
 6. Videos and locations still go the old path; `/waggle media clean` has no confirmation.
 
+## Overnight 2026-11-20 -> 21 (owner asleep; mandate: build without asking, owner keeps/deletes in the morning)
+
+Deployed 90edd27 (00:05): gates before Claude (`waggle/gates.py`, `notifycheck.py`, `cooldowns.py`; off: config
+`gates_enabled` / `notify_check_enabled` / `engine_cooldowns_enabled` false), keyword lessons (`waggle/lessons.py`,
+`python -m waggle.lessons list|add|remove|off`; one live lesson repos-472274 "use gh with private repos"; context
+marker on every trace + canary `context` check), fact ordering (`learn._stale_against`), vault under local git
+(`waggle/vault_git.py`, `/waggle memory`, `restore <sha>` = new commit; off: `vault_git` false), learnloop fix (a
+regex held literal backspaces instead of \b). All proven live with ask.py.
+
+Merged on overnight, suite pending, NOT yet deployed at the time of writing: rebuild/voice2 (PC voice intent judge
+49/50 on bench/voice_intent.jsonl, echo rejection, stop phrases, sentence streaming `/voice/stream`, spoken reminder;
+off: `pc_voice_smart` false) and rebuild/tools (8 tools: cad_convert, cad_measure (FreeCAD), print_estimate
+(PrusaSlicer), doc_to_pdf (Chrome/Office), media_convert, image_convert (ffmpeg/Pillow), portfolio_audit (gh,
+read-only), explain_file (REA); removal lines in skills/README.md; deploy needs install.py).
+
+Building (Sonnet, worktrees): rebuild/memory2 (FTS5 hybrid search measured on own eval, Mem0-style fact decisions,
+embedding A/B), rebuild/outreach2 (natural-break hold, per-kind welcome odds, Ollama JSON schemas), rebuild/smallwins
+(Wolfram MCP, FTCScout tool, seven-day usage + defer, nightly local backups to %USERPROFILE%\WaggleBackups,
+proposals flake guard).
+
+Proposal 33HN (polite "no thanks" counted as a correction) failed verification only because the full suite hit 30
+load-related failures while many agents ran (all passed on a quiet re-run). Re-run it after smallwins lands:
+`python -m waggle.proposals file ...` again (the old one is closed) or `run`.
+
+Research reports (Claude\reports): open-source-jarvis-2026-11.md, tools-mcp-skills-2026-11.md,
+research-for-waggle-2026-11.md, adopt-vs-build-2026-11.md; vault summaries in WaggleVault/Sources/2026-11/.
+Vault notes written: Waggle/How to use Waggle.md, Waggle/Changelog.md, Waggle/Local model choice.md.
+Autonomy first step (money) proven: WaggleVault/Goals/money/plan-shortlist.md (note for the owner: most freelance and
+payment platforms need 18+ or a parent's account).
+Lesson: the Bash tool collapses double backslashes; write any patch with backslashes through a file (Write tool).
+Lesson: run the full suite only while few agents run tests, or rerun failures alone before believing them.
+
 ## Proven on the real machine
 
 - Core killed -> back in 57 s. Core frozen -> replaced in 51 s (older watchdog); the new loop watchdog is tested
