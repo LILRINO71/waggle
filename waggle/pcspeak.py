@@ -93,7 +93,7 @@ def _consider(row, present, running, quiet, now):
     if not (present if present is not None else presence.at_pc()):
         return row
     from waggle.core import events
-    text = spoken_form(row.get("body") or "")
+    text = spoken_form(meta.get("spoken") or row.get("body") or "")  # a reminder carries its own spoken sentence
     if text and not events.query(EVENT, ref=row.get("id"), limit=1):
         hand_over(row.get("id"), text, now)
         events.emit(EVENT, source="pcspeak", ref=row.get("id"), now=now,

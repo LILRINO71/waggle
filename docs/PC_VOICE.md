@@ -62,7 +62,28 @@ Telegram without a notification sound. "At the PC" means: the screen is not lock
 or mouse in the last 5 minutes. When you are away, Telegram works exactly as before, with its sound. Quiet
 hours still hold: nothing is said out loud during them.
 
+## Who it answers, and how it speaks (second round)
+
+- **Only what is meant for Waggle.** After an answer, and after "Sir?", you do not need the wake name, so Waggle
+  writes down what it hears and a small local model (the same Ollama that does mail triage; `settings.local_model`)
+  decides whether it was said to Waggle. A television, a call or someone else in the room is ignored, and what
+  Waggle's own speakers said a moment ago coming back through the microphone is dropped. "Stop", "never mind" and
+  "that's enough" end the conversation (it says nothing more); "Waggle, stop" works from idle too. The hotkey is
+  always a request and is never judged. If the model is slow or down, what you say is sent, as before. Waggle only
+  listens between its own sentences, so it cannot hear you over its own voice: the hotkey is still the way to cut it
+  off while it talks.
+- **A longer window after a question.** When Waggle's answer ends in a question it listens 10 s for the reply
+  without the wake name (6 s otherwise).
+- **It starts talking sooner.** The answer is requested from `POST /voice/stream` and spoken sentence by sentence
+  (at most 3 sentences, 45 words): the first sentence plays while Waggle is still writing the rest. A core without
+  that path (older) is asked through `POST /voice` as before.
+- **Reminders.** A reminder asked by voice (Telegram voice note or the PC) arrives as a voice note and then the text;
+  with you at the PC it is said there ("Sir, your reminder: ...") and both Telegram messages arrive silently.
+- **Measure the judge:** `python -m waggle.bench voice` (50 labelled cases in `bench/voice_intent.jsonl`; `--model-only`,
+  `--no-model`, `--model NAME`).
+
 ## Switching things off
+
 
 All settings go in `config.json` in the Waggle home. They are read when the PC voice starts.
 
@@ -72,6 +93,12 @@ All settings go in `config.json` in the Waggle home. They are read when the PC v
 | Waggle speaking its own messages | `"pc_voice_speak_messages": false` | on |
 | The hotkey | `"pc_voice_hotkey": "ctrl+alt+q"` (any ctrl/alt/shift/win + key) | `ctrl+alt+backquote` |
 | How long it waits for a follow-up | `"pc_voice_followup_s": 6` | 6 s |
+| All of "who it answers" and the sentence-by-sentence speech | `"pc_voice_smart": false` | on |
+| Only the judge, echo and stop (keep the streaming) | `"pc_voice_judge": false` | on |
+| Only the sentence-by-sentence speech | `"pc_voice_stream": false` | on |
+| Follow-up window after a question | `"pc_voice_question_s": 10` | 10 s |
+| Which local model judges | `"pc_voice_judge_model": "gemma4"` (empty: `local_model`) | empty |
+| How long the judge may take, and how sure it must be | `"pc_voice_judge_timeout_s": 3`, `"pc_voice_judge_min": 0.5` | 3 s, 0.5 |
 | Silence that ends what you say | `"pc_voice_end_silence_s": 1.2` | 1.2 s |
 | What counts as "away" | `"pc_presence_idle_s": 300` | 5 minutes without input |
 | How loud sound must be to count as speech | `"pc_voice_min_level": 120` | 120 (frame RMS of 16-bit samples) |

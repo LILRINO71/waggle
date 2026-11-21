@@ -27,6 +27,13 @@ The PC voice (waggle/pcvoice.py) uses the same entry with two query options:
     ?client=pc    the request comes from the PC microphone: dictated text is labelled "PC wake word", the written
                   copy to Telegram goes without a notification sound (the owner just heard the answer), and an
                   answer that arrives after the holding line is marked to be spoken on the PC (waggle/pcspeak.py)
+and a streaming variant for the PC voice, POST /voice/stream?client=pc (same request, same token): the response is
+newline-delimited JSON, one object per line, sent while the model is still writing the answer:
+    {"sentence": "..."}      each finished sentence of the spoken part, in order (the PC says it at once)
+    {"done": true, "status": "done"|"working"|"error", "spoken": "...", "text": "...", "turn": "..."}   last line
+No audio is made here (the PC makes it, sentence by sentence). A turn that is still silent after the hold time ends
+with the holding line (status "working") as on /voice. Errors before the turn starts are ordinary JSON responses.
+
 and one more path with the same token, for the wake word:
     POST /voice/transcribe   audio/* -> 200 JSON {"text", "ok", "confident", "seconds", "audio_s"}; no turn runs,
                              the audio is deleted at once and neither it nor the text is logged or stored.
@@ -35,6 +42,7 @@ import hmac
 import json
 import logging
 import os
+import queue
 import secrets
 import threading
 import time
@@ -50,6 +58,7 @@ log = logging.getLogger("waggle.core.voiceline")
 TOKEN_FILE = "voice.token"
 PATH = "/voice"
 TRANSCRIBE_PATH = "/voice/transcribe"
+STREAM_PATH = "/voice/stream"
 CLIENT_SOURCE = {"pc": "PC wake word"}  # ?client=... -> how dictated text from that client is labelled
 HOLD_LINE = "Working on it, sir. I will message you when it is done."
 ERROR_LINE = "I could not answer that just now, sir. Please try again in a moment."
@@ -139,9 +148,10 @@ class LineDelivery(Delivery):
     name = "voice-line"
     voice_capability = None  # not a Telegram voice message: the capability ledger is not told about it
 
-    def __init__(self, audio=True, fmt="m4a"):
+    def __init__(self, audio=True, fmt="m4a", on_sentence=None):
         self.voice_format = (fmt if fmt in ("m4a", "wav") else "m4a") if audio else "none"
         self.messages, self.audio, self.audio_s = [], None, None
+        self.on_sentence = on_sentence  # the engine hands each finished spoken sentence to this (streaming)
 
     def post(self, text):
         self.messages.append(text)
@@ -159,11 +169,12 @@ class LineDelivery(Delivery):
 class _Run:
     """One turn running in its own thread, so the request can stop waiting for it."""
 
-    def __init__(self, chat, text, audio_path, want_audio, fmt="m4a", client=""):
+    def __init__(self, chat, text, audio_path, want_audio, fmt="m4a", client="", on_sentence=None):
         self.chat, self.text, self.audio_path, self.client = chat, text, audio_path, client
-        self.delivery = LineDelivery(audio=want_audio, fmt=fmt)
+        self.delivery = LineDelivery(audio=want_audio, fmt=fmt, on_sentence=on_sentence)
         self.rec, self.error = None, ""
         self.done, self.lock, self.detached = threading.Event(), threading.Lock(), False
+        self.streamed = False  # the PC voice already said the spoken part: a late written copy is silent
         self.thread = threading.Thread(target=self._go, daemon=True, name="waggle-voice-line")
 
     def start(self):
@@ -210,7 +221,7 @@ class _Run:
                 "address": self.chat.partition(":")[2], "turn_origin": "user", "via": "voice line"}
         if self.client == "pc":
             meta["via"] = "pc voice"
-            if self.detached:  # the owner heard only the holding line: spoken on the PC if they are still there
+            if self.detached and not self.streamed:  # only the holding line was heard: spoken on the PC if still there
                 meta["speak_pc"] = True
             else:  # they just heard it through the speakers: the written record arrives without a sound
                 meta["silent"] = True
@@ -332,6 +343,15 @@ def _respond(headers, rfile, query, accepting, path=PATH):
     if not _busy.acquire(blocking=False):
         _drain(rfile, length)
         return _json(429, {"error": "another voice request is running"}, {"Retry-After": "5"})
+    if path == STREAM_PATH:  # the lock is released by the stream when it is closed (or here, when it never starts)
+        try:
+            out = _serve_stream(headers, rfile, query, accepting, length)
+        except BaseException:
+            _busy.release()
+            raise
+        if not isinstance(out, Stream):
+            _busy.release()
+        return out
     try:
         return _serve(headers, rfile, query, accepting, length)
     finally:
@@ -368,23 +388,24 @@ def _transcribe(headers, rfile, length):
                        "seconds": r.get("seconds"), "audio_s": r.get("audio_s")})
 
 
-def _serve(headers, rfile, query, accepting, length):
-    q = urllib.parse.parse_qs(query)
+def _prepare(headers, rfile, q, accepting, length):
+    """Read and check one voice request. (error response, None), or (None, {chat, text, audio_path, as_json, fmt,
+    client})."""
     as_json = q.get("reply", [""])[0].lower() == "json"
     fmt = "wav" if q.get("format", [""])[0].lower() == "wav" else "m4a"
     client = q.get("client", [""])[0].lower()
     client = client if client in CLIENT_SOURCE else ""
     if length < 0:
-        return _json(411, {"error": "Content-Length is required"})
+        return _json(411, {"error": "Content-Length is required"}), None
     if length > MAX_BODY:
         _drain(rfile, length)
-        return _json(413, {"error": "the body is at most 2 MB"})
+        return _json(413, {"error": "the body is at most 2 MB"}), None
     if length == 0:
-        return _json(400, {"error": "an empty body"})
+        return _json(400, {"error": "an empty body"}), None
     body = rfile.read(length)  # read before judging it, so that a refusal below reaches the client
     kind = (headers.get("Content-Type") or "").split(";")[0].strip().lower()
     if not (kind == "application/json" or kind.startswith("audio/")):
-        return _json(415, {"error": "send JSON {\"text\": ...} or audio/*"})
+        return _json(415, {"error": "send JSON {\"text\": ...} or audio/*"}), None
     text, audio_path = "", ""
     if kind == "application/json":
         try:
@@ -393,14 +414,14 @@ def _serve(headers, rfile, query, accepting, length):
         except (UnicodeDecodeError, ValueError):
             text = None
         if not isinstance(text, str) or not text.strip():
-            return _json(400, {"error": "a JSON object with a non-empty \"text\" is required"})
+            return _json(400, {"error": "a JSON object with a non-empty \"text\" is required"}), None
         if len(text) > MAX_TEXT:
-            return _json(400, {"error": f"the text is at most {MAX_TEXT} characters"})
+            return _json(400, {"error": f"the text is at most {MAX_TEXT} characters"}), None
     if not accepting():
-        return _json(503, {"error": "the core is not accepting turns now"})
+        return _json(503, {"error": "the core is not accepting turns now"}), None
     chat = owner_chat()
     if not chat:
-        return _json(503, {"error": "no engine chat is set up (engine_chats in config.json)"})
+        return _json(503, {"error": "no engine chat is set up (engine_chats in config.json)"}), None
     if kind != "application/json":
         from waggle.config import data_path
         folder = data_path("voice_in")
@@ -408,6 +429,16 @@ def _serve(headers, rfile, query, accepting, length):
         path = folder / f"{uuid.uuid4().hex[:12]}{AUDIO_SUFFIX.get(kind, '.m4a')}"
         path.write_bytes(body)
         audio_path = str(path)
+    return None, {"chat": chat, "text": text.strip(), "audio_path": audio_path, "as_json": as_json, "fmt": fmt,
+                  "client": client}
+
+
+def _serve(headers, rfile, query, accepting, length):
+    err, req = _prepare(headers, rfile, urllib.parse.parse_qs(query), accepting, length)
+    if err:
+        return err
+    chat, text, audio_path = req["chat"], req["text"], req["audio_path"]
+    as_json, fmt, client = req["as_json"], req["fmt"], req["client"]
     t0 = time.time()
     run = _Run(chat, text.strip(), audio_path, want_audio=not as_json, fmt=fmt, client=client).start()
     run.done.wait(hold_after_s())
@@ -424,3 +455,101 @@ def _serve(headers, rfile, query, accepting, length):
     if telegram_copy():
         run.queue_copy()
     return _answer(spoken, written, as_json, "done", run.rec.turn_id, audio=run.delivery.audio, fmt=fmt)
+
+
+# ---- the streaming response (the PC voice) -----------------------------------------------------------------
+
+def _line(obj):
+    return (json.dumps(obj, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+class Stream:
+    """The body of a POST /voice/stream response: iterate for the lines (bytes), close() when done or when the
+    client went away. It holds the one-voice-request lock from creation until close()."""
+
+    def __init__(self, run, sentences, release, hold_s):
+        self.run, self.sentences, self._release, self.hold_s = run, sentences, release, hold_s
+        self.headers = {"Content-Type": "application/x-ndjson", "Cache-Control": "no-store"}
+        self._closed = False
+
+    def close(self):
+        if not self._closed:
+            self._closed = True
+            self._release()
+
+    def _take(self, wait):
+        try:
+            return self.sentences.get(timeout=wait) if wait else self.sentences.get_nowait()
+        except queue.Empty:
+            return None
+
+    def __iter__(self):
+        from waggle import voice_reply
+        run, said = self.run, []
+        t0 = time.time()
+        deadline = t0 + self.hold_s
+        extended = False
+        try:
+            while True:
+                s = self._take(0.1)
+                if s is not None:
+                    said.append(s)
+                    yield _line({"sentence": s})
+                    continue
+                if run.done.is_set():
+                    while True:  # whatever the model handed over just before it finished
+                        s = self._take(0)
+                        if s is None:
+                            break
+                        said.append(s)
+                        yield _line({"sentence": s})
+                    break
+                if time.time() >= deadline:
+                    with run.lock:
+                        finished = run.done.is_set()
+                        if not finished and said and not extended:
+                            extended = True  # it is already talking: give it the hold time again
+                            deadline = time.time() + self.hold_s
+                            continue
+                        if not finished:
+                            run.detached = True
+                            run.streamed = bool(said)
+                    if finished:
+                        continue
+                    log.info("voice stream: not finished after %.0f s, ending with the %s", time.time() - t0,
+                             "spoken part" if said else "holding line")
+                    if said:
+                        yield _line({"done": True, "status": "done", "spoken": " ".join(said), "text": ""})
+                    else:
+                        yield _line({"sentence": HOLD_LINE})
+                        yield _line({"done": True, "status": "working", "spoken": HOLD_LINE, "text": HOLD_LINE})
+                    return
+            if run.rec is None:
+                if not said:
+                    yield _line({"sentence": ERROR_LINE})
+                yield _line({"done": True, "status": "error", "spoken": ERROR_LINE, "text": ERROR_LINE})
+                return
+            spoken, written = _spoken_of(run), run.written()
+            rest = voice_reply.sentences(spoken)
+            if said and rest[:len(said)] != said:
+                rest = said  # what was streamed is what was said: nothing more
+            for s in rest[len(said):]:
+                said.append(s)
+                yield _line({"sentence": s})
+            if telegram_copy():
+                run.queue_copy()
+            yield _line({"done": True, "status": "done", "spoken": spoken, "text": written,
+                         "turn": run.rec.turn_id})
+        finally:
+            self.close()
+
+
+def _serve_stream(headers, rfile, query, accepting, length):
+    """A Stream, or an ordinary (status, headers, body) error response. The caller holds the voice lock."""
+    err, req = _prepare(headers, rfile, urllib.parse.parse_qs(query), accepting, length)
+    if err:
+        return err
+    sentences = queue.Queue()
+    run = _Run(req["chat"], req["text"], req["audio_path"], want_audio=False, client=req["client"],
+               on_sentence=sentences.put).start()
+    return Stream(run, sentences, _busy.release, hold_after_s())

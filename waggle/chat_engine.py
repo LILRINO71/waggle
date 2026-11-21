@@ -402,7 +402,8 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
     if voice and getattr(delivery, "can_voice", False):  # a chat that takes voice messages: spoken answer + text
         ext, convert, wants_audio = voice_reply.pipeline(getattr(delivery, "voice_format", "ogg"))
         vr = voice_reply.VoiceReply(data_path("voice_out"), voice=s.voice_note_voice, speed=s.voice_note_speed,
-                                    synth=voice_reply.synth_wav, convert=convert, ext=ext, audio=wants_audio)
+                                    synth=voice_reply.synth_wav, convert=convert, ext=ext, audio=wants_audio,
+                                    on_sentence=getattr(delivery, "on_sentence", None))  # the PC voice's stream
         rec.voice.update(voice=True, voice_requested=wants_audio)
         stream = False  # the voice message comes first, then the whole text
     if turn_id:

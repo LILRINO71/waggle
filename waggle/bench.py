@@ -2,6 +2,7 @@
 
     python -m waggle.bench            # free: heuristics + local sorter + specialist pick on bench/cases.json
     python -m waggle.bench --live     # also summarise real usage from ~/.waggle/events.jsonl
+    python -m waggle.bench voice      # "who is being addressed" on bench/voice_intent.jsonl (waggle/voice_bench.py)
 
 Each case is labelled simple / reasoning / build. The local half of the router either keeps a message
 local or escalates it to Claude (Sonnet then decides between answering and an Opus build), so the scores are:
@@ -111,11 +112,16 @@ def report(sc, rows, live=None):
 
 
 def main(argv=None):
+    import sys
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] == "voice":  # python -m waggle.bench voice: who is being addressed (waggle/voice_bench.py)
+        from . import voice_bench
+        return voice_bench.main(args[1:])
     ap = argparse.ArgumentParser()
     ap.add_argument("--live", action="store_true")
     ap.add_argument("--cases", default=str(REPO / "bench" / "cases.json"))
     ap.add_argument("--out", default=str(REPO / "docs" / "BENCHMARK.md"))
-    a = ap.parse_args(argv)
+    a = ap.parse_args(args)
     rows = run_cases(json.loads(Path(a.cases).read_text(encoding="utf-8")))
     sc = score(rows)
     md = report(sc, rows, live_stats() if a.live else None)

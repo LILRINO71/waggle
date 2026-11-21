@@ -80,11 +80,11 @@ def rig(tmp_path):
             self.made = []
             self.sounds = pcvoice.Sounds(synth=fake_synth(self.made))
 
-        def voice(self, client, *, wake=False, names=None, dry_wake=False, source=None):
-            self.client = client
+        def voice(self, client, *, wake=False, names=None, dry_wake=False, source=None, smart=False):
+            self.client = client  # smart=False: the behaviour before the judge and the stream (tests/test_voice2.py)
             factory = (lambda: source) if source is not None else None
             self.pv = pcvoice.PcVoice(mic_factory=factory, spk=self.spk, client=client, sounds=self.sounds,
-                                      wake=wake, names=names or ["Waggle"], dry_wake=dry_wake)
+                                      wake=wake, names=names or ["Waggle"], dry_wake=dry_wake, smart=smart)
             return self.pv
 
         def played(self):

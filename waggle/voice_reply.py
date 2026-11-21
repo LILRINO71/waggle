@@ -110,12 +110,12 @@ def sentences(text):
     return [s.strip() for s in _SENT.split(text or "") if s.strip()]
 
 
-def cap_spoken(text, max_sentences=MAX_SENTENCES, max_words=MAX_WORDS):
-    """At most `max_sentences` sentences and about `max_words` words of the speakable text: a cut that falls
+def cap_sentences(sents, max_sentences=MAX_SENTENCES, max_words=MAX_WORDS):
+    """The sentences of `sents` that fit: at most `max_sentences` and about `max_words` words. A cut that falls
     inside a sentence ends at the last whole sentence that fits, else at the word limit with a full stop."""
     out = []
     words = 0
-    for s in sentences(speakable(text))[:max_sentences]:
+    for s in sents[:max_sentences]:
         n = len(s.split())
         if words + n <= max_words:
             out.append(s)
@@ -125,7 +125,36 @@ def cap_spoken(text, max_sentences=MAX_SENTENCES, max_words=MAX_WORDS):
             cut = " ".join(s.split()[:max_words]).rstrip(",;:- ")
             out.append(cut if cut[-1:] in ".!?" else cut + ".")
         break
-    return " ".join(out)
+    return out
+
+
+def cap_spoken(text, max_sentences=MAX_SENTENCES, max_words=MAX_WORDS):
+    """At most `max_sentences` sentences and about `max_words` words of the speakable text (see cap_sentences)."""
+    return " ".join(cap_sentences(sentences(speakable(text)), max_sentences, max_words))
+
+
+def spoken_sentences(text, final=False, max_sentences=MAX_SENTENCES, max_words=MAX_WORDS):
+    """The finished sentences of the SPOKEN part of a reply that is still being written, capped like cap_spoken, so
+    the first can be said while the model writes the rest. A sentence is finished when its full stop has been
+    followed by more text; the last one is finished when the ANSWER marker has arrived (or final is True, the
+    reply is complete). A reply without a SPOKEN part gives [] (its spoken form is worked out at the end)."""
+    t = (text or "").lstrip()
+    m = _SPOKEN.match(t)
+    if not m:
+        return []
+    rest = t[m.end():]
+    a = _ANSWER.search(rest)
+    if a:
+        region, complete = rest[:a.start()], True
+    else:
+        region, complete = rest, bool(final)
+        para = re.search(r"\n[ \t]*\n", rest)
+        if para:  # no ANSWER marker: the spoken part is the first paragraph
+            region, complete = rest[:para.start()], True
+    parts = _SENT.split(region.strip())
+    if not complete:
+        parts = parts[:-1]  # the sentence still being written
+    return cap_sentences([x for x in (speakable(p) for p in parts) if x], max_sentences, max_words)
 
 
 def fallback_spoken(answer, **caps):
@@ -291,8 +320,10 @@ class VoiceReply:
     done: returns (answer text for the chat, spoken text); send(delivery) then sends the voice message."""
 
     def __init__(self, folder, *, voice="af_heart", speed=1.1, budget_s=None, synth=None, convert=None,
-                 clock=time.monotonic, ext="ogg", audio=True):
+                 clock=time.monotonic, ext="ogg", audio=True, on_sentence=None):
         self.folder, self.voice, self.speed = folder, voice, speed
+        self.on_sentence = on_sentence  # called with each finished sentence of the spoken part, in order (the PC voice)
+        self.sentences_said = []
         self.ext, self.audio = ext, audio  # audio=False: the spoken text is worked out but never turned into sound
         self.budget_s = BUDGET_S if budget_s is None else budget_s
         self.synth, self.convert, self.clock = synth, convert, clock
@@ -317,9 +348,23 @@ class VoiceReply:
         self._thread = threading.Thread(target=run, daemon=True, name="waggle-voice-reply")
         self._thread.start()
 
+    def _emit(self, sents):
+        """Hand the sentences not yet handed out to on_sentence (only when they continue what was handed out)."""
+        if not self.on_sentence or sents[:len(self.sentences_said)] != self.sentences_said:
+            return
+        for s in sents[len(self.sentences_said):]:
+            self.sentences_said.append(s)
+            try:
+                self.on_sentence(s)
+            except Exception:
+                pass
+
     def feed(self, text):
-        """The reply so far: speech starts the moment the SPOKEN part is complete."""
+        """The reply so far: speech starts the moment the SPOKEN part is complete; sentences go to on_sentence as
+        each one is finished."""
         try:
+            if self.on_sentence:
+                self._emit(spoken_sentences(text))
             if self._started_text is None and spoken_complete(text):
                 spoken = cap_spoken(split_reply(text)[0])
                 if spoken:
@@ -334,6 +379,7 @@ class VoiceReply:
         self.spoken = cap_spoken(spoken_raw) or fallback_spoken(self.answer)
         if self.spoken:
             self._start(self.spoken)
+            self._emit(sentences(self.spoken))
         return self.answer, self.spoken
 
     def wait(self):

@@ -237,7 +237,8 @@ def reminder_due(payload, *, settings=None, now=None, synth=None):
         if why:
             events.log("reminder_voice", id=item["id"], ok=False, why=why)
     row = notify.deliver("text", text, asked=True, origin="reminder", ref=item["id"], topic=f"reminder:{item['id']}",
-                         chat=item.get("chat") or "", source=None if cause == "user" else cause, settings=s, now=now)
+                         chat=item.get("chat") or "", source=None if cause == "user" else cause, settings=s, now=now,
+                         meta={"spoken": _spoken_reminder(item["what"], _late(payload))})  # what the PC says aloud
     notes = [f"late {int(float(payload.get('late_s') or 0))} s"] if _late(payload) else []
     if why:
         notes.append(why)
