@@ -124,3 +124,78 @@ def parse(text, now=None):
     if not explicit and when <= now:
         when += dt.timedelta(days=1)
     return when, True
+
+
+# ---- date ranges for questions about the past ('what did we decide last week') ----------------------------------
+
+_AGO = re.compile(r"\b(\d{1,3}|a|an|one|two|three|four|five|six|seven)\s+(day|week|month)s?\s+ago\b", re.I)
+_AGO_NUM = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7}
+_LAST_DAY = re.compile(r"\blast\s+(" + "|".join(sorted(WEEKDAYS, key=len, reverse=True)) + r")\b", re.I)
+_IN_MONTH = re.compile(r"\b(?:in|during|last|this|early|late|back in)\s+(" + "|".join(
+    sorted((m for m in MONTHS if len(m) > 3), key=len, reverse=True)) + r")\b", re.I)
+
+
+def range_for(text, now=None):
+    """(first_day, last_day) the question is about, as dates (both inclusive), or None when it names no day or
+    period. Reads past and present words that parse() leaves out: yesterday, last week, 3 days ago, last Friday, in
+    October, recently. A single day gives (day, day). No model."""
+    now = now or dt.datetime.now()
+    today = now.date()
+    low = (text or "").lower()
+    one = dt.timedelta(days=1)
+    m = _ISO.search(low)
+    if m:
+        try:
+            d = dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            return d, d
+        except ValueError:
+            pass
+    if re.search(r"\bday before yesterday\b", low):
+        return today - 2 * one, today - 2 * one
+    if re.search(r"\b(yesterday|last night)\b", low):
+        return today - one, today - one
+    if re.search(r"\b(today|tonight|this (morning|afternoon|evening)|earlier today)\b", low):
+        return today, today
+    m = _AGO.search(low)
+    if m:
+        n = int(m.group(1)) if m.group(1).isdigit() else _AGO_NUM[m.group(1).lower()]
+        unit = m.group(2).lower()
+        days = n * (1 if unit == "day" else 7 if unit == "week" else 30)
+        d = today - days * one
+        return (d, d) if unit == "day" else (d - 3 * one, d + 3 * one)
+    if re.search(r"\blast week\b", low):
+        start = today - dt.timedelta(days=today.weekday() + 7)
+        return start, start + 6 * one
+    if re.search(r"\bthis week\b", low):
+        return today - dt.timedelta(days=today.weekday()), today
+    if re.search(r"\blast month\b", low):
+        end = today.replace(day=1) - one
+        return end.replace(day=1), end
+    if re.search(r"\bthis month\b", low):
+        return today.replace(day=1), today
+    if re.search(r"\b(recently|lately|these days|the past few days|past few days)\b", low):
+        return today - 7 * one, today
+    m = _LAST_DAY.search(low)
+    if m:
+        ahead = (today.weekday() - WEEKDAYS[m.group(1).lower()]) % 7 or 7
+        d = today - ahead * one
+        return d, d
+    m = _MONTHDAY.search(low)
+    if m:
+        try:
+            d = dt.date(today.year, MONTHS[m.group(1).lower()], int(m.group(2)))
+            if d > today + dt.timedelta(days=200):
+                d = d.replace(year=today.year - 1)
+            return d, d
+        except ValueError:
+            pass
+    m = _IN_MONTH.search(low)
+    if m:
+        month = MONTHS[m.group(1).lower()]
+        year = today.year if month <= today.month else today.year - 1
+        first = dt.date(year, month, 1)
+        nxt = dt.date(year + (month == 12), month % 12 + 1, 1)
+        return first, nxt - one
+    if re.search(r"\btomorrow\b", low):
+        return today + one, today + one
+    return None

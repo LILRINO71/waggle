@@ -22,10 +22,15 @@ def _post(path, payload, timeout=300, settings=None):
         raise OllamaError(f"Ollama not reachable at {s.ollama_url}: {e}") from e
 
 
-def chat(messages, model=None, json_mode=False, think=False, settings=None, timeout=300):
+def chat(messages, model=None, json_mode=False, think=False, settings=None, timeout=300, schema=None):
+    """schema: a JSON schema dict; Ollama then constrains the reply to it (structured output) and samples it cold.
+    Without it, json_mode asks for any JSON."""
     s = settings or Settings.load()
     payload = {"model": model or s.local_model, "messages": messages, "stream": False, "think": think}
-    if json_mode:
+    if schema is not None:
+        payload["format"] = schema
+        payload["options"] = {"temperature": 0}
+    elif json_mode:
         payload["format"] = "json"
     return _post("/api/chat", payload, timeout, s)["message"]["content"]
 
@@ -41,10 +46,28 @@ def chat_json(messages, **kw):
         raise OllamaError(f"Model did not return JSON: {text[:200]}")
 
 
+# Embedding models want different task markers on the query and on the stored text. Matched by model name prefix;
+# nomic-embed-text is the default and the fallback.
+EMBED_STYLES = {
+    "nomic-embed-text": ("search_query: ", "search_document: "),
+    "qwen3-embedding": ("Instruct: Given a question, retrieve the notes that answer it\nQuery: ", ""),
+    "embeddinggemma": ("task: search result | query: ", "title: none | text: "),
+}
+
+
+def embed_prefixes(model):
+    name = (model or "").lower()
+    for key, pair in EMBED_STYLES.items():
+        if name.startswith(key):
+            return pair
+    return EMBED_STYLES["nomic-embed-text"]
+
+
 def embed(texts, kind="document", settings=None):
-    """nomic-embed-text wants a task prefix on every input."""
+    """Vectors for texts; each input gets its model's task prefix (query or document)."""
     s = settings or Settings.load()
-    prefix = "search_query: " if kind == "query" else "search_document: "
+    q, d = embed_prefixes(s.embed_model)
+    prefix = q if kind == "query" else d
     out = _post("/api/embed", {"model": s.embed_model, "input": [prefix + t for t in texts]}, 300, s)
     return out["embeddings"]
 
