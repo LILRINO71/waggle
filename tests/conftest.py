@@ -36,6 +36,16 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setattr(notify, "PHONE_LOG", PhoneLog(sent), raising=False)
     monkeypatch.setattr(notify, "_synth", lambda text, out, settings=None: False)  # no real Kokoro in tests
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))  # never the real Hermes state, cron or `hermes send`
+    import waggle.wincred as wincred
+    vault_ = {}  # never the real Windows Credential Manager
+    monkeypatch.setattr(wincred, "read", lambda target: vault_.get(target))
+    monkeypatch.setattr(wincred, "write", lambda target, user, secret: vault_.__setitem__(target, (user, secret)) or True)
+    monkeypatch.setattr(wincred, "delete", lambda target: vault_.pop(target, None) is not None)
+    import waggle.mailwatch as mailwatch
+
+    def no_imap(*a, **k):
+        raise OSError("no real IMAP in tests")
+    monkeypatch.setattr(mailwatch, "IMAP_FACTORY", no_imap)  # tests pass a fake IMAP server
     import waggle.watchers as watchers
     monkeypatch.setattr(watchers, "run_gh", lambda args, timeout=40: None)  # no real `gh` calls
     # quiet_hours off: otherwise tests that expect a phone message fail when run between 23:00 and 07:00.

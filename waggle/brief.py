@@ -134,7 +134,7 @@ def _nightly_review(s, now):
 def evening_note(settings=None, now=None, activity=None):
     """Tonight's note: what Waggle did, what it learned, what the user worked on, what's open tomorrow.
     Always returns text (it is sent every day, even when little happened). Facts only, no model."""
-    from . import followups, initiative, watchers
+    from . import followups, initiative, mailwatch, watchers
     s = settings or Settings.load()
     now = now or time.time()
     nowd = dt.datetime.fromtimestamp(now)
@@ -164,6 +164,9 @@ def evening_note(settings=None, now=None, activity=None):
     review = _nightly_review(s, now)
     if review:
         lines.append("Project review: " + " ".join(review)[:300])
+    mail = mailwatch.evening_line(now)  # today's mail the watch kept: texted ones and ones worth a look
+    if mail:
+        lines.append(mail)
     saved = initiative.evening_items(now, s)
     if saved:
         lines.append("Saved for tonight:\n" + "\n".join(f"• {x['title'][:140]}" for x in saved[:6]))
