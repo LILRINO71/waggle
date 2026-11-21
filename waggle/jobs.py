@@ -74,7 +74,7 @@ def launch(job_id):
 
 def parse_stream(log_text):
     """Pull session id, final result and error state out of stream-json output."""
-    session_id, result, is_error, usage = None, "", False, {}
+    session_id, result, is_error, usage, last_limit = None, "", False, {}, None
     for line in log_text.splitlines():
         try:
             ev = json.loads(line)
@@ -82,10 +82,17 @@ def parse_stream(log_text):
             continue
         if ev.get("session_id"):
             session_id = ev["session_id"]
+        if ev.get("type") == "rate_limit_event":
+            last_limit = ev.get("rate_limit_info")
         if ev.get("type") == "result":
             result = ev.get("result") or ev.get("terminal_reason") or ""
             is_error = bool(ev.get("is_error"))
             usage = ev.get("usage") or {}
+    if last_limit:  # only the newest reading: the log holds every run of the job, older ones would look fresh
+        try:  # the real used share of the 5-hour window; must never break a job
+            quota.note_real_usage(last_limit)
+        except Exception:
+            pass
     return session_id, result, is_error, usage
 
 

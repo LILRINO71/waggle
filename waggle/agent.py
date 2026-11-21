@@ -150,6 +150,11 @@ def parse_stream(lines):
                 step["ok"] = not block.get("is_error")
                 step["denied"] = "NEEDS_APPROVAL" in body or "safety policy" in body
                 step["result"] = policy.redact(body)[:300]
+        elif t == "rate_limit_event":
+            try:  # the real used share of the 5-hour window; must never break a run
+                quota.note_real_usage(ev.get("rate_limit_info"))
+            except Exception:
+                pass
         elif t == "result":
             final = ev
     return final, steps

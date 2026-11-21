@@ -252,7 +252,7 @@ def check(model, purpose="", settings=None, now=None, window_used=None, con=None
         if st.get("blocked_until", 0) > now:
             return False, "Claude limit reached", st["blocked_until"]
         if window_used is None:
-            window_used = quota.window_usage(s.window_hours, now)
+            window_used = quota.window_used_units(s, now, con)
         cap = quota.window_estimate(s, con)
         if rule:
             if window_used + cost > rule["stop_at"] * cap:

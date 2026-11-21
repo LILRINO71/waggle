@@ -2,7 +2,11 @@
 
 Anthropic does not publish Pro limits as numbers, so Waggle measures instead:
 - It reads every Claude Code transcript on this PC (your own sessions too) and adds up
-  weighted tokens in the current 5-hour window.
+  weighted tokens in the current 5-hour window. The real window is FIXED (it starts with the first message after the
+  last reset and ends 5 h later), so the window start comes from the last real reading when there is one.
+- Every `claude -p` stream-json run reports the real used share of the window (a rate_limit_event). note_real_usage
+  stores the newest one in real_usage.json; a fresh reading is the used fraction, plus whatever was spent since, and
+  it also calibrates the window size (cap = units counted / utilization).
 - Each time a real "limit reached" error comes back, the total at that moment becomes a
   data point for the window size (moving average), so the estimate gets accurate over time.
 
@@ -18,6 +22,7 @@ Weights: Sonnet = 1, Opus = 5/3, Haiku = 1/3 per input token; output counts 5x, 
 import datetime as dt
 import json
 import math
+import os
 import time
 from pathlib import Path
 
@@ -55,11 +60,9 @@ def _ts(s):
         return 0.0
 
 
-def window_usage(hours=5.0, now=None, roots=None):
-    """Weighted units used in the last `hours` across all Claude Code transcripts + Waggle's ledger."""
-    now = now or time.time()
-    since = now - hours * 3600
-    total, seen = 0.0, set()
+def _events(since, roots=None, until=None):
+    """(timestamp, weighted units) for every usage seen in [since, until]: Claude Code transcripts + Waggle's ledger."""
+    out, seen = [], set()
     for root in roots or [TRANSCRIPTS]:
         if not root.exists():
             continue
@@ -78,20 +81,50 @@ def window_usage(hours=5.0, now=None, roots=None):
                         msg = d.get("message")
                         if d.get("type") != "assistant" or not isinstance(msg, dict) or not msg.get("usage"):
                             continue
-                        if _ts(d.get("timestamp", "")) < since:
+                        ts = _ts(d.get("timestamp", ""))
+                        if ts < since or (until is not None and ts > until):
                             continue
                         mid = msg.get("id") or d.get("uuid")
                         if mid in seen:
                             continue
                         seen.add(mid)
-                        total += weighted(msg["usage"], msg.get("model"))
+                        out.append((ts, weighted(msg["usage"], msg.get("model"))))
             except OSError:
                 continue
     # claude -p runs with --no-session-persistence leave no transcript; Waggle logs those itself.
     for row in ledger():
-        if row.get("time", 0) >= since and row.get("headless"):
-            total += row.get("units", 0)
-    return total
+        if row.get("time", 0) >= since and row.get("headless") and (until is None or row.get("time", 0) <= until):
+            out.append((row.get("time", 0), row.get("units", 0)))
+    return out
+
+
+def _usage_from(since, roots=None, until=None):
+    return sum(u for _, u in _events(since, roots, until))
+
+
+def window_start(now=None, hours=5.0, roots=None):
+    """When the current 5-hour window began. The real window is fixed: it starts with the first message after the
+    last reset and resets `hours` later.
+    - a real reading whose resets_at is still ahead: resets_at - hours
+    - an expired reading: the first usage after its resets_at, but never earlier than now - hours
+    - no reading: the rolling window (now - hours)."""
+    now = now or time.time()
+    rolling = now - hours * 3600
+    r = _real_reading()
+    if not r:
+        return rolling
+    if r["resets_at"] > now:
+        return r["resets_at"] - hours * 3600
+    floor = max(r["resets_at"], rolling)
+    firsts = [ts for ts, _ in _events(floor, roots) if ts > r["resets_at"] and ts <= now]
+    return min(firsts) if firsts else now
+
+
+def window_usage(hours=5.0, now=None, roots=None):
+    """Weighted units used in the current 5-hour window (fixed from the last real reading when there is one, else the
+    last `hours` rolling) across all Claude Code transcripts + Waggle's ledger."""
+    now = now or time.time()
+    return _usage_from(window_start(now, hours, roots), roots)
 
 
 def ledger():
@@ -204,6 +237,114 @@ def _save_state(st):
     data_path("quota_state.json").write_text(json.dumps(st, indent=2), encoding="utf-8")
 
 
+# ---- the real reading from the CLI (rate_limit_event) ------------------------------------------------------------
+
+FRESH_S = 1800          # a reading this young is the used fraction; older, only the estimate is used
+CALIBRATE_MIN = 0.15    # below this much utilization the measured cap is too coarse to learn from
+KEEP_CAPS = 5           # the cap is the mean of this many latest calibrations
+
+
+def _epoch(v):
+    """resetsAt as epoch seconds: a number (seconds or milliseconds) or an ISO string; None when unusable."""
+    if isinstance(v, str):
+        v = _ts(v) or None
+    v = _number(v)
+    if v is None or v <= 0:
+        return None
+    return v / 1000 if v > 1e11 else v
+
+
+def _parse_info(info):
+    """(utilization, resets_at) of the five-hour window out of a rate_limit_info dict, or None."""
+    if not isinstance(info, dict):
+        return None
+    uw = info.get("unifiedWindows")
+    win = uw.get("five_hour") if isinstance(uw, dict) else None
+    if not isinstance(win, dict):
+        if info.get("rateLimitType") != "five_hour":
+            return None
+        win = info
+    u = _number(win.get("utilization"))
+    r = _epoch(win.get("resetsAt", info.get("resetsAt")))
+    if u is None or r is None or u < 0 or u > 1.5:
+        return None
+    return u, r
+
+
+def _real_reading():
+    """The stored reading {utilization, resets_at, seen_at, units_at_seen, caps}, or None."""
+    try:
+        d = json.loads(data_path("real_usage.json").read_text(encoding="utf-8"))
+        u, r = _number(d.get("utilization")), _number(d.get("resets_at"))
+        if u is None or r is None:
+            return None
+        return {"utilization": u, "resets_at": r, "seen_at": _number(d.get("seen_at")) or 0.0,
+                "units_at_seen": _number(d.get("units_at_seen")) or 0.0,
+                "caps": [c for c in (_number(x) for x in d.get("caps") or []) if c and c > 0]}
+    except Exception:
+        return None
+
+
+def note_real_usage(info, now=None, settings=None, roots=None):
+    """Store the real five-hour reading from a rate_limit_event (rate_limit_info). Never raises; bad input is ignored.
+    Returns the stored reading, or None."""
+    try:
+        parsed = _parse_info(info)
+        if not parsed:
+            return None
+        util, resets_at = parsed
+        now = now or time.time()
+        s = settings or Settings.load()
+        units = _usage_from(resets_at - s.window_hours * 3600, roots, until=now)  # counted in this fixed window right now
+        old = _real_reading()
+        caps = (old or {}).get("caps", [])
+        if util >= CALIBRATE_MIN and units > 0:
+            caps = (caps + [units / util])[-KEEP_CAPS:]
+            try:  # readings replace waiting for a real limit hit
+                _learn_estimate(s, sum(caps) / len(caps), now)
+                _set_learned("calibrated_at", now, now)
+            except Exception:
+                pass
+        row = {"utilization": util, "resets_at": resets_at, "seen_at": now, "units_at_seen": round(units, 6),
+               "caps": [round(c, 4) for c in caps]}
+        p = data_path("real_usage.json")
+        tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(row, indent=2), encoding="utf-8")
+        os.replace(tmp, p)
+        return row
+    except Exception:
+        return None
+
+
+def _fresh_reading(now):
+    r = _real_reading()
+    if r and r["resets_at"] > now and 0 <= now - r["seen_at"] <= FRESH_S:
+        return r
+    return None
+
+
+def window_view(s, now=None, con=None):
+    """The one used-fraction every decision and the status use: {pct, used, cap, source, resets_at}.
+    A fresh real reading: pct = utilization + (units now - units at the reading) / cap. Otherwise the estimate:
+    units in the window / cap (raising the cap when usage proves it higher)."""
+    now = now or time.time()
+    total = window_usage(s.window_hours, now)
+    r = _fresh_reading(now)
+    if r:
+        cap = window_estimate(s, con)
+        pct = r["utilization"] + max(0.0, total - r["units_at_seen"]) / cap
+        return {"pct": pct, "used": pct * cap, "cap": cap, "source": "real", "resets_at": r["resets_at"]}
+    cap = learned_cap(s, total, now) if con is None else window_estimate(s, con)
+    old = _real_reading()
+    return {"pct": total / cap, "used": total, "cap": cap, "source": "estimate",
+            "resets_at": old["resets_at"] if old and old["resets_at"] > now else None}
+
+
+def window_used_units(s, now=None, con=None):
+    """Units used in the window as every check judges it: pct * cap (the real number when a reading is fresh)."""
+    return window_view(s, now, con)["used"]
+
+
 def note_limit_hit(settings=None, reset_in_hours=None, now=None):
     """Called when the CLI says the limit is reached: calibrate and block until the reset."""
     s = settings or Settings.load()
@@ -245,16 +386,20 @@ def can_escalate(model, settings=None, now=None, used=None):
     if st.get("blocked_until", 0) > now:
         mins = int((st["blocked_until"] - now) / 60)
         return False, f"Claude limit reached; retry in about {mins} min"
-    total = window_usage(s.window_hours, now) if used is None else used
-    cap = learned_cap(s, total, now) if used is None else window_estimate(s)
+    real = False
+    if used is None:
+        view = window_view(s, now)
+        total, cap, real = view["used"], view["cap"], view["source"] == "real"
+    else:
+        total, cap = used, window_estimate(s)
     mine = waggle_usage(s.window_hours, now)
     # A rough cost of the call about to happen, so we stop before crossing the line, not after.
     expected = 0.6 * weight_for(model) if "opus" in model else 0.05
     # Before the first real limit hit the cap is only a lower bound, so "nearly full" can't be judged yet. At the
     # upper bound it is no lower bound any more: the window is bigger than the user's setting allows for.
     at_ceiling = cap >= estimate_bounds(s)[1]
-    if (calibrated(st) or at_ceiling) and total + expected > s.stop_at * cap:
-        if at_ceiling and total > cap:
+    if (real or calibrated(st) or at_ceiling) and total + expected > s.stop_at * cap:
+        if at_ceiling and total > cap and not real:
             return False, (f"Pro window use is past {ESTIMATE_BOUNDS[1]:g}x your window_units_estimate; raise that "
                            f"setting in config.json (then approve it: python -m waggle.guard approve)")
         return False, f"Pro window at {total / cap:.0%} of estimated limit; keeping the rest for you"
@@ -271,9 +416,8 @@ def can_escalate(model, settings=None, now=None, used=None):
 
 def status(settings=None):
     s = settings or Settings.load()
-    total = window_usage(s.window_hours)
-    cap = learned_cap(s, total)
-    return {"window_used_units": round(total, 3), "window_estimate_units": cap,
-            "window_pct": round(100 * total / cap, 1),
+    v = window_view(s)
+    return {"window_used_units": round(v["used"], 3), "window_estimate_units": v["cap"],
+            "window_pct": round(100 * v["pct"], 1), "source": v["source"], "resets_at": v["resets_at"],
             "waggle_units": round(waggle_usage(s.window_hours), 3),
             "blocked_until": _state().get("blocked_until")}
