@@ -17,7 +17,7 @@ import json
 import re
 import time
 
-from . import events, kstore, projects, vault
+from . import events, kstore, projects, vault, vault_git
 from .config import Settings
 
 GAP_S = 30 * 60
@@ -265,6 +265,7 @@ def file_results(day, rows, data, settings=None):
 
 # ---- the job -------------------------------------------------------------------------------------
 
+@vault_git.recorded("digest", lambda r, a, k: f"journal digest: {r['written']} note(s) written, {len(r['distilled'])} day(s) distilled")
 def run(settings=None, now=None, asker=None, max_calls=2):
     """Write today's and yesterday's notes; distil finished days (and today after 20:00) once each."""
     s = settings or Settings.load()

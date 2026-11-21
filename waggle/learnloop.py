@@ -45,7 +45,7 @@ import re
 import sqlite3
 import time
 
-from . import events, kstore, learn
+from . import events, kstore, learn, vault_git
 from .config import Settings
 
 KIND = "learnloop.run"
@@ -858,6 +858,7 @@ def preview(ctx, c):
     return out
 
 
+@vault_git.recorded("learnloop", "learning-loop pass")
 def run(settings=None, now=None, embedder=None, chat=None, asker=None, dry_run=False, lookback_days=None):
     """One pass of the loop. Returns a report. With dry_run nothing is written (no ledger row, no trace mark, no
     fact, no re-index, no Claude call): it lists what each new signal would do."""
@@ -933,6 +934,7 @@ def _bump_failure(c):
 UNDO_CMD = re.compile(r"^\s*undo\s+#?L(\d{1,6})\s*[.!]*\s*$", re.I)
 
 
+@vault_git.recorded("learnloop", lambda r, a, k: f"undo L{a[0]}")
 def undo(row_id, settings=None):
     """(ok, message) for the owner's "undo L<id>": reverts a kept change, or dismisses a request that had none."""
     s = settings or Settings.load()

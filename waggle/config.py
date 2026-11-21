@@ -12,6 +12,10 @@ CONFIG_FILE = HOME / "config.json"
 @dataclass
 class Settings:
     vault: str = str(Path.home() / "WaggleVault")
+    # Vault history (waggle/vault_git.py): every Waggle change to the vault is a local git commit you can undo.
+    vault_git: bool = True
+    vault_git_max_kb: int = 512  # a note Waggle writes that is bigger than this is refused and put back
+    vault_git_readonly: list = field(default_factory=list)  # globs Waggle may never change, e.g. ["Me/Profile.md"]
     jobs_dir: str = str(Path.home() / "Claude" / "waggle-jobs")
     ollama_url: str = "http://127.0.0.1:11434"  # not "localhost": on Windows that adds ~2 s per request
     local_model: str = "waggle-4b"

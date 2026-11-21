@@ -49,7 +49,8 @@ def isolated_home(tmp_path, monkeypatch):
     import waggle.watchers as watchers
     monkeypatch.setattr(watchers, "run_gh", lambda args, timeout=40: None)  # no real `gh` calls
     # quiet_hours off: otherwise tests that expect a phone message fail when run between 23:00 and 07:00.
-    s = Settings(vault=str(tmp_path / "vault"), jobs_dir=str(tmp_path / "jobs"), quiet_hours=[0, 0])
+    s = Settings(vault=str(tmp_path / "vault"), jobs_dir=str(tmp_path / "jobs"), quiet_hours=[0, 0],
+              vault_git=False)  # tests/test_vault_git*.py turn the vault history on
     s.save()
     return s
 

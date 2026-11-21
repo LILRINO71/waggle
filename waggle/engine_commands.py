@@ -5,6 +5,9 @@ Which `/commands` exist, and who answers them (checked 2026-11-20):
   Waggle's own (this module):      /waggle [status]     the Claude window, Waggle's share, any usage block, media folder
                                    /waggle media        what the media folder holds, how long files are kept
                                    /waggle media clean  delete the saved attachments now
+                                   /waggle memory       the last changes Waggle made to your vault (vault_git.py)
+                                   /waggle memory show <id>      what one change did
+                                   /waggle memory restore <id>   undo one change, as a new change
                                    /waggle help         this list
   Hermes only (left on the old path: the gateway answers them, the engine never sees them):
                                    /new /reset /stop /status /model /usage /retry /undo /compress /voice /yolo
@@ -27,6 +30,7 @@ HELP = ("Waggle commands:\n"
         "- /waggle: usage window, Waggle's share, saved attachments\n"
         "- /waggle media: what the media folder holds\n"
         "- /waggle media clean: delete the saved attachments now\n"
+        "- /waggle memory: the last changes Waggle made to your notes; \"memory show <id>\" and \"memory restore <id>\"\n"
         "- /waggle help: this list\n"
         "Everything else starting with / (/new, /stop, /model and so on) is answered by Hermes.")
 
@@ -89,6 +93,27 @@ def _media(settings, args):
             "\"/waggle media clean\" deletes them now.")
 
 
+def _memory(settings, args):
+    """/waggle memory [log [n] | show <id> | restore <id>]: Waggle's changes to the vault, from its local git history."""
+    from . import vault_git
+    if not vault_git.enabled(settings):
+        return "Memory history is off (vault_git is false in the settings)."
+    parts = args.split()
+    word = parts[0].lower() if parts else "log"
+    if word == "log" or word.isdigit():
+        n = int(parts[1]) if word == "log" and len(parts) > 1 and parts[1].isdigit() else int(word) if word.isdigit() else 8
+        rows = vault_git.log(min(max(n, 1), 25), settings)
+        if not rows:
+            return "No memory history yet. It starts the first time Waggle changes a note."
+        return ("Waggle's recent changes to your notes (newest first):\n" + vault_git.format_log(rows) +
+                "\n\n\"/waggle memory show <id>\" shows one, \"/waggle memory restore <id>\" undoes it.")
+    if word in ("show", "diff") and len(parts) > 1:
+        return vault_git.format_show(vault_git.show(parts[1], settings), diff=True)[:3500]
+    if word in ("restore", "undo", "revert") and len(parts) > 1:
+        return vault_git.restore(parts[1], settings)["message"]
+    return "Use \"/waggle memory\", \"/waggle memory show <id>\" or \"/waggle memory restore <id>\"."
+
+
 def serve(text, settings=None):
     """The reply to one command Waggle serves. Never raises."""
     from .config import Settings
@@ -104,6 +129,8 @@ def serve(text, settings=None):
             return _status(s)
         if word == "media":
             return _media(s, sub[1] if len(sub) > 1 else "")
+        if word in ("memory", "mem"):
+            return _memory(s, sub[1] if len(sub) > 1 else "")
         if word in ("help", "?", "commands"):
             return HELP
         return f"I don't know \"/waggle {args[:40]}\".\n\n{HELP}"

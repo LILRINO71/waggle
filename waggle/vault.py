@@ -61,8 +61,18 @@ def read(rel, settings=None):
     return p.read_text(encoding="utf-8") if p.exists() else ""
 
 
+def _record(p, settings):
+    """Tell the vault history about a write that is about to happen (waggle/vault_git.py). Never raises."""
+    try:
+        from . import vault_git
+        vault_git.note_write(p, settings)
+    except Exception:  # noqa: BLE001  (history must never stop a note from being written)
+        pass
+
+
 def append(rel, text, settings=None):
     p = safe_path(rel, settings)
+    _record(p, settings)
     p.parent.mkdir(parents=True, exist_ok=True)
     existing = p.read_text(encoding="utf-8") if p.exists() else f"# {p.stem}\n\n"
     if not existing.endswith("\n"):
@@ -73,6 +83,7 @@ def append(rel, text, settings=None):
 
 def write(rel, text, settings=None):
     p = safe_path(rel, settings)
+    _record(p, settings)
     p.parent.mkdir(parents=True, exist_ok=True)
     # Write a temp file and swap it in: a crash mid-write leaves the old note, never a half-written one.
     tmp = p.with_name(f".{p.name}.{os.getpid()}.tmp")

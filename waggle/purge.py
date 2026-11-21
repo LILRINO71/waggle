@@ -32,7 +32,7 @@ import re
 import sys
 import time
 
-from . import kstore, learn, memory, vault
+from . import kstore, learn, memory, vault, vault_git
 from .config import Settings, data_path
 
 SHINGLE = 5  # words in a row that make a quote
@@ -344,6 +344,7 @@ def _sha(text):
     return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
 
 
+@vault_git.recorded("purge", lambda r, a, k: f"removed {r['vault']['lines']} line(s) from {r['vault']['notes']} note(s)")
 def purge(settings=None, apply=False, phrases=(), embedder=None, now=None):
     """Dry run unless apply=True. Returns counts per store (and examples); with apply, also the undo id."""
     s = settings or Settings.load()
@@ -381,6 +382,7 @@ def purge(settings=None, apply=False, phrases=(), embedder=None, now=None):
     (d / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1, default=str),
                                      encoding="utf-8")
     for p in vplan:
+        vault_git.note_write(vault.safe_path(p["path"], s), s)
         vault.safe_path(p["path"], s).write_bytes(p["after"].encode("utf-8"))
     con = kstore.db()
     for f in facts:
@@ -435,6 +437,7 @@ def list_purges():
     return out
 
 
+@vault_git.recorded("purge", lambda r, a, k: f"restored {a[0]}")
 def restore(purge_id, settings=None, embedder=None):
     """Undo one purge. A note changed since the purge is left as it is and listed under `conflicts`."""
     s = settings or Settings.load()
@@ -452,6 +455,7 @@ def restore(purge_id, settings=None, embedder=None):
             out["conflicts"].append(v["path"])
             continue
         p.parent.mkdir(parents=True, exist_ok=True)
+        vault_git.note_write(p, s)
         p.write_bytes(v["before"].encode("utf-8"))
         out["notes"] += 1
     con = kstore.db()

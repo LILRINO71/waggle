@@ -18,7 +18,7 @@ import re
 import time
 from dataclasses import dataclass
 
-from . import events, kstore, memory, ollama, vault
+from . import events, kstore, memory, ollama, vault, vault_git
 from .config import Settings
 
 PLAN_DIR = "Waggle"
@@ -362,6 +362,7 @@ def render(plan):
     return "\n".join(out) + "\n"
 
 
+@vault_git.recorded("dropbox", "weekly tidy plan")
 def run(payload=None, *, settings=None, now=None, ask=None):
     """Job dropbox.tidy: write the plan and tell the owner. A plan already written for the day is not rewritten
     (the owner may have ticked boxes in it) and not announced again."""
