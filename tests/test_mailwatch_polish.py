@@ -188,7 +188,7 @@ def test_text_that_does_not_clearly_address_the_owner_is_left_alone(text):
 def test_the_model_prompt_addresses_the_reader_as_you_and_never_says_he_him_or_the_user():
     prompt = mailwatch.LOCAL_SYSTEM.lower()
     for word in ("him", "his", "he", "she", "her", "the user"):
-        assert not re.search(rf"{word}", prompt), word
+        assert not re.search(rf"\b{word}\b", prompt), word
     assert "the reader" in prompt and 'as "you"' in prompt
 
 
