@@ -17,10 +17,15 @@ from it. Feature work happens in worktrees on `rebuild/*` branches, all pushed t
 | Knowledge | `waggle.knowledge_core` plug-in: intake every 30 min, digest 21:00 and 08:00, quiz 21:30. Learns only from turns whose origin is `user` |
 | Safety guard | Per-checkout manifest under `~/.waggle-guard/<hash>/`; hook and in-process gate fail closed; learned budget estimate lives in `budget.db`, clamped to 0.1x-4x of the user's value |
 
-Photos, image documents, other files, audio files (transcribed up to 10 min), captions, stickers and `/waggle`
-now go through the engine too (`waggle/media_intake.py`, `waggle/engine_commands.py`; files under
-`~/.waggle/media/<chat>/`, kept 14 days). The old path (Hermes turn through the plugin's router) still answers:
-videos, locations, Hermes's own slash commands (/new /status /model ...), other chats.
+Photos, image documents, other files, audio files (transcribed up to 10 min), videos, location pins, captions,
+stickers and `/waggle` now go through the engine too (`waggle/media_intake.py`, `waggle/engine_commands.py`; files
+under `~/.waggle/media/<chat>/`, kept 14 days). A video gets its length, size, up to 3 still frames and (under 2 min,
+`video_transcribe_max_s`) a local transcript, all from ffmpeg and the local recogniser, no Claude call; a location pin is
+saved as `location.json` and handed to the turn as lat/lon/venue. `/waggle media clean` first shows count, size,
+oldest and newest and files an approval (`approvals.db`, tool `waggle_media_clean`): "yes" or "approve CODE" moves the
+files to `~/.waggle/purge/media-<stamp>/` (erased after 7 days); `/waggle media clean confirm` does it with no
+question. The old path (Hermes turn through the plugin's router) still answers: Hermes's own slash commands
+(/new /status /model ...), other chats, and any message the core refuses.
 
 ## Added 2026-11-20 night (main 459dfd1 + chat fix 1dc0d71)
 
@@ -54,7 +59,7 @@ videos, locations, Hermes's own slash commands (/new /status /model ...), other 
 4. Phone calls (Twilio): SKIPPED by the owner 2026-11-21 ("skip phone for now"); don't ask again unless they bring it up.
 5. Calendar: NOT USED by the owner (2026-11-21); skip. Was: the owner runs `python -m waggle.calendar_watch login` (USER_TESTS.md). Then `ingest.sync_upcoming` and
    the evening note should read `calendar_watch` instead of the Claude connector.
-6. Videos and locations still go the old path; `/waggle media clean` has no confirmation.
+6. Done on `rebuild/media2`: videos and locations take the engine path; `/waggle media clean` asks first.
 
 ## Overnight 2026-11-20 -> 21 (owner asleep; mandate: build without asking, owner keeps/deletes in the morning)
 

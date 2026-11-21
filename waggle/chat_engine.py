@@ -29,6 +29,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from . import chat_store, claude_cli, engine_commands, events, media_intake, quota, stt, traces, voice_reply, voice_turn
 from . import guard  # turn state for the owner-instruction rule
@@ -299,6 +300,9 @@ def approval_preflight(chat, text, prev_msg_at=0.0):
             state = "expired" if item["state"] == "pending" else item["state"]
             return "reply", f"Approval {item['code']} is no longer open ({state}). Nothing was done."
         sess = item.get("session") or ""
+        if item.get("tool") == engine_commands.MEDIA_CLEAN_TOOL and sess == chat:  # Waggle's own question: no model
+            return "reply", engine_commands.media_clean_answer(
+                item, chat, Settings.load(), approve=verb not in ("deny", "reject", "refuse", "no"))
         if verb in ("deny", "reject", "refuse", "no"):
             policy.deny(item["id"])
             if sess.startswith("objective-"):
@@ -322,6 +326,17 @@ def approval_preflight(chat, text, prev_msg_at=0.0):
     if not YES.match(text or ""):
         return None
     mine = policy.pending(chat)
+    cleans = [p for p in mine if p.get("tool") == engine_commands.MEDIA_CLEAN_TOOL]
+    if cleans:  # a yes to "clean the saved attachments?" answers that question and nothing else
+        others = [p for p in mine if p not in cleans]
+        if others:
+            lines = "\n".join("- " + policy.describe(p) for p in mine[:6])
+            return "reply", (f"More than one thing is waiting, so I won't act on a plain yes. Open requests:\n{lines}\n"
+                             f"Reply \"approve CODE\" (or \"deny CODE\") for the one you mean.")
+        newest = cleans[-1]  # pending() is oldest first; an older snapshot of the folder is superseded
+        for old in cleans[:-1]:
+            policy.deny(old["id"])
+        return "reply", engine_commands.media_clean_answer(newest, chat, Settings.load())
     if mine:
         granted = policy.grant(session=chat)
         return "note", ("The user approved: " + "; ".join(g["summary"] for g in granted)
@@ -682,7 +697,7 @@ def media_note(media, failed=()):
     return media_intake.attachment_note([m for m in items if m], failed)
 
 
-MEDIA_KINDS = ("photo", "image", "document", "file", "audio")
+MEDIA_KINDS = ("photo", "image", "document", "file", "audio", "video", "location")
 TRANSCRIBE_MAX_UNKNOWN_BYTES = 12 * 1024 * 1024  # an audio file of unknown length above this is attached, not transcribed
 TRANSCRIPT_MAX_CHARS = 8000
 
@@ -706,6 +721,82 @@ def transcribe_attachment(att, settings):
     else:
         att["note"] = f"could not be transcribed: {str(res.get('error') or 'no speech')[:100]}"
     return att
+
+
+def _length_words(seconds):
+    s = int(round(float(seconds)))
+    return f"{s // 60} min {s % 60} s" if s >= 60 else f"{s} s"
+
+
+def describe_video(att, settings):
+    """Look at a saved video with local tools only: its length and size, up to three still frames saved beside it
+    (the brain Reads them), the words in its sound when it is short (settings.video_transcribe_max_s, 120 s, the
+    same local recogniser as voice notes), and a one-line summary of all that. Nothing here calls Claude, and no
+    step is needed for the file to be filed: without ffmpeg the video is only attached, and the note says so.
+    The transcript is the video's content, not the owner's words: it stays inside the attachment block."""
+    path = att["path"]
+    try:
+        info = media_intake.video_info(path)
+        if not info["ok"]:
+            att["summary"] = "a video, not looked at"
+            att["note"] = "ffmpeg is not available or could not read it: no length, size or frames"
+            return att
+        dur = info["duration"] if info["duration"] is not None else att.get("duration")
+        if dur is not None:
+            att["duration"] = round(float(dur), 1)
+        if info["width"]:
+            att["width"], att["height"] = info["width"], info["height"]
+        frames = media_intake.extract_frames(path, dur)
+        if frames:
+            att["frames"] = frames
+        limit = float(getattr(settings, "video_transcribe_max_s", 120) or 120)
+        parts = [f"{_length_words(dur)} video" if dur is not None else "video"]
+        if info["width"]:
+            parts.append(f"{info['width']}x{info['height']}")
+        parts.append(f"{len(frames)} frame(s) saved" if frames else "no frames could be taken")
+        if info["has_audio"] is False:
+            parts.append("no sound")
+        elif info["has_audio"] and dur is None:
+            parts.append("sound not transcribed (length unknown)")
+        elif info["has_audio"] and float(dur) > limit:
+            parts.append(f"sound not transcribed (over {limit / 60:g} min)")
+        elif info["has_audio"]:
+            wav = Path(path).with_name(Path(path).stem + "-sound.wav")
+            heard = ""
+            if media_intake.extract_audio(path, wav):
+                try:
+                    res = stt.transcribe(str(wav))
+                finally:
+                    wav.unlink(missing_ok=True)
+                heard = (res.get("text") or "").strip() if res.get("ok") else ""
+            if heard:
+                att["transcript"] = heard[:TRANSCRIPT_MAX_CHARS]
+                att["note"] = "transcript made by Waggle's local speech recogniser; it may contain mistakes"
+                parts.append("speech: " + (heard[:120] + "..." if len(heard) > 120 else heard))
+            else:
+                parts.append("no speech recognised")
+        att["summary"] = "; ".join(parts)
+    except Exception as e:  # a bad file must never stop the turn: it is still attached
+        events.log("engine_error", stage="describe_video", error=str(e)[:200])
+        att.setdefault("summary", "a video, not looked at")
+        att["note"] = f"could not be looked at ({type(e).__name__})"
+    return att
+
+
+def _ingest_location(chat, media):
+    """media_intake.ingest's answer for a shared location: the pin saved as a file, or why it was not."""
+    ok, failed = [], []
+    for item in list(media or [])[:1]:  # one pin per message
+        try:
+            ok.append(media_intake.save_location(chat, item if isinstance(item, dict) else {}))
+        except ValueError as e:
+            failed.append({"name": "location", "why": str(e)})
+        except Exception as e:
+            events.log("engine_error", stage="save_location", error=str(e)[:200])
+            failed.append({"name": "location", "why": "it could not be saved"})
+    if not ok and not failed:
+        failed.append({"name": "location", "why": "no coordinates came with it"})
+    return {"ok": ok, "failed": failed}
 
 
 def _failed_reply(failed):
@@ -785,19 +876,22 @@ def handle_inbound(chat, text, *, kind="text", media=None, platform="telegram", 
         return rec
 
     if kind == "command":  # a command Waggle serves itself (waggle/engine_commands.py): no model
-        return direct(engine_commands.serve(body, s), "command")
+        return direct(engine_commands.serve(body, s, chat=chat, origin=origin), "command")
     if kind == "sticker":  # a short local answer, never a model call
         emoji = next((m.get("emoji") for m in (media or []) if isinstance(m, dict) and m.get("emoji")), "")
         body = f"(sticker {emoji})".replace(" )", ")")
         return direct(engine_commands.sticker_reply(emoji), "sticker")
     attachments, owner_text = "", None
-    if media and not voice:
-        # Photos, files, audio files: saved to the chat's media folder, described in a note beside the caption.
-        # The caption is the owner's own words (like typed text); the files and their names and transcripts are data.
-        got = media_intake.ingest(chat, media, settings=s)
+    if kind == "location" or (media and not voice):
+        # Photos, videos, files, audio files, location pins: saved to the chat's media folder, described in a note
+        # beside the caption. The caption is the owner's own words (like typed text); the files, their names, a
+        # video's frames and any transcript, and a pin's place name are data.
+        got = _ingest_location(chat, media) if kind == "location" else media_intake.ingest(chat, media, settings=s)
         for att in got["ok"]:
             if att["kind"] == "audio":
                 transcribe_attachment(att, s)
+            elif att["kind"] == "video":
+                describe_video(att, s)
         attachments = media_note(got["ok"], got["failed"])
         if not got["ok"] and not body:
             return direct(_failed_reply(got["failed"]), "attachment", failure_notice=True)
