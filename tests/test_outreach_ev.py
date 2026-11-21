@@ -272,3 +272,24 @@ def test_stats_show_the_odds_per_kind_and_what_would_happen(s, capsys):
     assert "too few outcomes" in rows["mail"]
     assert "false-alarm rate" in out and "enabled=True" in out
     assert initiative.main(["bogus"]) == 2
+
+
+@pytest.mark.parametrize("text", [
+    "stop", "Stop.", "stop it", "please stop", "stop texting", "stop texting me", "stop for today", "ok stop",
+    "ok, please stop it now", "can you stop sending these", "stop!!", "I said stop", "stop sending me notifications"])
+def test_a_bare_stop_that_is_a_command_counts(text):
+    assert outreach_ev.is_stop(text)
+
+
+@pytest.mark.parametrize("text", [
+    "stop by the shop and check the robot parts today", "stop at the shop", "I'll stop by later", "the bus stop is closed",
+    "non-stop robot work this weekend", "can't stop thinking about the robot", "don't stop the build",
+    "stop the shooter loop", "we need a stop button on the intake", "full stop", "pit stop at 3", "stoplight"])
+def test_stop_inside_ordinary_sentences_is_not_a_complaint(text):
+    assert not outreach_ev.is_stop(text)
+
+
+def test_the_other_stop_phrases_still_count():
+    for text in ("not now", "leave me alone", "shut up", "too many messages", "no more texts", "don't text me",
+                 "quit pinging"):
+        assert outreach_ev.is_stop(text), text

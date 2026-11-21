@@ -36,6 +36,7 @@ from . import guard  # turn state for the owner-instruction rule
 from .chat_session import VOICE_STYLE, ChatSession, SessionPool
 from .config import Settings, data_path
 from .delivery import StreamWriter, Typing, plain_text
+from .outredact import scrub
 
 ORIGINS = traces.ORIGINS
 TEST_PLATFORMS = {"cli", "local", "test", "api", "desktop", ""}  # the command-line chat and test clients
@@ -515,7 +516,7 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
             reply = answer_only
     if attempt and attempt >= 2 and not rec.failure_notice:
         reply += INTERRUPTED_LINE
-    rec.reply = reply
+    rec.reply = scrub(reply, "reply", chat=chat)  # the one place every channel's text comes from (the hook's block message, the outbox)
     if vr:
         send_spoken(rec, vr, delivery, t0)
     out = writer.finish(shown_reply(rec))

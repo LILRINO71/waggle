@@ -151,6 +151,8 @@ def t_send_to_me(args):
         text = (text + "\n" if text else "") + f"MEDIA:{p.resolve()}"
     if not text:
         return "Nothing to send."
+    from waggle.outredact import scrub
+    text = scrub(text, "telegram")  # the model wrote this: no credential goes out, whatever it was asked
     exe = notify.hermes_exe()
     if not exe:
         return "Send failed: hermes not found"

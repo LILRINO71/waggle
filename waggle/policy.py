@@ -40,34 +40,54 @@ class Decision:
 
 # ---- secrets -----------------------------------------------------------------------------------
 
+# A letter or digit before a prefix means it is the end of a longer word ("risk-", "task-"), not a key.
 SECRET_PATTERNS = [
-    (r"sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}", "api-key"),
-    (r"gh[pousr]_[A-Za-z0-9]{30,}", "github-token"), (r"github_pat_[A-Za-z0-9_]{40,}", "github-token"),
-    (r"xox[abposr]-[A-Za-z0-9-]{10,}", "slack-token"), (r"AKIA[0-9A-Z]{16}", "aws-key"),
-    (r"\b\d{8,10}:[A-Za-z0-9_-]{35}\b", "telegram-token"),
+    (r"(?<![A-Za-z0-9])sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}", "api-key"),
+    (r"(?<![A-Za-z0-9])[sr]k_(?:live|test)_[A-Za-z0-9]{16,}", "api-key"),
+    (r"(?<![A-Za-z0-9])hf_[A-Za-z0-9]{30,}", "api-key"), (r"AIza[0-9A-Za-z_-]{35}", "api-key"),
+    (r"(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{30,}", "github-token"), (r"github_pat_[A-Za-z0-9_]{40,}", "github-token"),
+    (r"glpat-[A-Za-z0-9_-]{20,}", "gitlab-token"),
+    (r"xox[abposr]-[A-Za-z0-9-]{10,}", "slack-token"), (r"xapp-\d-[A-Za-z0-9-]{10,}", "slack-token"),
+    (r"(?<![A-Z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}(?![A-Z0-9])", "aws-key"),
+    (r"(?<!\d)\d{8,10}:[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])", "telegram-token"),
     (r"\bAC[0-9a-f]{32}\b", "twilio-sid"), (r"\bSK[0-9a-f]{32}\b", "twilio-key"),
     (r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", "jwt"),
-    (r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----", "private-key"),
+    # A block with no END line yet (a reply still being written, or cut at a size limit) is redacted to the end.
+    (r"-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----|\Z)",
+     "private-key"),
     (r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]{16,}", "bearer"),
-    (r"(?i)((?:password|passwd|pwd|secret|token|api[_-]?key|auth[_-]?token)\s*[=:]\s*)[\"']?[^\s\"']{6,}", "assigned"),
+    # name: value / name=value, also as JSON ("password": "x") and inside longer names (db_password, aws_secret_access_key)
+    (r"(?i)(?<![a-z0-9])((?:[a-z0-9]{1,24}[_-]){0,4}(?:secret[_-]?access[_-]?key|client[_-]?secret|auth[_-]?token|"
+     r"api[_-]?key|access[_-]?key|private[_-]?key|password|passwd|passphrase|pwd|secret|token)"
+     r"(?:[_-](?:key|token|secret|id))?[\"']?\s*[=:]\s*)[\"']?[^\s\"']{6,}", "assigned"),
+    # "my password is hunter2": only a word with a digit or symbol in it, so "the password is required" stays
+    (r"(?i)\b((?:password|passcode|passphrase)\s+is\s*:?\s+)[\"']?(?=[^\s\"']*[\d!@#$%^&*_-])[^\s\"']{6,}", "assigned"),
     (r"\b[3-6]\d{3}(?:[ -]?\d{4}){2}[ -]?\d{3,4}\b", "card-number"),
 ]
 _SECRET_RES = [(re.compile(p), name) for p, name in SECRET_PATTERNS]
 
 
+def redact_report(text):
+    """(text with every credential-looking string replaced by [REDACTED:<kind>], [one kind per hit])."""
+    if not text:
+        return text, []
+    out, kinds = str(text), []
+
+    def hit(name, keep=0):
+        def repl(m):
+            if name == "card-number" and not _luhn(m.group(0)):
+                return m.group(0)
+            kinds.append(name)
+            return (m.group(1) if keep else "") + f"[REDACTED:{name}]"
+        return repl
+    for rx, name in _SECRET_RES:
+        out = rx.sub(hit(name, keep=1 if name == "assigned" else 0), out)
+    return out, kinds
+
+
 def redact(text):
     """Replace anything that looks like a credential with [REDACTED:<kind>]."""
-    if not text:
-        return text
-    out = str(text)
-    for rx, name in _SECRET_RES:
-        if name == "assigned":
-            out = rx.sub(lambda m: m.group(1) + f"[REDACTED:{name}]", out)
-        elif name == "card-number":
-            out = rx.sub(lambda m: f"[REDACTED:{name}]" if _luhn(m.group(0)) else m.group(0), out)
-        else:
-            out = rx.sub(f"[REDACTED:{name}]", out)
-    return out
+    return redact_report(text)[0]
 
 
 def _luhn(s):

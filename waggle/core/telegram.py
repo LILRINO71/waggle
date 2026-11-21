@@ -20,6 +20,8 @@ import uuid
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
+from waggle.outredact import scrub
+
 log = logging.getLogger("waggle.telegram")
 
 API_BASE = "https://api.telegram.org"
@@ -251,6 +253,7 @@ class BotApi:
         return self._call("getMe")
 
     def send_message(self, chat_id, text, *, parse_mode=None, reply_to=None, disable_preview=True, silent=False):
+        text = scrub(text, "telegram", chat=chat_id)  # before the split: a key cannot straddle two parts
         parts = split_text(text)
         if not parts:
             raise TelegramError("permanent", "message text is empty")
@@ -278,6 +281,7 @@ class BotApi:
         return ids
 
     def edit_message_text(self, chat_id, message_id, text, *, parse_mode=None):
+        text = scrub(text, "telegram", chat=chat_id)
         payload = {"chat_id": _chat_id(chat_id), "message_id": int(message_id), "text": text}
         try:
             try:
@@ -376,7 +380,7 @@ class BotApi:
             raise TelegramError("permanent", f"cannot read file {p.name}") from None
         fields = {"chat_id": str(_chat_id(chat_id)), **{k: str(v) for k, v in extra.items()}}
         if caption:
-            fields["caption"] = caption
+            fields["caption"] = scrub(caption, "telegram", chat=chat_id)
         if reply_to is not None:
             fields["reply_parameters"] = json.dumps({"message_id": int(reply_to), "allow_sending_without_reply": True})
         ctype = mimetypes.guess_type(p.name)[0] or "application/octet-stream"

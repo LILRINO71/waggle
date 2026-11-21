@@ -9,6 +9,7 @@ provider's message id. A row stuck in `sending` for SENDING_STALE_S (the sender 
 RETRY_CAP_S; `expires` is honoured; the same idem_key never creates a second row.
 """
 from waggle.core import store
+from waggle.outredact import scrub
 
 KINDS = ("text", "voice", "file", "push", "call")
 SENDING_STALE_S = 120.0
@@ -28,6 +29,7 @@ def enqueue(kind, body="", *, chat="", file=None, idem_key=None, priority=0, ori
     if kind not in KINDS:
         raise ValueError(f"outbox kind must be one of {KINDS}, not {kind!r}")
     now = store.now_or(now)
+    body = scrub(body, "outbox", chat=chat, ref=idem_key or "")  # a secret is never queued, so nothing reads it back
     if hold:
         meta = {**(meta or {}), "hold": dict(hold)}
     with store.transaction() as con:
