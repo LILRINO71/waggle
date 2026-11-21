@@ -54,7 +54,17 @@ FORMAT_NOTE = (
 # ---- the format ------------------------------------------------------------------------------------------
 
 _MARK = r"[ \t*_#>]{0,6}"
-_SPOKEN = re.compile(r"\A\s*" + _MARK + r"SPOKEN" + _MARK + r":[ \t*_]*", re.I)
+_SPOKEN = re.compile(r"(?im)^\s*" + _MARK + r"SPOKEN" + _MARK + r":[ \t*_]*")
+ACK_LINE = "On it, sir. Starting now."  # said at once when a spoken request starts using tools (the PC voice)
+
+
+def _spoken_at(t):
+    """The last SPOKEN marker at the start of a line. The model may write a line before its tools run ("A blank doc
+    is open..."), so the format can start later in the text; what comes before it is never spoken or shown."""
+    last = None
+    for last in _SPOKEN.finditer(t):
+        pass
+    return last
 _ANSWER = re.compile(r"(?im)^" + _MARK + r"ANSWER" + _MARK + r":[ \t*_]*\n?")
 
 
@@ -64,7 +74,7 @@ def split_reply(text):
     the rest (or, if there is none, the spoken part itself) is the answer: the written text is never empty
     when the model said anything."""
     t = (text or "").strip()
-    m = _SPOKEN.match(t)
+    m = _spoken_at(t)
     if not m:
         return "", t, False
     rest = t[m.end():]
@@ -80,7 +90,7 @@ def split_reply(text):
 def spoken_complete(text):
     """True once the SPOKEN part of a reply still being written is finished (its ANSWER marker has arrived)."""
     t = (text or "").lstrip()
-    m = _SPOKEN.match(t)
+    m = _spoken_at(t)
     return bool(m and _ANSWER.search(t[m.end():]))
 
 
@@ -142,7 +152,7 @@ def spoken_sentences(text, final=False, max_sentences=MAX_SENTENCES, max_words=M
     followed by more text; the last one is finished when the ANSWER marker has arrived (or final is True, the
     reply is complete). A reply without a SPOKEN part gives [] (its spoken form is worked out at the end)."""
     t = scrub(text or "", "tts").lstrip()  # whole text first: a key or key block can span sentences
-    m = _SPOKEN.match(t)
+    m = _spoken_at(t)
     if not m:
         return []
     rest = t[m.end():]
@@ -327,6 +337,7 @@ class VoiceReply:
         self.folder, self.voice, self.speed = folder, voice, speed
         self.on_sentence = on_sentence  # called with each finished sentence of the spoken part, in order (the PC voice)
         self.sentences_said = []
+        self._acked = False
         self.ext, self.audio = ext, audio  # audio=False: the spoken text is worked out but never turned into sound
         self.budget_s = BUDGET_S if budget_s is None else budget_s
         self.synth, self.convert, self.clock = synth, convert, clock
@@ -361,6 +372,18 @@ class VoiceReply:
                 self.on_sentence(s)
             except Exception:
                 pass
+
+    def ack(self, line=ACK_LINE):
+        """Say a short line at once when the model starts using its tools and nothing has been said yet, so the
+        owner knows the request is being worked on. Once per reply; never counted as part of the spoken answer."""
+        if not self.on_sentence or self.sentences_said or self._acked:
+            return False
+        self._acked = True
+        try:
+            self.on_sentence(line)
+        except Exception:
+            return False
+        return True
 
     def feed(self, text):
         """The reply so far: speech starts the moment the SPOKEN part is complete; sentences go to on_sentence as

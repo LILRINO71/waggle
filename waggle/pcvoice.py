@@ -546,13 +546,31 @@ class SentenceSpeaker:
     def cancelled(self):
         return self._cancelled.is_set()
 
-    def _run(self):
+    def _take_ready(self, text):
+        """`text` plus every sentence already waiting, as one piece: one piece of speech keeps its natural rhythm,
+        where one file per sentence resets the intonation and pauses between files. (pieces, ended)."""
+        parts, ended = [text], False
         while True:
+            try:
+                nxt = self._q.get_nowait()
+            except queue.Empty:
+                break
+            if nxt is None:
+                ended = True
+                break
+            parts.append(nxt)
+        return " ".join(parts), ended
+
+    def _run(self):
+        ended = False
+        while not ended:
             text = self._q.get()
             if text is None:
                 return
             if self._cancelled.is_set():
                 continue
+            if self.items:  # the first sentence goes alone (it starts the speech); later ones are joined up
+                text, ended = self._take_ready(text)
             out = folder("tmp") / f"sent-{uuid.uuid4().hex[:10]}.wav"
             try:
                 ok = self.sounds.make(text, out)

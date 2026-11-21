@@ -460,7 +460,7 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
                                    voice=voice, confident=rec.voice.get(
                 "stt_confident", True), max_age_s=(s.chat_turn_timeout_s or 600) + 60)  # what the owner said (policy)
             res = sess.turn(message, on_text=vr.feed if vr else _after_heard(writer.update, rec.voice.get("heard_line")),
-                            on_tool=None if vr else writer.tool,
+                            on_tool=(lambda *a, **k: vr.ack()) if vr else writer.tool,  # PC voice: "on it" at once
                             origin=rec.origin)
             guard.end_turn_state(chat, rec.turn_id)
             rec.voice["model_s"] = round(time.time() - t_model, 2) if vr else None

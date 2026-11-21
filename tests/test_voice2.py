@@ -142,8 +142,9 @@ def test_the_first_sentence_plays_while_the_stream_is_still_open_and_sentences_k
     pv = smart(rig, client)
     pv.conversation(source(tmp_path, HOTKEY_TALK + SILENCE), "hotkey")
     assert seen["mid"] == ["start", "stop", "sent"]
-    assert rig.made == ["Done, sir.", "The reminder is set.", "Anything else?"]
-    assert played_no_cue(rig) == ["start", "stop", "sent", "sent", "sent"]
+    assert rig.made[0] == "Done, sir."  # alone, so it starts at once; later ones may be joined into one piece
+    assert " ".join(rig.made) == "Done, sir. The reminder is set. Anything else?"
+    assert played_no_cue(rig) == ["start", "stop"] + ["sent"] * len(rig.made)
     assert client.stream_calls == ["audio"] and client.audio and pv.stats["streamed_turns"] == 1
 
 

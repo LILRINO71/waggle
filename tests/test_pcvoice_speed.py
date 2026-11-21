@@ -383,3 +383,53 @@ def test_after_an_answer_a_soft_tone_says_it_is_still_listening_and_no_wake_name
 
 def test_the_follow_up_windows_are_long_enough_to_think(settings):
     assert pcvoice.setting("pc_voice_followup_s") >= 12 and pcvoice.setting("pc_voice_question_s") >= 20
+
+
+# ---- the owner, 11:55: "say you're starting the task", "robot-like pauses", leaked SPOKEN/ANSWER ----------------
+
+def test_a_reply_that_writes_a_line_before_its_tools_still_splits_into_spoken_and_answer():
+    from waggle import voice_reply
+    t = "A blank doc is open. Next I'll set its title.\n\nSPOKEN: Done, sir. The doc is open.\n\nANSWER:\nIt is open in Chrome."
+    assert voice_reply.split_reply(t) == ("Done, sir. The doc is open.", "It is open in Chrome.", True)
+    assert voice_reply.spoken_sentences(t) == ["Done, sir.", "The doc is open."]
+
+
+def test_the_first_tool_call_of_a_spoken_request_says_on_it_once_and_never_blocks_the_answer(tmp_path):
+    from waggle import voice_reply
+    heard = []
+    vr = voice_reply.VoiceReply(tmp_path, synth=lambda *a: 1.0, convert=voice_reply.keep_wav, ext="wav",
+                                on_sentence=heard.append)
+    assert vr.ack() is True and vr.ack() is False
+    vr.feed("SPOKEN: Done, sir. The doc is open.\nANSWER:\nOpen.")
+    assert heard == [voice_reply.ACK_LINE, "Done, sir.", "The doc is open."]
+
+
+def test_no_on_it_once_the_answer_has_started_or_without_a_live_speaker(tmp_path):
+    from waggle import voice_reply
+    heard = []
+    vr = voice_reply.VoiceReply(tmp_path, synth=lambda *a: 1.0, convert=voice_reply.keep_wav, ext="wav",
+                                on_sentence=heard.append)
+    vr.feed("SPOKEN: It's noon. Anything else?\nANSWER:\nNoon.")
+    assert vr.ack() is False and voice_reply.ACK_LINE not in heard
+    assert voice_reply.VoiceReply(tmp_path, synth=lambda *a: 1.0).ack() is False  # a phone voice note: no stream
+
+
+def test_sentences_that_arrive_together_are_spoken_as_one_piece_after_the_first(tmp_path):
+    made = []
+    gate = threading.Event()
+
+    class Sounds:
+        def make(self, text, out):
+            made.append(text)
+            gate.wait(2)
+            return False
+
+    sp = pcvoice.SentenceSpeaker(Sounds(), spk=None)
+    sp.add("First one.")
+    sp.add("Second one.")
+    sp.add("Third one.")
+    sp.close()
+    gate.set()
+    sp.finished(5)
+    assert made[0] == "First one."
+    assert "Second one. Third one." in made or made[1:] == ["Second one.", "Third one."]
