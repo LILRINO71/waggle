@@ -259,7 +259,10 @@ YES = re.compile(r"^\s*(y|yes|yeah|yep|yup|sure|ok(ay)?|go ahead|do it|approved?
 def approval_preflight(chat, text, prev_msg_at=0.0):
     """Approval answers before Claude sees the message.
     Returns ("reply", text) to answer directly, ("note", text) to tell Claude what was approved, or None."""
-    from . import objectives, policy
+    from . import learnloop, objectives, policy
+    um = learnloop.UNDO_CMD.match(text or "")
+    if um:  # "undo L7": reverts one change of the learning loop, no model involved
+        return "reply", learnloop.undo_reply(int(um.group(1)))
     m = APPROVAL_CMD.match(text or "")
     if m and (m.group(1).lower() not in ("yes", "ok", "no") or policy.get(m.group(2))):
         verb, code = m.group(1).lower(), m.group(2)
