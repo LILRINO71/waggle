@@ -187,6 +187,13 @@ def evening_note(settings=None, now=None, activity=None):
         fixes = ""
     if fixes:
         lines.append(fixes)
+    try:  # a weekly answer-quality check that got worse: one line, only then (waggle/evals.py)
+        from . import evals
+        eval_line = evals.evening_lines(now, settings=s)
+    except Exception:  # noqa: BLE001
+        eval_line = ""
+    if eval_line:
+        lines.append(eval_line)
     if activity is None:
         try:
             activity = watchers.repo_activity(s, start.timestamp(), now)
