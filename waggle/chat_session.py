@@ -124,6 +124,43 @@ def mcp_config(chat, settings=None, origin="user"):
     return str(p)
 
 
+# ---- one Claude session per day -------------------------------------------------------------------------------
+# A session resumed for days keeps whatever it once believed (on 2026-11-20 it still said GitHub was "public repos
+# only" after gh had been fixed). The first turn after DAY_STARTS_HOUR on a new day starts a fresh session, seeded
+# with the recent transcript like any fresh session.
+DAY_STARTS_HOUR = 4
+
+
+def day_key(now=None):
+    import datetime as dt
+    t = dt.datetime.fromtimestamp(time.time() if now is None else now) - dt.timedelta(hours=DAY_STARTS_HOUR)
+    return t.date().isoformat()
+
+
+def _days_path():
+    return data_path("chat_session_days.json")
+
+
+def session_day(chat):
+    try:
+        return json.loads(_days_path().read_text(encoding="utf-8")).get(str(chat), "")
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
+def set_session_day(chat, day):
+    p = _days_path()
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+        d = d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        d = {}
+    d[str(chat)] = day
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(d), encoding="utf-8")
+    os.replace(tmp, p)
+
+
 def build_cmd(chat, settings, claude, resume="", new_session="", servers=None, origin="user"):
     from .agent import hidden_servers, settings_json
     s = settings
@@ -260,6 +297,9 @@ class ChatSession:
             resume = ""  # long enough: start fresh, seeded with the recent transcript
         if resume and not (row.get("session_turns") or 0):
             resume = ""  # a pre-warmed process that never got a message: Claude never wrote that session down
+        today, began = day_key(), session_day(self.chat)
+        if resume and began and began != today:
+            resume = ""  # a new day: start fresh (seeded with the recent transcript), never carry old beliefs
         new_id = "" if resume else str(uuid.uuid4())
         cmd, self.model = build_cmd(self.chat, s, claude, resume=resume, new_session=new_id, origin=self.origin)
         env = claude_cli.clean_env()
@@ -270,6 +310,11 @@ class ChatSession:
         cwd = s.agent_workdir or str(Path.home() / "Claude")
         self.proc = _Proc(cmd, cwd, env, self.popen)
         self._fresh = not resume
+        if not resume or not began:
+            try:
+                set_session_day(self.chat, today)
+            except OSError:
+                pass
         if not resume:
             chat_store.set_session(self.chat, new_id, turns=0, model=self.model)
             self._seed = (self.transcript(self.chat) if self.transcript else "") or ""
@@ -308,6 +353,8 @@ class ChatSession:
                 self.origin = origin
                 if self.alive() and self._proc_origin != origin:
                     self.stop()  # its tools were started for another origin: restart (the session resumes)
+            if self.alive() and session_day(self.chat) not in ("", day_key()):
+                self.stop()  # a process kept warm overnight: _start begins today's fresh session
             try:
                 self._ensure(res)
             except claude_cli.ClaudeError as e:

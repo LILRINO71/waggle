@@ -217,3 +217,45 @@ def test_thinking_is_off_for_chat_replies_unless_asked(settings):
     fake2 = FakeClaude()
     session(fake2, settings, chat="telegram:2").turn("hi")
     assert "alwaysThinkingEnabled" not in json.loads(fake2.procs[0].arg("--settings"))
+
+
+def test_a_new_day_starts_a_fresh_session_seeded_with_the_transcript(settings):
+    from waggle import chat_session
+    fake = FakeClaude()
+    s = session(fake, settings, transcript=lambda chat: "User: x\nWaggle: y")
+    chat_store.set_session("telegram:1", "old", turns=3)
+    fake.known_sessions.add("old")
+    chat_session.set_session_day("telegram:1", "2000-01-01")  # yesterday, as far as this session knows
+    res = s.turn("good morning")
+    assert res.fresh_session and "--resume" not in fake.procs[0].cmd
+    assert "<earlier_conversation>" in fake.procs[0].inputs[0]
+    assert chat_session.session_day("telegram:1") == chat_session.day_key()
+
+
+def test_the_same_day_resumes(settings):
+    from waggle import chat_session
+    fake = FakeClaude()
+    s = session(fake, settings)
+    chat_store.set_session("telegram:1", "old", turns=3)
+    fake.known_sessions.add("old")
+    chat_session.set_session_day("telegram:1", chat_session.day_key())
+    res = s.turn("hi")
+    assert res.resumed and fake.procs[0].arg("--resume") == "old"
+
+
+def test_a_warm_process_from_yesterday_is_restarted_fresh(settings):
+    from waggle import chat_session
+    fake = FakeClaude()
+    s = session(fake, settings, transcript=lambda chat: "User: x\nWaggle: y")
+    assert s.turn("evening").ok
+    chat_session.set_session_day("telegram:1", "2000-01-01")
+    res = s.turn("next morning")
+    assert res.ok and len(fake.procs) == 2 and "--resume" not in fake.procs[1].cmd
+
+
+def test_day_key_turns_at_four_am():
+    import datetime as dt
+    from waggle import chat_session
+    t = dt.datetime(2026, 11, 21, 3, 59).timestamp()
+    assert chat_session.day_key(t) == "2026-11-20"
+    assert chat_session.day_key(t + 120) == "2026-11-21"
