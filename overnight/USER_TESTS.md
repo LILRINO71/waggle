@@ -12,6 +12,23 @@ which cannot be seen from the phone.
 | 2 | Send a question, and while it is still working send "also, what day is it?" | Both are answered, in order | The first answer is dropped or cut off |
 | 3 | Ask for something slow, e.g. "Read through my waggle repo and name the three riskiest files" | A real answer, even if it takes a few minutes | A quick shallow answer (the small local model stepped in) |
 
+## Calendar (one-time, about 2 minutes) — added 2026-11-20
+
+Waggle reads your Google Calendar through its private address, with no Claude use. It texts you 30 minutes
+before each timed event and puts today's events in the morning brief.
+
+1. Open https://calendar.google.com on the PC, signed in to your Google account.
+2. On the left, under "My calendars", point at your main calendar, click the three dots, then "Settings and sharing".
+3. Scroll to "Integrate calendar" and find "Secret address in iCal format". Click the copy icon. Don't share it.
+4. Open PowerShell and run: `cd C:\Users\hiheo\Claude\waggle`
+5. Run: `python -m waggle.calendar_watch login`
+6. Press Enter to accept the name "personal".
+7. Right-click to paste the address, then press Enter. Nothing shows while you paste; that is normal.
+8. It should print "ok: read calendar [personal], N events in the next 14 days".
+9. Check: `python -m waggle.calendar_watch today` lists today's events. Say "calendar done" in the main chat.
+
+If you ever reset the secret address in Google, run step 5 again.
+
 ## One-time setup only the user can do
 
 | # | What | Why |

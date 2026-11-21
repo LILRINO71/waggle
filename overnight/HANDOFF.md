@@ -1,4 +1,4 @@
-# Handoff (2026-11-20 night)
+# Handoff (2026-11-20, late night)
 
 Read this first, then `overnight/REBUILD_PLAN.md` (the governing plan) and `overnight/USER_TESTS.md`.
 
@@ -17,8 +17,10 @@ from it. Feature work happens in worktrees on `rebuild/*` branches, all pushed t
 | Knowledge | `waggle.knowledge_core` plug-in: intake every 30 min, digest 21:00 and 08:00, quiz 21:30. Learns only from turns whose origin is `user` |
 | Safety guard | Per-checkout manifest under `~/.waggle-guard/<hash>/`; hook and in-process gate fail closed; learned budget estimate lives in `budget.db`, clamped to 0.1x-4x of the user's value |
 
-Old path (Hermes turn through the plugin's router) still answers: photos, files, stickers, audio files,
-captions, `/commands`, other chats.
+Photos, image documents, other files, audio files (transcribed up to 10 min), captions, stickers and `/waggle`
+now go through the engine too (`waggle/media_intake.py`, `waggle/engine_commands.py`; files under
+`~/.waggle/media/<chat>/`, kept 14 days). The old path (Hermes turn through the plugin's router) still answers:
+videos, locations, Hermes's own slash commands (/new /status /model ...), other chats.
 
 ## Added 2026-11-20 night (main 459dfd1 + chat fix 1dc0d71)
 
@@ -26,32 +28,38 @@ captions, `/commands`, other chats.
 |---|---|
 | Mail watch (`waggle/mailwatch.py`) | Live. IMAP + app password (Windows Credential Manager `waggle-mail-imap:personal`), no Claude. Core timer `knowledge.mailwatch` every 5 min 06:00-23:00. Triage: rules + local model `mailwatch_local_model` = gemma4. Seen-store `~/.waggle/mailwatch.db`. Real-inbox dry run caught the college email correctly; school account is blocked by its admin. `python -m waggle.mailwatch status|run --dry-run|login` |
 | Drop folder (`waggle/dropbox_ingest.py`) | Live. Desktop shortcut "Feed Waggle" -> `WaggleVault/Drop`; files become `Sources/<YYYY-MM>/*.md` with local summaries; weekly tidy plan Sunday 10:00. No Claude |
-| Calendar watch (`waggle/calendar_watch.py`, branch rebuild/calendar) | Built, not live until merged and the owner runs login. Google Calendar's secret iCal address (Credential Manager `waggle-calendar-ics:<name>`), stdlib only, no Claude. Core timers `calendar.fetch` every 15 min 06:00-22:45 and `calendar.headsup` every 5 min: a text 30 min before each timed event, once. Today's events feed the morning brief (`brief.calendar_today`). `python -m waggle.calendar_watch login|status|today|run --dry-run` |
+| Calendar watch (`waggle/calendar_watch.py`) | Deployed; idle until the owner runs `python -m waggle.calendar_watch login` (steps in USER_TESTS.md). Google Calendar's secret iCal address (Credential Manager `waggle-calendar-ics:<name>`), stdlib only, no Claude. Core timers `calendar.fetch` every 15 min 06:00-22:45 and `calendar.headsup` every 5 min: a text 30 min before each timed event, once. Today's events feed the morning brief (`brief.calendar_today`). `python -m waggle.calendar_watch login|status|today|run --dry-run` |
 | PC voice (`waggle/pcvoice.py`, task "Waggle PC Voice") | Live, untested with the owner's real voice. Hotkey Ctrl+Alt+` (Ctrl+Alt+Space is taken), wake word "Waggle" on, speaks Waggle's own messages when the owner is at the PC (`waggle/presence.py`) |
-| Test client (`tools/testclient/`, venv `~/.waggle-testclient`) | Logged in as the owner. `ask.py "question"` sends `[waggle-test] question` to the owner's normal bot chat (@hermes_t2pnnyl42gz3f5eu_bot) and prints every reply; the mark makes the turn origin "test" (`chat_engine.test_marked`). No Waggle Lab group |
-| Local models | `local_model` = qwen3.6:35b-a3b (MoE, 73 tok/s, cold load ~2 min), mail = gemma4. Eval (16 emails): both 14/16, waggle-4b 12/16. qwen3.8:27b not yet downloaded: download only at night (see memory no-heavy-work-while-user-at-pc) |
+| Test client (`tools/testclient/`, venv `~/.waggle-testclient`) | Logged in as the owner. `ask.py "question"` sends `[waggle-test] question` to the owner's normal bot chat (@hermes_t2pnnyl42gz3f5eu_bot) and prints every reply; the mark makes the owner's turn origin "canary": answered, delivered (reminders arrive), owner-authorised in the owner's own engine chat, never learned from. `--file x.png` sends a photo or document with the marked caption; `--raw "/waggle"` sends a slash command unmarked (in Git Bash set MSYS_NO_PATHCONV=1). No Waggle Lab group |
+| Local models | `local_model` = qwen3.6:35b-a3b (MoE, 75 tok/s), mail = gemma4. Eval 2026-11-20 22:40 against qwen3.8:27b (downloaded, kept on disk, unused): triage 15/16 vs 14/16 (the 27b missed the Google security alert), reasoning 7/8 vs 6/8, short answer 0.5 s vs 2.7 s, 3-step plan 8 s vs 72 s (the 27b does not fit the 12 GB GPU: 13 tok/s). Kept qwen3.6. Scripts: `tools/model_eval.py`, `tools/model_reason_eval.py` |
+| Real usage | Every stream-json `claude -p` run carries a `rate_limit_event` (five_hour utilization and resetsAt). `quota.note_real_usage` keeps it in `~/.waggle/real_usage.json`; `quota.status()` reports `source: real` with the true percent over the fixed window (the old rolling 5 h sum read about 2x: 75% when the real number was 54%). The cap is calibrated from readings |
+| Daily canary (`waggle/canary.py`, `tools/testclient/canary.py`) | Live. 12:30 daily: a marked round trip (2.2 s) and a 1-minute reminder (65 s), both deleted from the chat after a pass; a failure sends one text and one ntfy push a day. `python -m waggle.canary run [--no-reminder] [--no-alert]`, `status`; ledger `canary.roundtrip` / `canary.reminder` |
+| Settings by chat (`waggle/comfort.py`, MCP tool `settings`) | Live, proven: "set your voice speed to 1.2" changed it, "set it back to 1.3" restored it. Allowlist: voice, speed, quiet hours, brief and evening time, mail watch on/off; never a guard CONFIG_KEY; only in the owner's own turn |
+| Off switch (`waggle/core/offswitch.py`) | Live, proven: `python -m waggle.core off --for 3m` stopped the core and PC voice, and Waggle came back by itself on time. Also `on`, `--all`, `/on` in Telegram |
+| Owner rule and variables | A file named through a plain one-time variable (`$p = "..."; Remove-Item $p`, Join-Path, GetFolderPath) counts as that file; anything trickier makes the hook answer RETRY_LITERAL (never "reply yes"). Proven: a desktop file created and deleted by chat with no ask |
+| Mail alerts | Same sender and subject in a pass become one text ("Google (4 messages): ..."), not repeated within 60 min; summaries say "you"; a deadline only when the mail writes the date |
 | Hands-free phone line | Tailscale Serve live at https://pranavaura.tailf0a221.ts.net/voice (answers 401 without the token); owner's iPhone Shortcut set up, not yet proven |
 | Tools | All Hermes toolsets enabled; chat tools include Write/Edit; hidden on purpose: Higgsfield (paid), Onshape (school cap), REA (size), Miro (sign-in) |
 
-### Found by the first end-to-end test (fix 1dc0d71, deploy pending if not on main)
-Waggle refused the owner's message "usage limit reached" while the real window was 51%: chat consulted
-`quota.can_escalate` (estimate said 97%) and the core inbound path passed no `local=`. Now chat is refused only on a
-recorded block (`quota._state()["blocked_until"]`) and the local model answers then. Prove with
-`tools/testclient/ask.py` after deploy. The estimate itself (`quota.learned_cap`) is still wrong for background work.
-
-### Next, in order
-1. Deploy 1dc0d71, then prove with ask.py: a normal question, a reminder, a file create+delete (owner permission rule).
-2. Fix the window estimate for background work (it reads ~2x the real usage), or read the real usage if any local source has it.
-3. Mail alert polish, seen live 2026-11-20 20:35: 4 Google security alerts became 4 texts (group same sender+subject within an hour into one); the summary says "He needs"/"The user needs" (write to the owner as "you"); the model invented "Deadline: Tue Nov 24" from "early next week" (only state a deadline written as a date in the mail).
-4. Infrastructure still to build: learning loop from feedback; Waggle proposing its own code changes (owner approves merges);
-   daily automatic end-to-end checks with ask.py; cron jobs -> core timers + one off switch; photos/files/commands on
-   the engine; autonomy switched on with charters (money experiment: lawful, $0, honest); calendar without Claude;
-   phone calls (Twilio); settings changes by request (voice, speed, quiet hours).
+### Next, in order (2026-11-20 23:00)
+1. Learning loop from feedback (plan step 7): a miss or a correction leads to a proposed fix, a re-check, keep or
+   revert, reported in the evening note with undo.
+2. Waggle proposing its own code changes (step 13): a gated worktree pipeline; the owner approves each merge.
+3. Autonomy on, with charters: the four seeded goals are disabled and `autonomy` is off. Add the money experiment goal
+   (lawful, $0, honest, no outward channel without the owner's yes) and switch on with the step limit.
+4. Phone calls (Twilio): needs the owner's account; trial credit only, never paid.
+5. Calendar: the owner runs `python -m waggle.calendar_watch login` (USER_TESTS.md). Then `ingest.sync_upcoming` and
+   the evening note should read `calendar_watch` instead of the Claude connector.
+6. Videos and locations still go the old path; `/waggle media clean` has no confirmation.
 
 ## Proven on the real machine
 
 - Core killed -> back in 57 s. Core frozen -> replaced in 51 s (older watchdog); the new loop watchdog is tested
   (worst case about 85 s) but not re-measured live.
+- 2026-11-20 night, all with tools/testclient: a reminder set at 21:48:16 for 21:50 arrived at +128.7 s; a desktop
+  file created and then deleted on the owner's word with no ask; a photo read and described correctly through the
+  engine; `/waggle` answered in 1.6 s with no model; a setting changed and restored by chat; the canary round trip
+  (2.2 s) and reminder (65.5 s), cleaned up afterwards; the off switch held 3 minutes and came back by itself.
 - Typed turns and voice notes answered through the engine on real Telegram; a reminder asked by voice fired on
   time and was delivered; two real voice replies delivered (2.8 s and 14.2 s of audio).
 - No visible windows, focus changes or busy cursor from Waggle's processes (`tools/window_probe.py`, live, 242
@@ -90,17 +98,14 @@ recorded block (`quota._state()["blocked_until"]`) and the local model answers t
 ## Deploy procedure
 
 ```
-# in the dev worktree (branch overnight): merge the feature branch, then
-python -m pytest -q -p no:cacheprovider        # must pass; real-process tests included
+# in the dev worktree (branch overnight): merge the feature branches, then
+python -m pytest -q -p no:cacheprovider        # must pass; one full suite at a time on this PC
 git push origin overnight
-# in the live checkout
-git merge --ff-only overnight ; git push origin main
-python install.py                               # only when hermes_plugin/ changed (no --cron: fast)
-python -m waggle.guard approve --yes ; python -m waggle.guard verify   # LIVE checkout only
-py -3.14 -m waggle.core restart
-hermes gateway stop --yes ; Start-ScheduledTask "Waggle Gateway"       # only when gateway-side code changed
-py -3.14 -m waggle.core status
+# then one command on the live checkout: merge, install the plug-in if it changed, guard approve + verify, restart
+# the watchdog, core, PC voice, dashboard and gateway, check the running version, run a live canary
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\hiheo\Claude\waggle\tools\deploy.ps1
 ```
+Never rely on `hermes gateway stop` alone: it misses a gateway started by hand (`tools/restart-gateway.ps1` does not).
 
 ## Rules learned the hard way
 
@@ -110,6 +115,8 @@ py -3.14 -m waggle.core status
   user-facing defect.
 - Files written under AppData from inside a packaged app are private to that app. Probe what an outside
   process sees with a test-origin turn submitted to the live core with an invalid address.
+- Long-lived processes keep the code they started with. The watchdog, PC voice, the dashboard and the gateway must
+  be restarted on every deploy (tools/deploy.ps1), not only the core.
 - A worker's report is not evidence. Run the suite, read the records, and prove it on the real interface.
 - To check what really happened in a turn: `traces.db` (origin, answered_by, timings, tools with results,
   outcome), `runtime.db` (inbox, outbox, timers, jobs, events), and the Claude session file of the chat.
