@@ -15,6 +15,7 @@ capture()                      reads the user's own new turns from traces.db (or
 Items live in initiative.db (table followups); the turn cursor is runtime.db meta "outreach.followups.cursor".
 """
 import datetime as dt
+import json
 import re
 import time
 import uuid
@@ -74,7 +75,33 @@ def items(status=None, kind=None):
     return out
 
 
-def add(at, text, *, chat="", origin="user", now=None):
+VOICE_WINDOW_S = 600
+
+
+def asked_by_voice(now=None, chat="", turns=None, window_s=VOICE_WINDOW_S):
+    """True when the user's most recent own turn (origin user) within the last `window_s` seconds was a voice turn.
+    Non-user turns (tests, benches, the CLI, agents) never count, and a turn of another chat is skipped when the
+    chat is known. turns: trace dicts, newest first (default: learn.user_turns from traces.db). Never raises."""
+    try:
+        from . import learn
+        now = time.time() if now is None else float(now)
+        rows = learn.user_turns(now - window_s) if turns is None else turns
+        for r in rows:
+            if not learn.is_user_turn(r) or not (now - window_s <= (r.get("time") or 0) <= now):
+                continue
+            if chat and r.get("chat") and r.get("chat") != chat:
+                continue
+            extra = r.get("extra") or {}
+            if isinstance(extra, str):
+                extra = json.loads(extra or "{}")
+            vt = extra.get("voice_turn")
+            return bool(extra.get("voice") or (isinstance(vt, dict) and vt.get("voice")))
+    except Exception:  # noqa: BLE001  (the voice flag is a nicety; a reminder is created either way)
+        pass
+    return False
+
+
+def add(at, text, *, chat="", origin="user", now=None, voice=None):
     """A one-shot reminder at `at` (epoch seconds or a datetime). Returns its id. The text goes out as is when it
     fires (late with a note when the PC was off). origin: who asked (decision 10): anything but the user's own
     channels (test, bench, cli, agent) never reaches the phone."""
@@ -85,17 +112,19 @@ def add(at, text, *, chat="", origin="user", now=None):
     if not text:
         raise ValueError("a reminder needs text")
     fid = uuid.uuid4().hex[:10]
-    tid = timers.once(ts, "outreach.reminder", {"id": fid}, timer_id=f"reminder:{fid}", catch_up="all",
+    asked = (origin or "user") == "user" and (asked_by_voice(now, chat) if voice is None else bool(voice))
+    tid = timers.once(ts, "outreach.reminder", {"id": fid, **({"voice": True} if asked else {})}, timer_id=f"reminder:{fid}", catch_up="all",
                       origin=origin or "user")
     _insert({"id": fid, "kind": "reminder", "created": now, "what": text, "due": ts, "status": "open",
              "chat": chat or "", "origin": origin or "user", "timer_id": tid})
     return fid
 
 
-def _add_checkin(what, due, said, said_at, trace, now, chat="", origin="user"):
+def _add_checkin(what, due, said, said_at, trace, now, chat="", origin="user", voice=None):
     from waggle.core import timers
     fid = uuid.uuid4().hex[:8]
-    tid = timers.once(due, "outreach.checkin", {"id": fid}, timer_id=f"checkin:{fid}", catch_up="all",
+    asked = origin == "user" and (asked_by_voice(now, chat) if voice is None else bool(voice))
+    tid = timers.once(due, "outreach.checkin", {"id": fid, **({"voice": True} if asked else {})}, timer_id=f"checkin:{fid}", catch_up="all",
                       origin=origin)
     item = {"id": fid, "kind": "checkin", "created": now, "trace": trace, "said": (said or "")[:300],
             "said_at": said_at, "what": what, "due": due, "status": "open", "chat": chat, "origin": origin,

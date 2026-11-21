@@ -188,9 +188,40 @@ def scout_due(payload, *, settings=None, now=None):
     return initiative.record(scout.daily(s, now), now)
 
 
-def reminder_due(payload, *, settings=None, now=None):
-    """Job outreach.reminder: the reminder text as is; when the PC was off at its time, it says so."""
-    from . import followups, notify
+def _spoken_reminder(what, late):
+    """The one spoken sentence for a reminder, in the manner of the spoken replies: composed, "sir" once."""
+    what = " ".join(str(what or "").split()).rstrip(" .!?")
+    return f"Sir, your reminder, which is late: {what}." if late else f"Sir, your reminder: {what}."
+
+
+def _voice_first(item, late, settings, now, synth=None):
+    """Queue the voice note of a reminder asked for by voice. (outbox id or None, why not): on any failure of the
+    speech nothing is queued and the reason comes back, so the text line goes out alone."""
+    import uuid
+    from . import notify
+    from .config import data_path
+    cause = item.get("origin") or "user"
+    if notify.is_dev_source(None if cause == "user" else cause, settings):
+        return None, "not the user's own reminder"
+    folder = data_path("voice_out")
+    out = folder / f"{uuid.uuid4().hex[:10]}.ogg"
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        ok = (synth or notify._synth)(_spoken_reminder(item["what"], late), out, settings)
+    except Exception as e:  # noqa: BLE001
+        return None, f"speech failed: {str(e)[:80]}"
+    if not ok:
+        return None, "speech failed"
+    row = notify.deliver("voice", "", path=str(out), asked=True, origin="reminder", ref=f"{item['id']}:voice",
+                         topic=f"reminder:{item['id']}", chat=item.get("chat") or "", settings=settings, now=now)
+    return row["id"], ""
+
+
+def reminder_due(payload, *, settings=None, now=None, synth=None):
+    """Job outreach.reminder: the reminder text as is; when the PC was off at its time, it says so. A reminder
+    asked for by voice (payload voice) first goes out as a one-sentence voice note; if the speech fails the text
+    goes out alone and the reason is recorded."""
+    from . import events, followups, notify
     s = settings or Settings.load()
     item = followups.get(payload.get("id"))
     if not item or item["status"] != "open":
@@ -200,11 +231,18 @@ def reminder_due(payload, *, settings=None, now=None):
         at = dt.datetime.fromtimestamp(payload.get("scheduled_ts") or item["due"])
         text += f"\n(late: the PC was off at {at:%#I:%M %p}, when this was due)"
     cause = item.get("origin") or "user"
+    voice_id, why = None, ""
+    if payload.get("voice"):
+        voice_id, why = _voice_first(item, _late(payload), s, now, synth)
+        if why:
+            events.log("reminder_voice", id=item["id"], ok=False, why=why)
     row = notify.deliver("text", text, asked=True, origin="reminder", ref=item["id"], topic=f"reminder:{item['id']}",
                          chat=item.get("chat") or "", source=None if cause == "user" else cause, settings=s, now=now)
-    followups.mark(item["id"], "sent" if row["id"] else "suppressed", now, row["id"],
-                   f"late {int(float(payload.get('late_s') or 0))} s" if _late(payload) else "")
-    return {"outbox": row["id"], "late": _late(payload)}
+    notes = [f"late {int(float(payload.get('late_s') or 0))} s"] if _late(payload) else []
+    if why:
+        notes.append(why)
+    followups.mark(item["id"], "sent" if row["id"] else "suppressed", now, row["id"], "; ".join(notes))
+    return {"outbox": row["id"], "late": _late(payload), "voice_outbox": voice_id, **({"voice_error": why} if why else {})}
 
 
 def checkin_due(payload, *, now=None):
