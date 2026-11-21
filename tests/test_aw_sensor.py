@@ -2,8 +2,6 @@
 quiet no-op when it is not running, and the feed into the activity model and the miner."""
 import datetime as dt
 
-import pytest
-
 from waggle import activity, aw_sensor, miner
 from waggle.config import data_path
 from waggle.core import jobs, timers
@@ -217,3 +215,15 @@ def test_the_sensor_logs_nothing_and_calls_no_model():
     assert "events.log" not in src and "print(" not in src.split("def main")[0] and "logging" not in src
     imports = [ln for ln in src.splitlines() if ln.strip().startswith(("import ", "from "))]
     assert not any(x in ln for ln in imports for x in ("claude_cli", "chat_engine", "cascade", "ollama", "budget"))
+
+
+def test_afk_now_reads_only_the_status_and_is_none_when_it_cannot_say():
+    now = NOW
+    on = FakeAw(afk=[ev(now - 30, 25, status="not-afk")])
+    assert aw_sensor.afk_now(on, now) is False
+    away = FakeAw(afk=[ev(now - 30, 25, status="afk")])
+    assert aw_sensor.afk_now(away, now) is True
+    assert aw_sensor.afk_now(FakeAw(afk=[ev(now - 900, 25, status="not-afk")]), now) is None  # stale heartbeat
+    assert aw_sensor.afk_now(FakeAw(afk=[]), now) is None
+    assert aw_sensor.afk_now(FakeAw(up=False), now) is None
+    assert aw_sensor.afk_now(FakeAw(buckets={"w": {"type": "currentwindow"}}), now) is None  # no AFK bucket

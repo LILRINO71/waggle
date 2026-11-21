@@ -12,6 +12,7 @@ and the engine does the rest, in whatever process it runs:
 1b. A spoken request that code or the small local model can answer on its own (the time, the date, reminders, sums,
    conversions, a plain general-knowledge question: waggle/voice_fast.py) is answered at once and recorded as a normal
    turn (answered_by "code" or "local"); Claude is told about it on its next message. Everything else goes to Claude.
+   A typed message gets the code tier only (switch text_fast_path), never a slash command, attachment or noted turn.
 2. Claude answers in the chat's long-lived process, streaming into the delivery (one edit per ~1.2 s, final
    text always sent). It can use tools and hand heavy work to background_task (waggle/chat_jobs.py).
 3. Claude unavailable or failing (quota, CLI missing, sign-in, outage, crash): an honest message says so. The
@@ -441,15 +442,23 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
     reply, why = "", ""
     # A spoken request the code or the small local model can answer on its own never waits for Claude
     # (waggle/voice_fast.py); anything else goes the usual way and the miss is only noted.
-    fast, froute = None, None
+    # A typed message gets the code tier only (time, date, reminders, sums, conversions), never the local model.
+    fast, froute, typed_fast = None, None, False
     if vr is not None and not note and not attachments and (attempt or 1) < 2:
         froute = voice_fast.route(text, s, chat=chat, voice_info=rec.voice)
         fast = froute.fast
         rec.voice["fast_why"] = froute.why or None
+    elif (not voice and vr is None and rec.origin in ("user", "test") and not note and not attachments
+          and (attempt or 1) < 2 and not text.lstrip().startswith("/")):
+        froute = voice_fast.text_route(text, s, chat=chat)
+        fast, typed_fast = froute.fast, froute.fast is not None
     if fast is not None:
         ctx = ""
-        reply, rec.answered_by, rec.model = voice_fast.reply_text(fast), fast.tier, fast.model or fast.tier
+        reply = fast.written if typed_fast else voice_fast.reply_text(fast)
+        rec.answered_by, rec.model = fast.tier, fast.model or fast.tier
         rec.voice.update(fast_tier=fast.tier, fast_kind=fast.kind, fast_s=round(froute.ms / 1000, 2))
+        if typed_fast:
+            rec.voice["typed"] = True
         rec.context = {"v": 1, "core": False, "built": False, "fast": fast.tier}
     else:
         try:
@@ -562,6 +571,8 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
         rec.trace_id = record_turn(rec, voice=voice, note=note)
     if vr is not None:
         _log_voice_turn(rec, froute)
+    elif typed_fast:
+        voice_fast.log_turn(fast.tier, rec.voice.get("fast_s") or 0.0, kind="typed")
     return rec
 
 

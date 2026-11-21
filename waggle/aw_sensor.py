@@ -48,6 +48,7 @@ KEEP_DAYS = 30
 MAX_EVENTS = 5000
 MIN_SLICE_S = 5
 STALE_S = 150               # a "current" window older than this is not current
+AFK_TIMEOUT_S = 0.8         # afk_now() sits on the presence path: short
 JOB = "activitywatch.poll"
 TIMER = "activitywatch.poll"
 EVERY = "10m"
@@ -464,6 +465,27 @@ def current(get=None, now=None):
                         host = host_of((tabs[0].get("data") or {}).get("url"))
                         break
         return {"app": app, "title": title, "host": host, "afk": afk}
+    except AwDown:
+        return None
+
+
+def afk_now(get=None, now=None, settings=None):
+    """ActivityWatch's own AFK verdict now: False (at the PC), True (away) or None (cannot say: off, not running, no
+    AFK bucket, or the newest AFK event is stale). Its afk watcher counts media playing as active, so a video with an
+    idle mouse is "not-afk". Only the status word is read; a short timeout, so a hung server never stalls a caller."""
+    if not enabled(settings):
+        return None
+    now = time.time() if now is None else now
+    get = get or (lambda path, params=None: _get(path, params, timeout=AFK_TIMEOUT_S))
+    try:
+        bucket = pick(buckets(get))["afk"]
+        last = events(bucket, limit=1, get=get) if bucket else []
+        if not last:
+            return None
+        _, end = _span(last[0])
+        if end is None or now - end > STALE_S:
+            return None
+        return str((last[0].get("data") or {}).get("status")) == "afk"
     except AwDown:
         return None
 

@@ -58,3 +58,39 @@ def test_an_api_failure_means_not_known_to_be_here():
 def test_the_real_api_answers_with_numbers():
     s = presence.state()
     assert isinstance(s["idle_s"], float) and s["idle_s"] >= 0 and isinstance(s["locked"], bool)
+
+
+# ---- ActivityWatch as a second signal ----------------------------------------------------------------------
+
+def test_activitywatch_not_afk_keeps_a_video_watcher_at_the_pc():
+    s = presence.state(api=FakeApi(idle=900.0), aw=lambda: False)
+    assert s["at_pc"] is True and s["aw_afk"] is False and "ActivityWatch" in s["why"]
+    assert presence.at_pc(api=FakeApi(idle=900.0), aw=lambda: False) is True
+
+
+def test_activitywatch_afk_or_silent_falls_back_to_the_idle_signal():
+    for verdict in (True, None):
+        s = presence.state(api=FakeApi(idle=900.0), aw=lambda v=verdict: v)
+        assert s["at_pc"] is False and s["aw_afk"] is verdict and "no input" in s["why"]
+
+
+def test_activitywatch_never_removes_presence_or_unlocks():
+    asked = []
+    s = presence.state(api=FakeApi(idle=10.0), aw=lambda: asked.append(1) or True)
+    assert s["at_pc"] is True and asked == []  # recent input: not even asked
+    s = presence.state(api=FakeApi(idle=900.0, locked=True), aw=lambda: asked.append(1) or False)
+    assert s["at_pc"] is False and s["why"] == "the session is locked" and asked == []
+
+
+def test_a_fake_api_never_reaches_the_real_activitywatch(monkeypatch):
+    from waggle import aw_sensor
+    monkeypatch.setattr(aw_sensor, "afk_now", lambda *a, **k: pytest.fail("the real ActivityWatch was asked"))
+    assert presence.state(api=FakeApi(idle=900.0))["at_pc"] is False
+
+
+def test_the_default_read_uses_afk_now_and_a_failure_is_no_signal(monkeypatch):
+    from waggle import aw_sensor
+    monkeypatch.setattr(aw_sensor, "afk_now", lambda *a, **k: False)
+    assert presence._aw_afk() is False
+    monkeypatch.setattr(aw_sensor, "afk_now", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    assert presence._aw_afk() is None

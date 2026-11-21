@@ -28,6 +28,11 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setattr(voice_fast, "ollama_ask", no_local_fast)  # the voice quick-answer tier never reaches the real Ollama
     monkeypatch.setattr(voice_fast, "loaded_models", no_local_fast)
     monkeypatch.setattr(voice_fast, "_backoff", voice_fast.voice_intent.Backoff(60.0))
+    import waggle.aw_sensor as aw_sensor
+
+    def no_aw(*a, **k):
+        raise aw_sensor.AwDown("no ActivityWatch in tests")
+    monkeypatch.setattr(aw_sensor, "_get", no_aw)  # never the real ActivityWatch (presence asks it)
     import waggle.checklist as checklist
     monkeypatch.setattr(checklist, "home_dir", lambda: tmp_path / "userhome")  # side-damage zones: never the real home
     import waggle.skills as skills
