@@ -7,7 +7,8 @@ uses it from the same Python), and its model files are already in the shared Hug
 opened with local_files_only (never downloaded here). The loaded model stays in memory for IDLE_UNLOAD_S after
 the last note and is then released (about a gigabyte), so a chat that is quiet for a while costs nothing.
 
-    transcribe(path) -> {"ok", "text", "error", "seconds" (total), "load_s", "audio_s", "source"}
+    transcribe(path) -> {"ok", "text", "error", "seconds" (total), "load_s", "audio_s", "source", "confidence"}
+    (confidence: see confidence() below)
 """
 import os
 import re
@@ -89,6 +90,37 @@ def _keep(segment):
                 and getattr(segment, "avg_logprob", 0.0) < LOGPROB_THRESHOLD)
 
 
+# The bar for "heard well": faster-whisper's own defaults for judging one decoded segment (the values it uses to
+# decide that a decode failed and must be retried): average log probability not below -1.0 (log_prob_threshold),
+# no-speech probability not above 0.6 (no_speech_threshold), compression ratio not above 2.4
+# (compression_ratio_threshold; a higher ratio means the text repeats itself, the sign of a looping hallucination). A note is confident only when
+# every segment that was kept passes all three; one weak segment makes the whole note not confident, because the
+# flag exists so that a destructive request can be read back before it is acted on.
+CONF_AVG_LOGPROB, CONF_NO_SPEECH, CONF_COMPRESSION = -1.0, 0.6, 2.4
+
+
+def confidence(segments, dropped=0):
+    """How well the recogniser says it heard, from its own numbers per segment. Returns
+    {"confident": bool, "avg_logprob": the lowest, "no_speech_prob": the highest, "compression_ratio": the highest,
+    "segments": n, "dropped": n, "why": [reasons it is not confident]}. No segments is never confident."""
+    segs = list(segments)
+    why = []
+    if not segs:
+        return {"confident": False, "avg_logprob": None, "no_speech_prob": None, "compression_ratio": None,
+                "segments": 0, "dropped": dropped, "why": ["no segments"]}
+    logp = min(float(getattr(s, "avg_logprob", 0.0)) for s in segs)
+    nospeech = max(float(getattr(s, "no_speech_prob", 0.0)) for s in segs)
+    ratio = max(float(getattr(s, "compression_ratio", 0.0)) for s in segs)
+    if logp < CONF_AVG_LOGPROB:
+        why.append(f"average log probability {logp:.2f} is below {CONF_AVG_LOGPROB}")
+    if nospeech > CONF_NO_SPEECH:
+        why.append(f"no-speech probability {nospeech:.2f} is above {CONF_NO_SPEECH}")
+    if ratio > CONF_COMPRESSION:
+        why.append(f"compression ratio {ratio:.2f} is above {CONF_COMPRESSION}")
+    return {"confident": not why, "avg_logprob": round(logp, 3), "no_speech_prob": round(nospeech, 3),
+            "compression_ratio": round(ratio, 3), "segments": len(segs), "dropped": dropped, "why": why}
+
+
 def decode(path, timeout=60):
     """The note as 16 kHz mono float samples, decoded by the ffmpeg that ships under ~/.hermes/tools: the PyAV in
     this interpreter is newer than faster-whisper 1.2.1 accepts (its own file decoding fails with a TypeError),
@@ -128,7 +160,8 @@ def transcribe(path, *, idle_s=None, loader=None):
     """Transcribe one audio file. Never raises. `loader(name)` is for tests: it returns (model, load_s)."""
     global _last_used
     t0 = time.time()
-    out = {"ok": False, "text": "", "error": "", "seconds": 0.0, "load_s": 0.0, "audio_s": 0.0, "source": SOURCE}
+    out = {"ok": False, "text": "", "error": "", "seconds": 0.0, "load_s": 0.0, "audio_s": 0.0, "source": SOURCE,
+           "confidence": confidence([])}
     problem = audio_file_problem(path)
     if problem:
         out["error"] = problem
@@ -141,7 +174,10 @@ def transcribe(path, *, idle_s=None, loader=None):
             vad_parameters={"min_silence_duration_ms": VAD_MIN_SILENCE_MS},
             no_speech_threshold=NO_SPEECH_THRESHOLD, log_prob_threshold=LOGPROB_THRESHOLD,
             initial_prompt=vocabulary())
-        parts = [s.text.strip() for s in list(segments) if _keep(s)]  # the decode runs while iterating
+        segs = list(segments)  # the decode runs while iterating
+        kept = [s for s in segs if _keep(s)]
+        parts = [s.text.strip() for s in kept]
+        out["confidence"] = confidence([s for s, p in zip(kept, parts) if p], dropped=len(segs) - len(kept))
         out["text"] = " ".join(p for p in parts if p).strip()
         dur = float(getattr(info, "duration", 0.0) or 0.0)
         out["audio_s"] = round(dur or (0.0 if isinstance(samples, str) else len(samples) / 16000.0), 2)

@@ -616,6 +616,7 @@ def handle_inbound(chat, text, *, kind="text", media=None, platform="telegram", 
                      "transcript_raw": voice_turn.parse(text, apply_fixes=False)[0]}
             text = stt.clean_transcript(words)
             vinfo["transcript_cleaned"] = text
+            vinfo.update(stt_confident=False, stt_confident_why=["the gateway gave no recogniser numbers"])
     body = (text or "").strip()
     extra = media_note(media) if media else ""
     if extra:
@@ -661,6 +662,10 @@ def transcribe_note(path, settings):
         info["stt_error"] = str(res.get("error") or "")[:200]
         events.log("engine_stt_failed", error=info["stt_error"])
         return "", info
+    conf = res.get("confidence") or {}
+    info.update(stt_confident=bool(conf.get("confident")), stt_avg_logprob=conf.get("avg_logprob"),
+                stt_no_speech_prob=conf.get("no_speech_prob"), stt_compression_ratio=conf.get("compression_ratio"),
+                stt_segments=conf.get("segments"), stt_confident_why=list(conf.get("why") or []))
     cleaned = stt.clean_transcript(voice_turn.fix(res["text"], getattr(settings, "voice_fixes", None)))
     info.update(transcript_raw=res["text"], transcript_cleaned=cleaned)  # the model reads the cleaned words; both are kept
     return cleaned, info

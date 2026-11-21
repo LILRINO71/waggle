@@ -105,3 +105,105 @@ def test_a_gateway_transcript_is_cleaned_too_and_keeps_both(settings):
     assert v["transcript_raw"] == "Um, set a timer for, uh, five minutes"
     assert v["transcript_cleaned"] == "Set a timer for, five minutes"
     assert v["audio_path"] == "C:\\cache\\audio_3.ogg" and v["transcript_source"] == "hermes gateway"
+
+
+# ---- H2: was it heard well? -----------------------------------------------------------------------------------
+
+def seg(text="hello", logp=-0.2, nosp=0.01, ratio=1.2):
+    return SimpleNamespace(text=text, avg_logprob=logp, no_speech_prob=nosp, compression_ratio=ratio)
+
+
+def test_the_bar_is_the_recognisers_own_defaults():
+    import inspect
+
+    from faster_whisper.transcribe import WhisperModel
+    p = inspect.signature(WhisperModel.transcribe).parameters
+    assert stt.CONF_AVG_LOGPROB == p["log_prob_threshold"].default
+    assert stt.CONF_NO_SPEECH == p["no_speech_threshold"].default
+    assert stt.CONF_COMPRESSION == p["compression_ratio_threshold"].default
+
+
+def test_clear_speech_is_confident_with_the_numbers_kept():
+    c = stt.confidence([seg(logp=-0.25, nosp=0.02, ratio=1.4), seg(logp=-0.4, nosp=0.05, ratio=1.1)])
+    assert c["confident"] is True and c["why"] == [] and c["segments"] == 2
+    assert c["avg_logprob"] == -0.4 and c["no_speech_prob"] == 0.05 and c["compression_ratio"] == 1.4
+
+
+@pytest.mark.parametrize("weak,part", [(seg(logp=-1.2), "average log probability"),
+                                       (seg(nosp=0.75), "no-speech probability"),
+                                       (seg(ratio=2.9), "compression ratio")])
+def test_one_weak_number_makes_the_note_not_confident(weak, part):
+    c = stt.confidence([seg(), weak])
+    assert c["confident"] is False and any(part in w for w in c["why"])
+
+
+def test_the_worst_segment_decides_even_when_the_rest_is_fine():
+    assert stt.confidence([seg()] * 5 + [seg(logp=-1.5)])["confident"] is False
+
+
+def test_exactly_on_the_library_default_still_passes():
+    assert stt.confidence([seg(logp=-1.0, nosp=0.6, ratio=2.4)])["confident"] is True
+    assert stt.confidence([seg(logp=-1.01)])["confident"] is False
+    assert stt.confidence([seg(nosp=0.61)])["confident"] is False
+    assert stt.confidence([seg(ratio=2.41)])["confident"] is False
+
+
+def test_no_segments_is_never_confident():
+    c = stt.confidence([])
+    assert c["confident"] is False and c["segments"] == 0 and c["avg_logprob"] is None
+
+
+class FakeModel:
+    def __init__(self, segments):
+        self.segments = segments
+
+    def transcribe(self, samples, **kw):
+        return iter(self.segments), SimpleNamespace(duration=2.0)
+
+
+def transcribed(monkeypatch, tmp_path, segments):
+    f = tmp_path / "note.ogg"
+    f.write_bytes(b"OggS")
+    monkeypatch.setattr(stt, "decode", lambda path, timeout=60: [0.0] * 32000)
+    return stt.transcribe(f, loader=lambda name: (FakeModel(segments), 0.0))
+
+
+def test_transcribe_reports_the_confidence_of_the_kept_segments(monkeypatch, tmp_path):
+    res = transcribed(monkeypatch, tmp_path, [seg("Remind me to call Sam.", logp=-0.3), seg("Tomorrow.", logp=-0.5)])
+    assert res["ok"] and res["text"] == "Remind me to call Sam. Tomorrow."
+    assert res["confidence"]["confident"] is True and res["confidence"]["avg_logprob"] == -0.5
+
+
+def test_a_segment_the_silence_gate_drops_does_not_count_against_the_note(monkeypatch, tmp_path):
+    ghost = seg("Thanks for watching!", logp=-1.6, nosp=0.9)  # invented over silence: dropped by the gate
+    res = transcribed(monkeypatch, tmp_path, [seg("Send the report."), ghost])
+    assert res["text"] == "Send the report." and res["confidence"]["confident"] is True
+    assert res["confidence"]["dropped"] == 1
+
+
+def test_a_weak_recognition_is_not_confident(monkeypatch, tmp_path):
+    res = transcribed(monkeypatch, tmp_path, [seg("Delete the old backups.", logp=-1.3, nosp=0.1)])
+    assert res["ok"] and res["confidence"]["confident"] is False
+
+
+def test_the_voice_info_carries_stt_confident_and_the_numbers(settings, monkeypatch):
+    fake_transcribe(monkeypatch, "Remind me to call Sam.")
+    rec, api, seen = voice_turn_of(settings, "")
+    v = trace_voice(rec)
+    assert v["stt_confident"] is True and v["stt_avg_logprob"] == -0.21 and v["stt_no_speech_prob"] == 0.02
+    assert v["stt_compression_ratio"] == 1.3 and rec.voice["stt_confident"] is True
+
+
+def test_a_weak_note_is_flagged_in_the_voice_info(settings, monkeypatch):
+    fake_transcribe(monkeypatch, "Delete the old backups.", {
+        "confident": False, "avg_logprob": -1.4, "no_speech_prob": 0.1, "compression_ratio": 1.1, "segments": 1,
+        "dropped": 0, "why": ["average log probability -1.40 is below -1.0"]})
+    rec, api, seen = voice_turn_of(settings, "")
+    v = trace_voice(rec)
+    assert v["stt_confident"] is False and v["stt_confident_why"] and v["stt_avg_logprob"] == -1.4
+
+
+def test_a_gateway_transcript_has_no_numbers_so_it_is_not_confident(settings):
+    text = '"Delete the old backups"\n[User sent audio: C:\\cache\\audio_4.ogg]'
+    rec, api, seen = voice_turn_of(settings, text, kind="marker")
+    assert trace_voice(rec)["stt_confident"] is False
