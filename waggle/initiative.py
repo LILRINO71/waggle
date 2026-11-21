@@ -379,39 +379,79 @@ def _ask_claude(sigs, settings, now, asker=None, activity=None):
 
 
 LAST_DECISION_META = "outreach.last_decision"
+BLOCKED_META = "outreach.decision_blocked"   # {"until": ts, "why": text}: the model could not be asked
+RETRY_AFTER_S = 30 * 60                       # a failed try (budget, quota, CLI) is retried after this, not after 2 h
+
+
+def gate(settings, now):
+    """Is a decision run due, and which gate says so: {"due": bool, "gate": text, "pending", "urgent"}. The text is
+    what the look pass records in its job result, so a pass that decided nothing says why."""
+    from waggle.core import store
+    p = pending()
+    n, urgent = len(p), sum(1 for x in p if x["urgent"])
+    out = {"pending": n, "urgent": urgent}
+    if not p:
+        return {**out, "due": False, "gate": "no pending signals"}
+    blocked = store.loads(store.get_meta(BLOCKED_META)) or {}
+    if urgent:
+        return {**out, "due": True, "gate": f"{urgent} urgent signal(s): decided at once"}
+    if notify.in_quiet_hours(settings, now):
+        return {**out, "due": False, "gate": f"quiet hours: {n} non-urgent signal(s) held until morning"}
+    if blocked.get("until", 0) > now:
+        return {**out, "due": False, "gate": f"model unavailable ({blocked.get('why', '')}); next try in "
+                                              f"{int((blocked['until'] - now) / 60) + 1} min"}
+    if any(x["kind"] == "followup" for x in p):
+        return {**out, "due": True, "gate": "a check-in's time has come: decided at once"}
+    if _ready_keys() & {x["key"] for x in p}:
+        return {**out, "due": True, "gate": "a look-again time came: decided at once"}
+    every = settings.initiative_every_min * 60
+    since = now - float(store.get_meta(LAST_DECISION_META, 0) or 0)
+    if since >= every:
+        return {**out, "due": True, "gate": "cadence: initiative_every_min passed"}
+    return {**out, "due": False, "gate": f"cadence: last decision {int(since / 60)} min ago, next in "
+                                         f"{int((every - since) / 60) + 1} min"}
 
 
 def due(settings, now):
-    """Is a decision run due? Pending signals and (an urgent one, or initiative_every_min passed while awake)."""
+    """Is a decision run due? Pending signals and (an urgent one, a check-in or a look-again whose time came, or
+    initiative_every_min passed while awake and the model was not just found unavailable)."""
+    return gate(settings, now)["due"]
+
+
+def rules_say_now(sig, activity):
+    """With the model unavailable: a failure (CI, build, tests) on a project the user committed to today is still
+    worth telling now. Nothing else is guessed: the rest waits for the model, or goes to the evening note."""
+    if sig["kind"] not in ("github_ci", "build") or not activity:
+        return False
+    title = (sig.get("title") or "").lower()
+    return "fail" in title and any(title.startswith(repo.lower() + ":") for repo in activity)
+
+
+def decide(settings=None, now=None, asker=None, activity=None, only_urgent=False, turns=None, info=None):
+    """One decision run over the pending signals. Returns the decision rows. info (a dict) is filled with what
+    happened: asked, model ("ok" or why it was unavailable), held (signals left pending), notes (guard notes)."""
     from waggle.core import store
-    p = pending()
-    if not p:
-        return False
-    if any(x["urgent"] for x in p):
-        return True
-    if notify.in_quiet_hours(settings, now):
-        return False
-    if _ready_keys() & {x["key"] for x in p}:
-        return True  # a finding whose look-again time came: decided now, not at the next two-hourly run
-    return now - float(store.get_meta(LAST_DECISION_META, 0) or 0) >= settings.initiative_every_min * 60
-
-
-def decide(settings=None, now=None, asker=None, activity=None, only_urgent=False, turns=None):
-    """One decision run over the pending signals. Returns the decision rows."""
     s = settings or Settings.load()
     now = now or time.time()
+    info = info if info is not None else {}
     sigs = pending()
     if only_urgent:
         sigs = [x for x in sigs if x["urgent"]]
+    info.update({"asked": 0, "model": "not asked", "held": 0, "notes": []})
     if not sigs:
         return []
     sigs = sigs[:20]
+    info["asked"] = len(sigs)
     by_model, decided_by = {}, s.initiative_model
     try:
         by_model = _ask_claude(sigs, s, now, asker, activity)
+        info["model"] = "ok"
+        store.set_meta(BLOCKED_META, store.dumps({}))
     except Exception as e:  # noqa: BLE001  (budget, quota, CLI missing, timeout)
         decided_by = f"rules (Claude unavailable: {str(e)[:80]})"
         by_model = None
+        info["model"] = f"unavailable: {str(e)[:120]}"
+        store.set_meta(BLOCKED_META, store.dumps({"until": now + RETRY_AFTER_S, "why": str(e)[:80]}))
     state = {"topics": recent_topics(now, max(s.topic_repeat_hours, 2)), "cap_used": sent_today(now, s),
              "automations": _automations_today(now), "activity": activity, "turns": turns}
     out = []
@@ -419,14 +459,21 @@ def decide(settings=None, now=None, asker=None, activity=None, only_urgent=False
         if by_model is None:
             if sig["urgent"]:
                 d = {"action": "text", "message": template(sig), "reason": "urgent fact; Claude unavailable"}
+            elif rules_say_now(sig, activity):
+                d = {"action": "text", "message": template(sig), "reason": "failure on a project worked on today; "
+                                                                         "Claude unavailable"}
             elif now - sig["time"] > 20 * 3600:
                 d = {"action": "evening", "message": "", "reason": "waited a day for a decision"}
             else:
+                info["held"] += 1
                 continue  # stays pending for the next run
         else:
             d = by_model.get(sig["key"]) or {"action": "evening", "message": "",
                                              "reason": "the model returned no decision for it"}
-        out.append(_apply(sig, d, s, now, state, decided_by))
+        row = _apply(sig, d, s, now, state, decided_by)
+        out.append(row)
+        if row["guard"]:
+            info["notes"].append(f"{sig['key'][:40]}: {row['guard'][:100]}")
     return out
 
 
