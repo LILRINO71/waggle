@@ -15,6 +15,9 @@ waggle = "waggle.cli:main"
 [tool.setuptools]
 packages = ["waggle", "waggle.core"]
 
+[tool.setuptools.package-data]
+waggle = ["evals_golden.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [".", "tests"]

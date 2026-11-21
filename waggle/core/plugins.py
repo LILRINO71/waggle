@@ -14,7 +14,7 @@ from waggle.core import events, ledger
 
 MODULES = ["waggle.core.transports", "waggle.chat_jobs", "waggle.tick", "waggle.knowledge_core", "waggle.autonomy_core",
            "waggle.dropbox_ingest", "waggle.canary", "waggle.calendar_watch", "waggle.proposals", "waggle.learnloop",
-           "waggle.backup"]
+           "waggle.backup", "waggle.evals"]
 
 log = logging.getLogger("waggle.core.plugins")
 
