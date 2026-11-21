@@ -6,7 +6,9 @@ import install
 from waggle import skills
 
 REPO_SKILLS = Path(__file__).resolve().parent.parent / "skills"
-NAMES = {"verified-computer-use", "verified-browser-task", "research-brief", "objective-planning"}
+PLANNING = {"verified-computer-use", "verified-browser-task", "research-brief", "objective-planning"}
+TOOL_SKILLS = {"cad-files", "documents-to-pdf", "media-convert", "github-portfolio-audit", "explain-this-file"}  # rebuild/tools
+NAMES = PLANNING | TOOL_SKILLS
 
 
 def test_skills_parse_and_have_no_scripts():
