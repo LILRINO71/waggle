@@ -17,7 +17,7 @@ from .config import data_path
 from .policy import redact
 
 CORRECTION = re.compile(
-    r"^\s*(no\b(?!,?\s+(thanks?|thank you|problem|worries|need|rush)\b)(?!,?\s+that('?s| is) (fine|great|perfect)\b)|nope\b|wrong\b|that'?s (not|wrong|incorrect)|not (what|quite)|i (meant|said|asked)|you (didn'?t|forgot|missed|"
+    r"^\s*(no\b|nope\b|wrong\b|that'?s (not|wrong|incorrect)|not (what|quite)|i (meant|said|asked)|you (didn'?t|forgot|missed|"
     r"misunderstood)|that (didn'?t|doesn'?t) work|try again|incorrect|actually,?\s|still (wrong|not|broken)|"
     r"that'?s not right|why did you)", re.I)
 PRAISE = re.compile(r"^\s*(thanks?|thank you|perfect|great|awesome|nice|that worked|works( now)?|exactly|"
