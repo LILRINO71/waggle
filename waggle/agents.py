@@ -130,14 +130,18 @@ sections) and do not fail it over wording or helpful extra detail."""
 def verify(task, report, asker=None, settings=None, strict=False):
     """Cheap Haiku check that a background result really answers the task (used before notifying).
     strict=True: when the check itself can't run, return (None, why) instead of passing the result unchecked."""
-    from . import claude_cli
+    from . import cascade, claude_cli
     s = settings or Settings.load()
+    schema = {"type": "object", "properties": {"complete": {"type": "boolean"}, "missing": {"type": "string"}},
+              "required": ["complete", "missing"]}
     try:
-        out = (asker or claude_cli.ask)(f"TASK:\n{task}\n\nAGENT REPORT:\n{report[:6000]}", model=s.router_model,
-                                        system=VERIFY_SYSTEM, purpose="verify", effort="low",
-                                        schema={"type": "object", "properties": {"complete": {"type": "boolean"},
-                                                                                 "missing": {"type": "string"}},
-                                                "required": ["complete", "missing"]})
+        prompt = f"TASK:\n{task}\n\nAGENT REPORT:\n{report[:6000]}"
+        if asker is None and cascade.applies(s):  # background only: the local model first, Haiku when it is unsure
+            out = cascade.ask("verify", prompt, schema, "judge", system=VERIFY_SYSTEM, purpose="verify", effort="low",
+                              settings=s, baseline=s.router_model)
+        else:
+            out = (asker or claude_cli.ask)(prompt, model=s.router_model, system=VERIFY_SYSTEM, purpose="verify",
+                                            effort="low", schema=schema)
         d = out.get("json") or {}
         if strict and "complete" not in d:
             return None, "the checker gave no verdict"

@@ -21,6 +21,8 @@ def isolated_home(tmp_path, monkeypatch):
     def no_ollama(*a, **k):
         raise ollama.OllamaError("no Ollama in tests")
     monkeypatch.setattr(ollama, "_post", no_ollama)
+    import waggle.checklist as checklist
+    monkeypatch.setattr(checklist, "home_dir", lambda: tmp_path / "userhome")  # side-damage zones: never the real home
     import waggle.skills as skills
 
     def no_embed(texts, kind):
