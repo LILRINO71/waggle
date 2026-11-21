@@ -73,6 +73,23 @@ def set_pool(p):
     _pool = p
 
 
+TEST_MARK = re.compile(r"^\s*\[waggle-test\]\s*", re.I)
+
+
+def test_marked(text):
+    """(is_test, text without the mark). The owner's own account may prefix a message with "[waggle-test]" (the
+    end-to-end test client does) so it is answered normally but recorded as origin "test": nothing learns from it.
+    The mark can only lower trust, never raise it."""
+    m = TEST_MARK.match(text or "")
+    return (True, (text or "")[m.end():]) if m else (False, text)
+
+
+def origin_for_message(platform, text, env=None):
+    """origin_for(platform), demoted to "test" when the text carries the test mark."""
+    origin = origin_for(platform, env)
+    return "test" if test_marked(text)[0] else origin
+
+
 def origin_for(platform, env=None):
     """The origin of a message by where it came from. WAGGLE_ORIGIN (a bench or test harness) wins; a process
     run as an agent (WAGGLE_AGENT) is "agent"; the command-line chat and test clients are "test"; a chat
@@ -734,6 +751,9 @@ def on_inbound(msg):
     origin = msg.get("origin") or "user"
     if origin not in ORIGINS:
         origin = "test"  # an unknown origin never counts as the user's own words
+    marked, stripped = test_marked(msg.get("text") or "")
+    if marked:
+        origin, msg = "test", {**msg, "text": stripped}
     address = str(msg.get("address") or "")
     chat = msg.get("chat") or (f"{platform}:{address}" if address else "")
     if not chat:

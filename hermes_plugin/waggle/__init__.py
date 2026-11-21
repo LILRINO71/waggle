@@ -198,7 +198,7 @@ def _engine_pre_llm(session_id, user_message, platform, t0):
     voice = kind == "voice"
     address = _address()
     chat = _chat_id(platform, session_id, address)
-    origin = chat_engine.origin_for(platform)  # only the owner's chat platform is "user"; the CLI chat is "test"
+    origin = chat_engine.origin_for_message(platform, text)  # owner's chat platform is "user"; CLI and "[waggle-test]" are "test"
     prev_msg_at = _last_msg_at.get(chat, 0.0)
     _last_msg[session_id] = text
     _last_msg_at[chat] = time.time()
