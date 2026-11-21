@@ -165,7 +165,7 @@ def ollama_ask(messages, model, timeout, *, url="http://127.0.0.1:11434"):
     """The default model call: Ollama's chat with a JSON schema, thinking off, the model kept loaded. Returns the
     parsed dict; raises on any failure (the caller falls back)."""
     body = {"model": model, "messages": messages, "stream": False, "think": False, "format": SCHEMA,
-            "keep_alive": KEEP_ALIVE, "options": {"temperature": 0, "num_predict": 60, "num_ctx": 2048}}
+            "keep_alive": KEEP_ALIVE, "options": {"temperature": 0, "num_predict": 60}}  # no num_ctx: a different one than mail triage's makes Ollama reload the model (8 s)
     req = urllib.request.Request(url.rstrip("/") + "/api/chat", data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=max(0.5, timeout)) as r:

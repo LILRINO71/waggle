@@ -71,6 +71,11 @@ def _with(pv, decide):
     return pv
 
 
+def played_no_cue(rig):
+    """What played, without the soft still-listening tone after each answer (tested in test_pcvoice_speed.py)."""
+    return [x for x in rig.played() if x != "open"]
+
+
 def config(**values):
     from waggle import config as cfg
     data = json.loads(cfg.CONFIG_FILE.read_text(encoding="utf-8"))
@@ -93,7 +98,7 @@ class Decider:
 
 def test_the_new_settings_have_defaults_and_the_master_switch_turns_it_all_off(settings):
     assert pcvoice.setting("pc_voice_smart") is True and pcvoice.setting("pc_voice_judge") is True
-    assert pcvoice.setting("pc_voice_stream") is True and pcvoice.setting("pc_voice_question_s") == 10.0
+    assert pcvoice.setting("pc_voice_stream") is True and pcvoice.setting("pc_voice_question_s") == 20.0
     assert pcvoice.setting("pc_voice_judge_timeout_s") == voice_intent.JUDGE_TIMEOUT_S
     assert pcvoice.setting("pc_voice_judge_min") == 0.5 and pcvoice.setting("pc_voice_judge_model") == ""
     assert pcvoice.PcVoice(spk=None, wake=False).smart is True
@@ -138,7 +143,7 @@ def test_the_first_sentence_plays_while_the_stream_is_still_open_and_sentences_k
     pv.conversation(source(tmp_path, HOTKEY_TALK + SILENCE), "hotkey")
     assert seen["mid"] == ["start", "stop", "sent"]
     assert rig.made == ["Done, sir.", "The reminder is set.", "Anything else?"]
-    assert rig.played() == ["start", "stop", "sent", "sent", "sent"]
+    assert played_no_cue(rig) == ["start", "stop", "sent", "sent", "sent"]
     assert client.stream_calls == ["audio"] and client.audio and pv.stats["streamed_turns"] == 1
 
 
@@ -158,7 +163,7 @@ def test_a_text_request_from_the_wake_word_is_streamed_too(rig, tmp_path):
     pv = smart(rig, client, wake=True, source=source(tmp_path, [(0.5, 0), (1.5, 3000), (1.0, 0), (7.0, 0)]))
     assert wake_run(rig, pv, lambda: client.texts)
     assert client.texts == ["what's the time?"] and client.stream_calls == ["text"] and client.audio == []
-    assert rig.played()[:2] == ["sent", "sent"]
+    assert rig.played()[:3] == ["start", "sent", "sent"]  # the heard-you tone, then the streamed sentences
 
 
 def test_a_core_without_the_stream_is_answered_through_the_old_path_once(rig, tmp_path):
@@ -170,7 +175,7 @@ def test_a_core_without_the_stream_is_answered_through_the_old_path_once(rig, tm
     pv = smart(rig, client)
     pv.conversation(source(tmp_path, HOTKEY_TALK + SILENCE), "hotkey")
     assert client.stream_calls == ["audio"] and len(client.audio) == 1  # asked /voice once, with the same audio
-    assert rig.played() == ["start", "stop", "reply1"]
+    assert played_no_cue(rig) == ["start", "stop", "reply1"]
 
 
 def test_the_holding_line_streamed_ends_the_conversation_without_a_follow_up(rig, tmp_path):
@@ -178,7 +183,7 @@ def test_the_holding_line_streamed_ends_the_conversation_without_a_follow_up(rig
                           status="working")
     pv = smart(rig, client, decide=Decider())
     pv.conversation(source(tmp_path, HOTKEY_TALK + FOLLOW_UP + SILENCE), "hotkey")
-    assert rig.played() == ["start", "stop", "sent"] and len(client.stream_calls) == 1
+    assert played_no_cue(rig) == ["start", "stop", "sent"] and len(client.stream_calls) == 1
 
 
 def test_when_nothing_can_be_made_into_sound_a_failure_line_or_two_tones_never_silence(rig, tmp_path):
@@ -186,7 +191,7 @@ def test_when_nothing_can_be_made_into_sound_a_failure_line_or_two_tones_never_s
     client = StreamClient(tmp_path)
     pv = smart(rig, client)
     pv.conversation(source(tmp_path, HOTKEY_TALK + SILENCE), "hotkey")
-    assert rig.played() == ["start", "stop", "err1", "err2"] and len(client.stream_calls) == 1
+    assert played_no_cue(rig) == ["start", "stop", "err1", "err2"] and len(client.stream_calls) == 1
 
 
 def test_a_failure_before_any_sentence_is_said_with_a_line(rig, tmp_path):
@@ -195,7 +200,7 @@ def test_a_failure_before_any_sentence_is_said_with_a_line(rig, tmp_path):
             return Reply("core_down", error="refused", line="core_down")
     pv = smart(rig, Down(tmp_path))
     pv.conversation(source(tmp_path, HOTKEY_TALK + SILENCE), "hotkey")
-    assert rig.played() == ["start", "stop", "core_down"]
+    assert played_no_cue(rig) == ["start", "stop", "core_down"]
 
 
 def test_the_hotkey_mid_stream_cuts_the_speech_and_drops_the_sentences_not_yet_made(rig, tmp_path):
@@ -223,7 +228,7 @@ def test_a_follow_up_the_judge_accepts_is_sent_as_audio_and_the_hotkey_utterance
     assert judge.asked == [("what about tomorrow", False)]  # one question to the judge: the follow-up only
     assert client.stream_calls == ["audio", "audio"] and client.texts == []  # accepted: the core hears the audio itself
     assert len(client.audio) == 2 and client.transcribed == 1
-    assert rig.played() == ["start", "stop", "sent", "sent", "stop", "sent", "sent"]
+    assert played_no_cue(rig) == ["start", "stop", "sent", "sent", "stop", "sent", "sent"]
 
 
 def test_background_talk_in_the_window_is_ignored_and_nothing_is_sent(rig, tmp_path):
@@ -231,7 +236,7 @@ def test_background_talk_in_the_window_is_ignored_and_nothing_is_sent(rig, tmp_p
     pv = smart(rig, client, decide=Decider(default="ignore"))
     pv.conversation(follow_up_source(tmp_path), "hotkey")
     assert len(client.audio) == 1 and pv.stats["ignored"] == 1 and pv.stats["turns"] == 1
-    assert rig.played() == ["start", "stop", "sent", "sent"]  # no tone for what was ignored
+    assert played_no_cue(rig) == ["start", "stop", "sent", "sent"]  # no tone for what was ignored
 
 
 def test_listening_goes_on_after_something_ignored_so_the_owner_can_still_speak_in_the_window(rig, tmp_path):
@@ -367,7 +372,7 @@ def test_waggle_stop_sends_nothing_and_cuts_the_speech(rig, tmp_path):
     pv = smart(rig, client, wake=True, source=source(tmp_path, [(0.5, 0), (1.5, 3000), (1.0, 0), (1.0, 0)]))
     assert wake_run(rig, pv, lambda: client.transcribed)
     assert client.texts == [] and pv.stats["stops"] == 1 and pv.stats["wake_triggers"] == 0
-    assert rig.played() == []
+    assert played_no_cue(rig) == []
 
 
 def test_waggle_stop_the_timer_is_still_a_request(rig, tmp_path):

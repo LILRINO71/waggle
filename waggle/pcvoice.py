@@ -20,7 +20,7 @@ How a conversation goes
      (the same conversation as Telegram), and the written answer still goes to Telegram as the record, without
      a notification sound.
   3. The spoken answer plays through the default output device. Afterwards Waggle listens for a follow-up for a
-     few seconds (pc_voice_followup_s, default 6) without the hotkey; silence ends the conversation.
+     few seconds (pc_voice_followup_s, default 12) without the hotkey; silence ends the conversation.
   4. When the core is down or the request fails, a short pre-made spoken line says so (made once by the local
      speech server and kept on disk); if even that cannot be made, two low tones play. Never silence.
 
@@ -43,15 +43,15 @@ of this off and gives back the behaviour above):
     the speech, and a transcript that mostly repeats what Waggle just said through the speakers (an echo) is dropped.
     The judge is a small local model; when it is slow or down the words are sent, as before. A hotkey press is always
     a request: it is never judged.
-  * When Waggle's answer ends in a question the follow-up window is longer (pc_voice_question_s, 10).
+  * When Waggle's answer ends in a question the follow-up window is longer (pc_voice_question_s, 20).
   * The answer is requested from POST /voice/stream and said sentence by sentence: the first sentence is spoken
     while the model is still writing the rest. An older core without that path is answered through POST /voice.
 
 Settings (config.json in the Waggle home, all optional): pc_voice_hotkey ("ctrl+alt+backquote"), pc_voice_wake
-(true), pc_voice_wake_names (["Waggle"]), pc_voice_followup_s (6), pc_voice_end_silence_s (1.2),
+(true), pc_voice_wake_names (["Waggle"]), pc_voice_followup_s (12), pc_voice_end_silence_s (1.2),
 pc_voice_max_s (30), pc_voice_start_timeout_s (6), pc_voice_min_level (120, the lowest frame RMS that can start
 speech), pc_voice_speak_messages (true), pc_voice_smart (true: the master switch of the two paragraphs above),
-pc_voice_judge (true), pc_voice_stream (true), pc_voice_question_s (10), pc_voice_judge_model ("": gemma4:latest),
+pc_voice_judge (true), pc_voice_stream (true), pc_voice_question_s (20), pc_voice_judge_model ("": gemma4:latest),
 pc_voice_judge_timeout_s (1.5), pc_voice_judge_min (0.5, how sure the judge must be that it was said to Waggle).
 A failed judgement skips the judge for a minute (the words are sent at once) and loads its model again in the background.
 Every turn logs one "turn timing:" line (seconds per stage, never the words); see docs/PC_VOICE.md.
@@ -97,7 +97,7 @@ DEFAULTS = {
     "pc_voice_hotkey": "ctrl+alt+backquote",
     "pc_voice_wake": True,
     "pc_voice_wake_names": ["Waggle"],
-    "pc_voice_followup_s": 6.0,
+    "pc_voice_followup_s": 12.0,  # after an answer, keep listening this long: no "Waggle" needed
     "pc_voice_end_silence_s": 1.2,
     "pc_voice_max_s": 30.0,
     "pc_voice_start_timeout_s": 6.0,
@@ -111,7 +111,8 @@ DEFAULTS = {
     "pc_voice_smart": True,
     "pc_voice_judge": True,
     "pc_voice_stream": True,
-    "pc_voice_question_s": 10.0,
+    "pc_voice_question_s": 20.0,
+    "pc_voice_followup_cue": True,  # a soft tone after each answer: "still listening"
     "pc_voice_judge_model": "",
     "pc_voice_judge_timeout_s": voice_intent.JUDGE_TIMEOUT_S,
     "pc_voice_judge_min": voice_intent.JUDGE_MIN_CONFIDENCE,
@@ -120,6 +121,8 @@ WAKE_END_SILENCE_S, WAKE_MAX_S, WAKE_MIN_SPEECH_MS = 0.8, 10.0, 300
 MAX_TURNS = 12
 SPOOL_MAX_AGE_S = 180.0
 REQUEST_TIMEOUT_S = 120.0
+TRANSCRIBE_BUSY_WAIT_S = 20.0  # a cold recogniser load (the warm-up) holds the core's transcription lock 3-12 s
+MISS_LOG_S = 30.0  # "heard speech, no wake name" is logged at most this often (a count, never the words)
 STT_WARM_S = 120.0  # the core unloads its recogniser after 180 idle seconds: ask for it again after this long
 
 LINES = {
@@ -438,12 +441,20 @@ class CoreClient:
             return False
         return code == 200
 
-    def transcribe(self, pcm):
-        """{"text", "ok", ...} or {"error"}; the words are for the caller only (never logged here)."""
-        try:
-            code, _, data = self._post("/voice/transcribe", mic.wav_bytes(pcm), "audio/wav", timeout=60)
-        except (OSError, http.client.HTTPException) as e:
-            return {"error": f"{type(e).__name__}: {e}"[:200], "text": ""}
+    def transcribe(self, pcm, busy_wait_s=None, sleep=time.sleep, clock=time.monotonic):
+        """{"text", "ok", ...} or {"error"}; the words are for the caller only (never logged here).
+        The core answers 429 while another transcription runs (often our own warm-up loading the recogniser):
+        wait and try again rather than drop what was said."""
+        body = mic.wav_bytes(pcm)
+        end = clock() + (TRANSCRIBE_BUSY_WAIT_S if busy_wait_s is None else busy_wait_s)
+        while True:
+            try:
+                code, _, data = self._post("/voice/transcribe", body, "audio/wav", timeout=60)
+            except (OSError, http.client.HTTPException) as e:
+                return {"error": f"{type(e).__name__}: {e}"[:200], "text": ""}
+            if code != 429 or clock() >= end:
+                break
+            sleep(0.3)
         if code != 200:
             return {"error": f"HTTP {code}", "text": ""}
         try:
@@ -462,6 +473,7 @@ class Sounds:
         self.tones = {
             "start": speaker.tone_wav(folder("tones") / "start.wav", freq=660, ms=90, amp=0.06),
             "stop": speaker.tone_wav(folder("tones") / "stop.wav", freq=495, ms=90, amp=0.06),
+            "open": speaker.tone_wav(folder("tones") / "open.wav", freq=880, ms=60, amp=0.035),
             "err1": speaker.tone_wav(folder("tones") / "err1.wav", freq=330, ms=160, amp=0.06),
             "err2": speaker.tone_wav(folder("tones") / "err2.wav", freq=247, ms=220, amp=0.06),
         }
@@ -588,6 +600,7 @@ class PcVoice:
         self._warmed = 0.0
         self._judge_off = voice_intent.Backoff()  # a failed judgement: skip the judge for a minute, never wait twice
         self._stt_used = 0.0  # when the core's recogniser was last known to be loaded
+        self._miss_logged = None  # when "no wake name" was last logged
         self._turn = {}  # this turn's stage times, logged once the answer has started (see _log_turn)
         self._gate_notes = set()
         self.stats.update(ignored=0, echoes=0, stops=0, judged=0, judge_fallbacks=0, streamed_turns=0)
@@ -917,6 +930,8 @@ class PcVoice:
                     return  # a holding line or a failure: no follow-up (the answer comes later)
                 self.asked = ends_in_question(reply.spoken)
                 time.sleep(0.15)  # the room's echo of the last word
+                if self.smart and setting("pc_voice_followup_cue"):
+                    self.tone("open")  # still listening: answer without saying "Waggle"
                 mode = "followup"
         finally:
             self.in_conversation = False
@@ -968,6 +983,7 @@ class PcVoice:
             return
         rest = match_wake(words, self.names)
         if rest is None:
+            self._note_miss()
             return  # not for Waggle: the words go out of scope here, unread
         if rest and self.judging() and voice_intent.stop_phrase(rest):
             self.stats["stops"] += 1  # "Waggle, stop": nothing to send, whatever is speaking is cut off
@@ -980,11 +996,21 @@ class PcVoice:
             return
         log.info("wake word")
         if rest:
+            self.tone("start", wait=False)  # heard you: the answer takes a few seconds, so say so at once
             self.conversation(src, "text", rest)
         else:
             self.wait_speech(self.say_line("sir"))
             self.asked = True  # "Sir?" was a question: what follows is probably meant for Waggle
             self.conversation(src, "listen")
+
+    def _note_miss(self):
+        """Speech that did not start with a wake name: count it and log the count (never the words) at most
+        every MISS_LOG_S, so a missed "Waggle" can be told apart from not hearing anything at all."""
+        self.stats["not_for_waggle"] = self.stats.get("not_for_waggle", 0) + 1
+        now = time.monotonic()
+        if self._miss_logged is None or now - self._miss_logged >= MISS_LOG_S:
+            self._miss_logged = now
+            log.info("heard speech, no wake name (%d so far)", self.stats["not_for_waggle"])
 
     # -- Waggle's own messages
     def speak_spooled(self):

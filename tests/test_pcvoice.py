@@ -142,7 +142,7 @@ def test_settings_have_the_documented_defaults_and_read_config(settings):
     data.update(pc_voice_wake_names="Jarvis", pc_voice_wake="off", pc_voice_followup_s="x")
     config.CONFIG_FILE.write_text(json.dumps(data), encoding="utf-8")
     assert pcvoice.setting("pc_voice_wake_names") == ["Jarvis"] and pcvoice.setting("pc_voice_wake") is False
-    assert pcvoice.setting("pc_voice_followup_s") == 6.0
+    assert pcvoice.setting("pc_voice_followup_s") == 12.0
 
 
 # ---- a conversation ----------------------------------------------------------------------------------------
@@ -242,7 +242,7 @@ def test_the_wake_word_with_a_request_sends_only_the_request(rig, tmp_path):
     pv = rig.voice(client, wake=True, source=src)
     assert wake_run(rig, pv, lambda: client.texts)
     assert client.texts == ["what's the time?"] and client.audio == []
-    assert rig.played()[0] == "reply1"
+    assert rig.played()[:2] == ["start", "reply1"]  # a tone at once says it heard, then the answer
     assert pv.stats["wake_triggers"] == 1 and pv.stats["transcribed"] == 1
 
 

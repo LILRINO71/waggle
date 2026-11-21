@@ -316,3 +316,70 @@ def test_the_reap_timer_also_rolls_the_day_over(settings, day):
         assert got["rolled"] == ["telegram:1"] and got["stopped"] == [] and len(fake.procs) == 2
     finally:
         chat_engine.set_pool(None)
+
+
+# ---- the owner's test 11:45: a wake word lost to the warm-up, and silence until the answer ------------------------
+
+def test_a_busy_recogniser_is_waited_for_instead_of_dropping_what_was_said(tmp_path):
+    client = pcvoice.CoreClient(port=1, timeout=2, out_dir=tmp_path)
+    codes = [429, 429, 200]
+    client._post = lambda *a, **k: (codes.pop(0), {}, b'{"text": "Waggle, what time is it?", "ok": true}')
+    naps = []
+    r = client.transcribe(bytes(3200), sleep=naps.append)
+    assert r["text"] == "Waggle, what time is it?" and len(naps) == 2
+
+
+def test_a_recogniser_busy_for_too_long_still_gives_up(tmp_path):
+    client = pcvoice.CoreClient(port=1, timeout=2, out_dir=tmp_path)
+    client._post = lambda *a, **k: (429, {}, b"{}")
+    t = [0.0]
+
+    def nap(s):
+        t[0] += s
+    r = client.transcribe(bytes(3200), busy_wait_s=1.0, sleep=nap, clock=lambda: t[0])
+    assert r["error"] == "HTTP 429" and t[0] >= 1.0
+
+
+def test_speech_without_the_wake_name_is_counted_in_the_log_but_never_its_words(rig, tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger="waggle.pcvoice")
+    client = FakeClient(tmp_path, transcripts=["bagel what time is it"])
+    pv = rig.voice(client, wake=True, source=source(tmp_path, [(0.5, 0), (1.5, 3000), (1.0, 0), (7.0, 0)]))
+    assert wake_run(rig, pv, lambda: client.transcribed)
+    text = chr(10).join(r.getMessage() for r in caplog.records)
+    assert "heard speech, no wake name (1 so far)" in text
+    assert "bagel" not in text and client.texts == []
+
+
+def test_the_judge_asks_for_the_models_default_context_so_it_shares_mail_triages_loaded_copy(monkeypatch):
+    sent = {}
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps({"message": {"content": '{"directed": true, "stop": false, "confidence": 0.9}'}}).encode()
+
+    def fake_open(req, timeout=None):
+        sent.update(json.loads(req.data))
+        return Resp()
+    monkeypatch.setattr(voice_intent.urllib.request, "urlopen", fake_open)
+    voice_intent.ollama_ask([{"role": "user", "content": "x"}], "gemma4:latest", 1.0)
+    assert "num_ctx" not in sent.get("options", {})  # a different num_ctx makes Ollama reload the model
+
+
+# ---- the owner, 11:50: "I should just be able to respond without saying waggle" -----------------------------------
+
+def test_after_an_answer_a_soft_tone_says_it_is_still_listening_and_no_wake_name_is_needed(rig, tmp_path):
+    client = StreamClient(tmp_path, transcripts=["what about tomorrow"])
+    pv = smart(rig, client)
+    pv.conversation(follow_up_source(tmp_path), "hotkey")
+    assert "open" in rig.played()
+    assert len(client.stream_calls) == 2  # the follow-up went out without "Waggle"
+
+
+def test_the_follow_up_windows_are_long_enough_to_think(settings):
+    assert pcvoice.setting("pc_voice_followup_s") >= 12 and pcvoice.setting("pc_voice_question_s") >= 20

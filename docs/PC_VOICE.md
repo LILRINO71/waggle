@@ -177,11 +177,11 @@ All settings go in `config.json` in the Waggle home. They are read when the PC v
 | The wake word | `"pc_voice_wake": false` | on |
 | Waggle speaking its own messages | `"pc_voice_speak_messages": false` | on |
 | The hotkey | `"pc_voice_hotkey": "ctrl+alt+q"` (any ctrl/alt/shift/win + key) | `ctrl+alt+backquote` |
-| How long it waits for a follow-up | `"pc_voice_followup_s": 6` | 6 s |
+| How long it waits for a follow-up | `"pc_voice_followup_s": 12` | 12 s (a soft tone after each answer says it is still listening; off: `"pc_voice_followup_cue": false`) |
 | All of "who it answers" and the sentence-by-sentence speech | `"pc_voice_smart": false` | on |
 | Only the judge, echo and stop (keep the streaming) | `"pc_voice_judge": false` | on |
 | Only the sentence-by-sentence speech | `"pc_voice_stream": false` | on |
-| Follow-up window after a question | `"pc_voice_question_s": 10` | 10 s |
+| Follow-up window after a question | `"pc_voice_question_s": 20` | 20 s |
 | Which local model judges | `"pc_voice_judge_model": "qwen3:8b"` (empty: `gemma4:latest`) | empty |
 | How long the judge may take, and how sure it must be | `"pc_voice_judge_timeout_s": 1.5`, `"pc_voice_judge_min": 0.5` | 1.5 s, 0.5 |
 | Silence that ends what you say | `"pc_voice_end_silence_s": 1.2` | 1.2 s |
