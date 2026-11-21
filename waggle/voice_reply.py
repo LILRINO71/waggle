@@ -19,6 +19,7 @@ the reason is recorded.
 import json
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -174,6 +175,43 @@ def to_ogg(wav, ogg, timeout, ffmpeg=None):
         raise RuntimeError(("ffmpeg: " + r.stderr.decode("utf-8", "replace").strip())[:200])
 
 
+def to_m4a(wav, out, timeout, ffmpeg=None):
+    """WAV -> M4A (AAC-LC, mono, 64 kbit/s), which an iPhone plays. Without ffmpeg, or when it fails, the WAV itself is
+    written to `out` (the hands-free line sends whatever the file really is, by its first bytes: see sniff())."""
+    exe = ffmpeg or find_ffmpeg()
+    if exe:
+        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        try:
+            r = subprocess.run([exe, "-y", "-loglevel", "error", "-i", str(wav), "-c:a", "aac", "-b:a", "64k",
+                                "-ac", "1", "-movflags", "+faststart", "-f", "ipod", str(out)],
+                               capture_output=True, timeout=max(1.0, timeout), creationflags=flags)
+            if r.returncode == 0 and Path(out).is_file() and Path(out).stat().st_size > 0:
+                return
+        except (OSError, subprocess.SubprocessError):
+            pass
+    shutil.copyfile(wav, out)
+
+
+def sniff(data):
+    """What an audio file is, from its first bytes: "m4a", "wav" or "" (the file name cannot be trusted)."""
+    head = bytes(data[:12])
+    if head[4:8] == b"ftyp":
+        return "m4a"
+    if head[:4] == b"RIFF" and head[8:12] == b"WAVE":
+        return "wav"
+    return ""
+
+
+def pipeline(fmt):
+    """(file extension, converter, makes audio) for a delivery's voice format: "ogg" (Telegram voice messages,
+    the default), "m4a" (the hands-free line) or "none" (only the spoken text is wanted, no audio)."""
+    if fmt == "m4a":
+        return "m4a", to_m4a, True
+    if fmt == "none":
+        return "m4a", to_m4a, False
+    return "ogg", to_ogg, True
+
+
 def ogg_seconds(path, ffmpeg=None):
     """Length of an audio file in seconds, read from ffmpeg's report (0.0 if it cannot be read)."""
     exe = ffmpeg or find_ffmpeg()
@@ -186,8 +224,9 @@ def ogg_seconds(path, ffmpeg=None):
 
 
 def make_voice(text, folder, *, voice="af_heart", speed=1.1, budget_s=None, synth=None, convert=None,
-               clock=time.monotonic):
-    """Speak `text` into an Ogg/Opus file in `folder`, within `budget_s` seconds in all. Never raises.
+               clock=time.monotonic, ext="ogg"):
+    """Speak `text` into an Ogg/Opus file (or another format: `ext` and `convert` say which) in `folder`, within
+    `budget_s` seconds in all. Never raises.
     Returns {"ok", "path", "audio_s", "synth_s", "convert_s", "words", "error"}. Audio over MAX_AUDIO_S is made
     again from a shorter text (two sentences, thirty words) when the budget allows."""
     out = {"ok": False, "path": "", "audio_s": 0.0, "synth_s": 0.0, "convert_s": 0.0, "words": 0, "error": ""}
@@ -196,7 +235,7 @@ def make_voice(text, folder, *, voice="af_heart", speed=1.1, budget_s=None, synt
     start = clock()
     folder = Path(folder)
     stem = uuid.uuid4().hex[:10]
-    wav, ogg = folder / f"{stem}.wav", folder / f"{stem}.ogg"
+    wav, ogg = folder / f"{stem}.wav", folder / f"{stem}.{ext}"
     try:
         folder.mkdir(parents=True, exist_ok=True)
         for attempt, say in enumerate((text, cap_spoken(text, 2, 30))):
@@ -244,8 +283,9 @@ class VoiceReply:
     done: returns (answer text for the chat, spoken text); send(delivery) then sends the voice message."""
 
     def __init__(self, folder, *, voice="af_heart", speed=1.1, budget_s=None, synth=None, convert=None,
-                 clock=time.monotonic):
+                 clock=time.monotonic, ext="ogg", audio=True):
         self.folder, self.voice, self.speed = folder, voice, speed
+        self.ext, self.audio = ext, audio  # audio=False: the spoken text is worked out but never turned into sound
         self.budget_s = BUDGET_S if budget_s is None else budget_s
         self.synth, self.convert, self.clock = synth, convert, clock
         self.spoken, self.answer, self.had_spoken = "", "", False
@@ -253,6 +293,8 @@ class VoiceReply:
         self._thread, self._started_text, self._lock = None, None, threading.Lock()
 
     def _start(self, spoken):
+        if not self.audio:
+            return
         with self._lock:
             if self._started_text == spoken:
                 return
@@ -263,7 +305,7 @@ class VoiceReply:
 
         def run():
             box["r"] = make_voice(spoken, self.folder, voice=self.voice, speed=self.speed, budget_s=self.budget_s,
-                                  synth=self.synth, convert=self.convert, clock=self.clock)
+                                  synth=self.synth, convert=self.convert, clock=self.clock, ext=self.ext)
         self._thread = threading.Thread(target=run, daemon=True, name="waggle-voice-reply")
         self._thread.start()
 
@@ -302,7 +344,7 @@ class VoiceReply:
     def send(self, delivery):
         """Wait for the audio and send it as a voice message. Returns the info for the turn record:
         voice_delivered, voice_message_id, voice_error, spoken, spoken_words, audio_s, synth_s, convert_s, from_model."""
-        r = self.wait()
+        r = self.wait() if self.audio else {"ok": False, "error": ""}
         info = {"spoken": self.spoken, "spoken_words": len(self.spoken.split()), "spoken_from_model": self.had_spoken,
                 "audio_s": r.get("audio_s"), "synth_s": r.get("synth_s"), "convert_s": r.get("convert_s"),
                 "voice_delivered": False, "voice_message_id": None, "voice_error": r.get("error") or ""}
@@ -322,6 +364,6 @@ class VoiceReply:
                     Path(path).unlink(missing_ok=True)
                 except OSError:
                     pass
-        elif not info["voice_error"]:
+        elif not info["voice_error"] and self.audio:
             info["voice_error"] = "no audio was made"
         return info

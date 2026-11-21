@@ -335,9 +335,10 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
             rec.voice["heard_line"] = heard  # shown at the top of the written reply, never spoken
     vr = None
     if voice and getattr(delivery, "can_voice", False):  # a chat that takes voice messages: spoken answer + text
+        ext, convert, wants_audio = voice_reply.pipeline(getattr(delivery, "voice_format", "ogg"))
         vr = voice_reply.VoiceReply(data_path("voice_out"), voice=s.voice_note_voice, speed=s.voice_note_speed,
-                                    synth=voice_reply.synth_wav, convert=voice_reply.to_ogg)
-        rec.voice.update(voice=True, voice_requested=True)
+                                    synth=voice_reply.synth_wav, convert=convert, ext=ext, audio=wants_audio)
+        rec.voice.update(voice=True, voice_requested=wants_audio)
         stream = False  # the voice message comes first, then the whole text
     if turn_id:
         rec.turn_id = turn_id
@@ -445,6 +446,8 @@ def send_spoken(rec, vr, delivery, t0):
         info = {"voice_delivered": False, "voice_message_id": None, "voice_error": f"{type(e).__name__}: {e}"[:200]}
     rec.voice.update(info)
     rec.voice["voice_sent_s"] = round(time.time() - t0, 2)
+    if not vr.audio or getattr(delivery, "voice_capability", "telegram_voice") is None:
+        return  # only the spoken text was wanted, or this is not a Telegram voice message: the ledger is not about it
     try:
         from waggle.core import ledger
         if info.get("voice_delivered"):
@@ -605,7 +608,7 @@ NO_TEXT = ("I got your message but couldn't read anything in it{what}. Could you
 
 def handle_inbound(chat, text, *, kind="text", media=None, platform="telegram", origin="user", delivery=None,
                    settings=None, session=None, t0=None, local=None, turn_id=None, attempt=1, address=None,
-                   audio=None):
+                   audio=None, voice_source=""):
     """One inbound message, end to end: the typing indicator at once, approvals first, then the chat's Claude
     session, streamed into the chat's delivery, the reply queued in the core outbox if delivery fails, and the
     full turn record.
@@ -648,6 +651,12 @@ def handle_inbound(chat, text, *, kind="text", media=None, platform="telegram", 
             text = stt.clean_transcript(words)
             vinfo["transcript_cleaned"] = text
             vinfo.update(stt_confident=False, stt_confident_why=["the gateway gave no recogniser numbers"])
+        elif voice_source:  # words dictated elsewhere (the phone's own dictation): cleaned, but no recogniser numbers
+            raw = text.strip()
+            text = stt.clean_transcript(voice_turn.fix(raw, getattr(s, "voice_fixes", None)))
+            vinfo = {"voice": True, "transcript_source": voice_source, "transcript_raw": raw,
+                     "transcript_cleaned": text, "stt_confident": False,
+                     "stt_confident_why": [f"{voice_source}: no recogniser numbers"]}
     body = (text or "").strip()
     extra = media_note(media) if media else ""
     if extra:
@@ -658,12 +667,14 @@ def handle_inbound(chat, text, *, kind="text", media=None, platform="telegram", 
         keeper.stop()
         chat_store.touch_chat(chat, platform, address=address, user=True)
         line = heard_line(vinfo.get("transcript_cleaned") or body) if voice and body else ""
-        reply = f"{line}\n\n{reply}" if line else reply  # a voice turn's written reply starts with what was heard
-        out = StreamWriter(d, stream=False).finish(reply)
+        info = dict(vinfo) or ({"voice": True} if voice else {})
+        if line:
+            info["heard_line"] = line  # a voice turn's written reply starts with what was heard; the record keeps the answer
+        out = StreamWriter(d, stream=False).finish(f"{line}\n\n{reply}" if line else reply)
         rec = record_direct(chat, body, reply, platform=platform, origin=origin, t0=t0, route=route,
                             delivered=out["delivered"], delivery=getattr(d, "name", "delivery"),
                             message_ids=out.get("message_ids"), failure_notice=failure_notice, address=address,
-                            turn_id=turn_id, voice=vinfo or ({"voice": True} if voice else None))
+                            turn_id=turn_id, voice=info or None)
         return rec
 
     if not body:

@@ -10,6 +10,8 @@ POST /turn           an inbound message, JSON {chat, address, text, kind, media,
                      settings.accept_budget_s) of the request arriving; later than that it is cancelled (and
                      answered 503 when not yet written), because the caller gives up after 2 s and answers the
                      message itself.
+POST /voice          the hands-free line (waggle/core/voiceline.py): its own bearer token, the file voice.token;
+                     the core token does not open it, and the voice token opens nothing else.
 Anything else is 404; without the token everything is 401."""
 import hmac
 import json
@@ -20,7 +22,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from waggle.core import inbound, ledger, sender, settings, store
+from waggle.core import inbound, ledger, sender, settings, store, voiceline
 
 log = logging.getLogger("waggle.core.health")
 
@@ -227,12 +229,27 @@ def serve(loops_fn=None, port=None, accepting_fn=None):
             self.end_headers()
             (write or (lambda h, d: h.wfile.write(d)))(self, data)
 
+        def _send_raw(self, code, headers, data):
+            self.send_response(code)
+            for name, value in headers.items():
+                self.send_header(name, value)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
         def _authorized(self):
             auth = self.headers.get("Authorization", "")
             return hmac.compare_digest(auth.encode(), f"Bearer {secret}".encode())
 
         def do_POST(self):  # noqa: N802 - http.server API
             arrived = self.server.arrival(self.request)
+            url = urlparse(self.path)
+            if url.path == voiceline.PATH:  # its own token, checked inside: the core token is not what opens it
+                code, headers, data = voiceline.respond(self.headers, self.rfile, url.query, accepting=accepting_fn)
+                try:
+                    return self._send_raw(code, headers, data)
+                except OSError:
+                    return None  # the phone hung up
             if not self._authorized():
                 return self._send(401, {"error": "unauthorized"})
             if urlparse(self.path).path != "/turn":
