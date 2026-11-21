@@ -34,7 +34,7 @@ import time
 from pathlib import Path
 
 from . import dropbox_extract as dx
-from . import events, kstore, ollama, vault
+from . import events, kstore, ollama, vault, vault_git
 from .config import Settings, data_path
 
 DROP = "Drop"
@@ -558,6 +558,7 @@ def reindex(s, embedder=None):
     return n
 
 
+@vault_git.recorded("dropbox", lambda r, a, k: f"Drop folder: {len(r.get('filed', []))} file(s) filed, {r.get('summaries_filled', 0)} summaries filled")
 def scan_pass(settings=None, *, now=None, ask=None, describe=None, embedder=None, sleep=time.sleep,
               stable_s=STABLE_S, max_files=MAX_FILES_PER_PASS, budget_s=PASS_BUDGET_S, force_retry=False):
     """One pass over Drop: file every stable file, retry pending summaries, reindex. Idempotent and safe to run

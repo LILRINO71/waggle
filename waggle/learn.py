@@ -17,7 +17,7 @@ import os
 import re
 import time
 
-from . import claude_cli, events, kstore, ollama, quota, vault
+from . import claude_cli, events, kstore, ollama, quota, vault, vault_git
 from .config import Settings, data_path
 
 FILES = {"like": "Me/Likes.md", "dislike": "Me/Dislikes.md", "preference": "Me/Learned.md",
@@ -291,6 +291,7 @@ def _stale_against(f, supersedes):
     return None
 
 
+@vault_git.recorded("learn", lambda r, a, k: f"filed {a[0].get('kind', 'fact')} fact: {str(a[0].get('text', ''))[:70]}")
 def file_fact(fact, settings=None, source="", evidence="", ref=None, embedder=None, turn=None, supersedes=(),
               origin=None):
     """File one fact (after check()). Returns (True, fact_id) or (False, reason). Always logged.
@@ -553,6 +554,7 @@ items (keep the newest), keep sections Basics / How I like answers / Goals / Lik
 Be concise. Output only the new Markdown."""
 
 
+@vault_git.recorded("learn", "weekly profile tidy-up (old profile kept in Me/History)")
 def consolidate(settings=None):
     s = settings or Settings.load()
     ok, why = quota.can_escalate(s.router_model, s)

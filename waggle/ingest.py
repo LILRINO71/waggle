@@ -28,7 +28,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import events, kstore, projects, vault
+from . import events, kstore, projects, vault, vault_git
 from .config import CONFIG_FILE, Settings, data_path
 
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)  # no console flash when run under pythonw
@@ -110,6 +110,8 @@ def _archive(rel, s, why, now=None):
     stamp = dt.datetime.fromtimestamp(_now(now)).strftime("%Y%m%d-%H%M%S")
     dst = vault.safe_path(f"{ARCHIVE}/{why}/{src.stem}-{stamp}.md", s)
     dst.parent.mkdir(parents=True, exist_ok=True)
+    vault_git.note_write(src, s)
+    vault_git.note_write(dst, s)
     shutil.move(str(src), str(dst))
     return dst.relative_to(vault.root(s)).as_posix()
 
@@ -766,6 +768,7 @@ def _lock(now):
     return True
 
 
+@vault_git.recorded("ingest", lambda r, a, k: "intake: " + (", ".join(x for x in r if x != "skipped") or "nothing due"))
 def run_due(now=None, settings=None, force=(), only=None, exclude=(), **ctx):
     """Run every job that is due (or the ones in `force`/`only`). Idempotent: running it twice in a row does
     nothing the second time. ctx: fakes for tests (runner, gh, asker, connectors, embedder, doc_embedder).
