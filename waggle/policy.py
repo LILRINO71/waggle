@@ -211,6 +211,7 @@ MONEY = re.compile(r"payment|purchase|checkout|transfer|trade|order|billing|invo
 _ONLY_USER = "reaches only the user"
 _READS = "reads or reports status"
 _OWN = "Waggle's own memory, skills or agent work"
+_NEW_FILE = "writes one new file where Waggle may write, never overwrites"
 WAGGLE_TOOLS = {
     # to the user only: their own chat, phone and reminders
     "remind_me": (ALLOW, "a reminder in the user's own chat"),
@@ -230,6 +231,12 @@ WAGGLE_TOOLS = {
     "memory_status": (ALLOW, _READS), "memory_review": (ALLOW, _READS), "objective_status": (ALLOW, _READS),
     "graph_query": (ALLOW, _READS), "background_status": (ALLOW, _READS), "waggle_doctor": (ALLOW, _READS),
     "note_read": (ALLOW, _READS), "related_to": (ALLOW, _READS), "memory_core": (ALLOW, _READS),
+    # real-world tools (waggle/tools_*.py): they read files that are not secrets, or write a NEW file inside the
+    # folders Waggle may write (tools_common.out_path), and never overwrite; portfolio_audit only reads GitHub
+    "cad_measure": (ALLOW, _READS), "print_estimate": (ALLOW, _READS), "explain_file": (ALLOW, _READS),
+    "portfolio_audit": (ALLOW, _READS),
+    "cad_convert": (ALLOW, _NEW_FILE), "doc_to_pdf": (ALLOW, _NEW_FILE), "media_convert": (ALLOW, _NEW_FILE),
+    "image_convert": (ALLOW, _NEW_FILE),
     # Waggle's own memory, skills, routines and agents (agent work goes through this policy again)
     "remember": (ALLOW, _OWN), "project_update": (ALLOW, _OWN), "rate_finding": (ALLOW, _OWN),
     "skill_create": (ALLOW, _OWN), "skill_update": (ALLOW, _OWN), "agent_note": (ALLOW, _OWN),
