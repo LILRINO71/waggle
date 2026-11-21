@@ -308,8 +308,11 @@ def core_timings(raw):
     """The seconds the core reports for a turn (numbers only, whatever else it sends is dropped)."""
     if not isinstance(raw, dict):
         return {}
-    return {k: round(float(v), 2) for k, v in raw.items()
-            if isinstance(k, str) and isinstance(v, (int, float)) and not isinstance(v, bool)}
+    out = {k: round(float(v), 2) for k, v in raw.items()
+           if isinstance(k, str) and isinstance(v, (int, float)) and not isinstance(v, bool)}
+    if raw.get("tier") in ("code", "local", "claude"):  # which tier answered (the core's voice_fast), a word not a number
+        out["tier"] = raw["tier"]
+    return out
 
 
 class Reply:
@@ -972,7 +975,8 @@ class PcVoice:
                  "first_audio": audio_at - sent if audio_at and sent else None,
                  "total": (audio_at - t["ended_at"] + (end_s or 0.0)) if audio_at and t.get("ended_at") else None}
             extra = {"judge": t.get("judge"), "core_stt": reply.timings.get("stt_s"),
-                     "model_first": reply.timings.get("model_first_s"), "speech_ms": t.get("speech_ms"),
+                     "model_first": reply.timings.get("model_first_s"), "tier": reply.timings.get("tier"),
+                     "fast": reply.timings.get("fast_s"), "speech_ms": t.get("speech_ms"),
                      "rms": t.get("rms"), "peak": t.get("peak"), "floor": t.get("floor"), "status": reply.status}
             log.info("%s", format_timing(f, extra))
         except Exception as e:  # noqa: BLE001  (a timing line must never break a turn)

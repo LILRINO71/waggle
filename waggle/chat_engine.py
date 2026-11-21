@@ -9,6 +9,9 @@ and the engine does the rest, in whatever process it runs:
 1. Context: the user's notes for this message (vault memory, projects, graph, past references), open approvals,
    unseen notifications, background results posted since the user's last message, and a style hint for voice
    turns. The conversation itself lives in the chat's Claude session (waggle/chat_session.py).
+1b. A spoken request that code or the small local model can answer on its own (the time, the date, reminders, sums,
+   conversions, a plain general-knowledge question: waggle/voice_fast.py) is answered at once and recorded as a normal
+   turn (answered_by "code" or "local"); Claude is told about it on its next message. Everything else goes to Claude.
 2. Claude answers in the chat's long-lived process, streaming into the delivery (one edit per ~1.2 s, final
    text always sent). It can use tools and hand heavy work to background_task (waggle/chat_jobs.py).
 3. Claude unavailable or failing (quota, CLI missing, sign-in, outage, crash): an honest message says so. The
@@ -31,7 +34,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import chat_store, claude_cli, engine_commands, events, media_intake, quota, stt, traces, voice_reply, voice_turn
+from . import chat_store, claude_cli, engine_commands, events, media_intake, quota, stt, traces, voice_fast, voice_reply, voice_turn
 from . import guard  # turn state for the owner-instruction rule
 from .chat_session import VOICE_STYLE, ChatSession, SessionPool
 from .config import Settings, data_path
@@ -162,7 +165,7 @@ class TurnRecord:
         self.outcome, self.outcome_why = traces.turn_outcome(
             answered_by=self.answered_by, delivered=self.delivered, queued=self.outbox_id is not None,
             steps=self.steps, partial=self.partial, failure_notice=self.failure_notice,
-            degraded_why=self._voice_why())
+            degraded_why=self._voice_why(), fast=bool(self.voice.get("fast_tier")))
         self.claims = traces.extract_claims("" if self.failure_notice else self.reply, self.steps)
         return self
 
@@ -436,22 +439,42 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
     if attempt and attempt >= 2:
         note = (note + " " if note else "") + INTERRUPTED_NOTE
     reply, why = "", ""
-    try:
-        t_ctx = time.time()
-        ctx = context if context is not None else build_context(
-            chat, text if owner_text is None else owner_text, voice and vr is None, s, since=prev_user,
-            budget_s=VOICE_CONTEXT_BUDGET_S if voice else None)
-        if voice:
-            rec.voice["context_s"] = round(time.time() - t_ctx, 2)
-        rec.context = dict(getattr(ctx, "marker", None) or {"v": 1, "given": True})
-    except Exception as e:
+    # A spoken request the code or the small local model can answer on its own never waits for Claude
+    # (waggle/voice_fast.py); anything else goes the usual way and the miss is only noted.
+    fast, froute = None, None
+    if vr is not None and not note and not attachments and (attempt or 1) < 2:
+        froute = voice_fast.route(text, s, chat=chat, voice_info=rec.voice)
+        fast = froute.fast
+        rec.voice["fast_why"] = froute.why or None
+    if fast is not None:
         ctx = ""
-        rec.context = {"v": 1, "core": False, "built": False, "error": type(e).__name__}
-        events.log("engine_error", stage="context", error=str(e)[:200])
+        reply, rec.answered_by, rec.model = voice_fast.reply_text(fast), fast.tier, fast.model or fast.tier
+        rec.voice.update(fast_tier=fast.tier, fast_kind=fast.kind, fast_s=round(froute.ms / 1000, 2))
+        rec.context = {"v": 1, "core": False, "built": False, "fast": fast.tier}
+    else:
+        try:
+            t_ctx = time.time()
+            ctx = context if context is not None else build_context(
+                chat, text if owner_text is None else owner_text, voice and vr is None, s, since=prev_user,
+                budget_s=VOICE_CONTEXT_BUDGET_S if voice else None)
+            if voice:
+                rec.voice["context_s"] = round(time.time() - t_ctx, 2)
+            rec.context = dict(getattr(ctx, "marker", None) or {"v": 1, "given": True})
+        except Exception as e:
+            ctx = ""
+            rec.context = {"v": 1, "core": False, "built": False, "error": type(e).__name__}
+            events.log("engine_error", stage="context", error=str(e)[:200])
+        try:  # what was answered without Claude since its last reply (a quick answer), so a follow-up works
+            unseen = voice_fast.unseen_note(chat)
+        except Exception as e:
+            unseen = ""
+            events.log("engine_error", stage="unseen_note", error=str(e)[:200])
+        if unseen:
+            note = (note + " " if note else "") + unseen
     message = ((ctx + "\n\n" if ctx else "") + ("<waggle_note>" + note + "</waggle_note>\n\n" if note else "")
                + ("<voice_reply_format>" + voice_reply.FORMAT_NOTE + "</voice_reply_format>\n\n" if vr else "") + text
                + ("\n\n" + attachments if attachments else ""))
-    ok, why = claude_available(s)
+    ok, why = (False, "") if fast is not None else claude_available(s)
     if ok:
         try:
             sess = session or pool(s).get(chat)
@@ -537,7 +560,23 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
     rec.settle()
     if record:
         rec.trace_id = record_turn(rec, voice=voice, note=note)
+    if vr is not None:
+        _log_voice_turn(rec, froute)
     return rec
+
+
+def _log_voice_turn(rec, froute):
+    """The one INFO line per voice turn: the tier that answered and its time, never the words."""
+    try:
+        if rec.voice.get("fast_tier"):
+            voice_fast.log_turn(rec.voice["fast_tier"], rec.voice.get("fast_s") or 0.0)
+        else:
+            first = (rec.session or {}).get("model_first_text_s")
+            tier = "claude" if rec.answered_by not in ("none", "local", "code") else (rec.answered_by or "none")
+            voice_fast.log_turn(tier, first if first is not None else (rec.voice.get("model_s") or rec.total_s),
+                                why=(froute.why if froute else "") or "", local_ms=froute.local_ms if froute else 0)
+    except Exception:
+        pass
 
 
 def send_spoken(rec, vr, delivery, t0):

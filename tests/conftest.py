@@ -21,6 +21,13 @@ def isolated_home(tmp_path, monkeypatch):
     def no_ollama(*a, **k):
         raise ollama.OllamaError("no Ollama in tests")
     monkeypatch.setattr(ollama, "_post", no_ollama)
+    import waggle.voice_fast as voice_fast
+
+    def no_local_fast(*a, **k):
+        raise OSError("no real Ollama in tests (voice_fast takes ask= and loaded= from the test)")
+    monkeypatch.setattr(voice_fast, "ollama_ask", no_local_fast)  # the voice quick-answer tier never reaches the real Ollama
+    monkeypatch.setattr(voice_fast, "loaded_models", no_local_fast)
+    monkeypatch.setattr(voice_fast, "_backoff", voice_fast.voice_intent.Backoff(60.0))
     import waggle.checklist as checklist
     monkeypatch.setattr(checklist, "home_dir", lambda: tmp_path / "userhome")  # side-damage zones: never the real home
     import waggle.skills as skills

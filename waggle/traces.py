@@ -153,7 +153,7 @@ def _refusal_kind(step):
 
 
 def turn_outcome(*, answered_by, delivered, queued=False, steps=(), partial=False, failure_notice=False,
-                 degraded_why=()):
+                 degraded_why=(), fast=False):
     """(outcome, reasons) for one turn by a fixed rule, no model involved:
     failed    - no real answer (only an honest failure notice), or the reply was neither delivered nor queued;
     degraded  - answered, but a tool failed or was refused (the safety hook: needs approval, or blocked) and the
@@ -163,6 +163,7 @@ def turn_outcome(*, answered_by, delivered, queued=False, steps=(), partial=Fals
                 (Bash then PowerShell, a second WebFetch ...), nothing was refused, and the answer was delivered;
     ok        - no tool failed.
     degraded_why: more reasons that make an answered turn degraded (a voice turn whose spoken reply was not sent).
+    fast: the local model answered on purpose (the voice quick-answer tier, waggle/voice_fast.py), not as a fallback.
     A refused call is only recovered by the identical call succeeding later (an approval given in the same turn):
     another command that happens to work is not the action the user has to approve. The reasons list every
     failure, refusal and recovery, in order."""
@@ -174,7 +175,7 @@ def turn_outcome(*, answered_by, delivered, queued=False, steps=(), partial=Fals
     if why:
         return "failed", why
     bad, healed = [], []
-    if answered_by == "local":
+    if answered_by == "local" and not fast:
         bad.append("answered by the local model")
     steps = list(steps or ())
     for i, st in enumerate(steps):
@@ -443,6 +444,19 @@ def chat_transcript(chat, n=8, within_s=3 * 86400, max_chars=12000):
     con.close()
     text = "\n\n".join(f"User: {r[0]}\nWaggle: {r[1]}" for r in reversed(rows))
     return text[-max_chars:] if len(text) > max_chars else text
+
+
+def recent_chat(chat, n=12, within_s=6 * 3600, now=None):
+    """The last n turns of one chat, newest first, as dicts (request, reply, answered_by, time): to see which of them
+    Claude answered and which Waggle answered without it (waggle/voice_fast.py)."""
+    if not chat:
+        return []
+    con = _db()
+    rows = con.execute("SELECT request, reply, answered_by, time FROM traces WHERE chat=? AND time>? AND reply IS NOT NULL "
+                       "AND reply != '' AND answered_by IS NOT NULL ORDER BY id DESC LIMIT ?",
+                       (chat, (time.time() if now is None else now) - within_s, n)).fetchall()
+    con.close()
+    return [{"request": r[0], "reply": r[1], "answered_by": r[2], "time": r[3]} for r in rows]
 
 
 def engine_stats(n=50, platform="telegram", since=0.0, origin="user"):

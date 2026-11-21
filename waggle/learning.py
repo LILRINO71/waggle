@@ -393,8 +393,9 @@ def implicit_signals(rows):
         except (TypeError, ValueError):
             pass
         who = f"{r.get('route', '')} {r.get('model', '')} {extra.get('answered_by', '')}"
-        if r.get("route") == "local" or LOCAL_ROUTE.search(str(extra.get("answered_by", ""))) or \
-                (r.get("route") != "sonnet" and LOCAL_ROUTE.search(who)):
+        fast = bool((extra.get("voice_turn") or {}).get("fast_tier"))  # a quick answer on purpose, not a fallback
+        if not fast and (r.get("route") == "local" or LOCAL_ROUTE.search(str(extra.get("answered_by", ""))) or
+                         (r.get("route") != "sonnet" and LOCAL_ROUTE.search(who))):
             out["local"].append({"id": r["id"], "request": req[:120]})
         if any(s.get("denied") for s in r.get("steps", [])):
             out["denied"].append({"id": r["id"], "request": req[:120]})

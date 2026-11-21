@@ -103,6 +103,14 @@ class Settings:
     dev_sources: list = field(default_factory=lambda: ["oneshot", "cli", "tool", "test", "api", "batch"])
     voice_note_voice: str = "af_heart"
     voice_note_speed: float = 1.1
+    # Fast answers to spoken requests (waggle/voice_fast.py): voice_fast_path answers the time, the date, the reminders
+    # list, sums and unit conversions in plain code (no model); voice_fast_local lets the small local model answer a
+    # self-contained general-knowledge question within voice_fast_cap_s seconds, else the request goes to Claude.
+    # voice_fast_model "" = the PC voice judge's model (already loaded: a different one is loaded for 8+ s).
+    voice_fast_path: bool = True
+    voice_fast_local: bool = True
+    voice_fast_model: str = ""
+    voice_fast_cap_s: float = 2.5
     scout_enabled: bool = True
     # Cheap checks in front of Claude for work that runs on its own (waggle/gates.py, notifycheck.py, cooldowns.py).
     # Each switch is independent: false restores the old behaviour exactly.
