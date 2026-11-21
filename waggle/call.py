@@ -32,6 +32,7 @@ from xml.sax.saxutils import escape
 
 from . import events
 from .config import Settings, data_path
+from .outredact import scrub
 
 KEYS = ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM", "TWILIO_TO")
 VOICE = "Polly.Brian"
@@ -165,7 +166,7 @@ def status_line():
 # ---- placing calls -----------------------------------------------------------------------------------
 
 def twiml(message):
-    msg = escape(" ".join((message or "").split())[:600])
+    msg = escape(" ".join(scrub(message or "", "call").split())[:600])  # redact before the cut
     return (f'<Response><Say voice="{VOICE}">Hello, this is Waggle. {msg}</Say><Pause length="1"/>'
             f'<Say voice="{VOICE}">Again: {msg}</Say><Say voice="{VOICE}">Details are on Telegram. Goodbye.</Say>'
             "</Response>")

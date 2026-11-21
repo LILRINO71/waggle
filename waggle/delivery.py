@@ -27,6 +27,8 @@ import re
 import threading
 import time
 
+from .outredact import scrub
+
 
 class Delivery:
     """Interface. Subclasses override what their transport supports."""
@@ -247,7 +249,12 @@ class StreamWriter:
 
     def __init__(self, delivery, interval=1.2, stream=True, clean=plain_text, clock=time.time, sleep=time.sleep,
                  tick=0.2, on_first_shown=None, first_hold_s=0.4, first_min_chars=80, first_settle_s=0.012):
-        self.d, self.interval, self.clean, self.clock, self.sleep, self.tick = delivery, interval, clean, clock, sleep, tick
+        self.d, self.interval, self.clock, self.sleep, self.tick = delivery, interval, clock, sleep, tick
+        # Every view of the text (each edit, the final text, a status line) passes through here whatever the transport,
+        # and is redacted whole, never as a delta. Counted once per writer, not once per edit.
+        self._counted = set()
+        self.clean = lambda text, _clean=clean: scrub(_clean(scrub(text, "stream", once=self._counted)), "stream",
+                                                      once=self._counted)
         self.on_first_shown = on_first_shown  # called once, right after the first post (status line or words)
         # The first words wait until the text has first_min_chars or first_hold_s passed since they began: a
         # one-line answer that completes inside the hold goes out once, whole, with no edit.
@@ -284,7 +291,7 @@ class StreamWriter:
             return
         with self._lock:
             self._tools.append(step)
-            self._status = tool_status(self._tools)
+            self._status = scrub(tool_status(self._tools), "stream", once=self._counted)  # a command line can hold a key
         self._ensure_thread()
         self._wake.set()
 
@@ -340,6 +347,7 @@ class StreamWriter:
                     pass
 
     def _push_status(self, status):
+        status = scrub(status, "stream", once=self._counted)
         if not self.handles:
             h = self._safe(self.d.post, status)
             if h is None or h is False:

@@ -40,10 +40,18 @@ KIND_VALUE = {"followup": 1.0, "checkin": 1.0, "github_ci": 0.8, "build": 0.8, "
               "upcoming": 0.7, "objective": 0.6, "automation": 0.6, "github_issue": 0.5, "unpushed": 0.5,
               "cron": 0.5, "routine": 0.4}
 NOTE = "low welcome odds"   # the guard note, counted by held_today()
-STOP = re.compile(r"(?:\bstop\b|\bnot now\b|\bleave me alone\b|\bshut up\b|\btoo many (?:messages|texts|notifications|"
+STOP = re.compile(r"(?:\bnot now\b|\bleave me alone\b|\bshut up\b|\btoo many (?:messages|texts|notifications|"
                   r"suggestions)\b|\bno more (?:messages|texts|suggestions)\b|\bdon'?t (?:text|message|ping|bother) "
                   r"me\b|\bquit (?:texting|messaging|pinging)\b)", re.I)
 MAX_STOP_CHARS = 120
+# A bare "stop" is a command only when the message is little else ("stop", "ok stop", "please stop it", "stop for
+# today", "stop texting me"). "stop by the shop", "bus stop", "non-stop", "can't stop thinking about it" are not.
+_STOP_LEAD = {"ok", "okay", "k", "please", "pls", "plz", "just", "hey", "waggle", "now", "alright", "can", "could",
+              "would", "will", "you", "i", "said", "ugh", "no", "yes"}
+_STOP_TAIL = {"it", "that", "this", "now", "please", "pls", "plz", "already", "everything", "all", "thanks", "thx",
+              "waggle", "for", "today", "tonight", "the", "day", "night", "a", "while", "bit", "me", "these", "those",
+              "them", "texting", "messaging", "pinging", "sending", "bothering", "notifying", "spamming", "messages",
+              "texts", "notifications", "suggestions", "reminders", "alerts", "stop"}
 
 
 def _db():
@@ -57,7 +65,18 @@ def _db():
 def is_stop(text):
     """A short message that tells Waggle to hold off. A long message that happens to contain "stop" does not."""
     t = " ".join(str(text or "").split())
-    return bool(t) and len(t) <= MAX_STOP_CHARS and bool(STOP.search(t))
+    if not t or len(t) > MAX_STOP_CHARS:
+        return False
+    return bool(STOP.search(t)) or _bare_stop(t)
+
+
+def _bare_stop(t):
+    """"stop" as the command of a short message: only lead words before it, only tail words after it."""
+    words = re.findall(r"[a-z']+", t.lower().replace("-", " x "))  # "non-stop" -> "non x stop": the x is no lead word
+    if "stop" not in words:
+        return False
+    i = words.index("stop")
+    return all(w in _STOP_LEAD for w in words[:i]) and all(w in _STOP_TAIL for w in words[i + 1:])
 
 
 def _turns(settings, now, turns):

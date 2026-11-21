@@ -96,13 +96,14 @@ def hermes_exe():
 def to_phone(text, settings=None):
     """The raw `hermes send` call (works without the gateway running). True on success. Not used by deliver():
     pushsetup keeps it for its one-off test message. MEDIA:<path> lines attach files."""
+    from .outredact import scrub
     s = settings or Settings.load()
     exe = hermes_exe()
     if not exe:
         return False
     env = dict(os.environ, HERMES_HOME=str(exe.parent.parent))
     try:
-        r = subprocess.run([str(exe), "send", "-q", "-t", s.phone_target, text[:3500]], capture_output=True,
+        r = subprocess.run([str(exe), "send", "-q", "-t", s.phone_target, scrub(text, "telegram")[:3500]], capture_output=True,
                            text=True, timeout=60, env=env, encoding="utf-8", errors="replace",
                            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         return r.returncode == 0
@@ -124,9 +125,11 @@ def to_ntfy(text, title="Waggle", priority=5, tags=("bee",), settings=None, post
     """Push to the ntfy app (iPhone/Android). priority 5 = urgent: on iPhone a Time-Sensitive alert that breaks
     through Focus; 3 = normal. Free, no account. True on success."""
     import urllib.request
+
+    from .outredact import scrub
     s = settings or Settings.load()
-    body = {"topic": ntfy_topic(s), "title": title[:120], "message": text[:3500], "priority": int(priority),
-            "tags": list(tags)}
+    body = {"topic": ntfy_topic(s), "title": scrub(title, "ntfy")[:120], "message": scrub(text, "ntfy")[:3500],
+            "priority": int(priority), "tags": list(tags)}
     if post:
         return post(s.ntfy_server, body)
     try:
@@ -143,9 +146,11 @@ def ntfy_publish(text, *, title="Waggle", priority=3, tags=("bee",), settings=No
     429), with retry_after for 429, retryable for anything else. post(url, body) -> response dict, for tests."""
     import urllib.error
     import urllib.request
+
+    from .outredact import scrub
     s = settings or Settings.load()
-    body = {"topic": ntfy_topic(s), "title": (title or "Waggle")[:120], "message": (text or "")[:3500],
-            "priority": int(priority), "tags": list(tags)}
+    body = {"topic": ntfy_topic(s), "title": scrub(title or "Waggle", "ntfy")[:120],
+            "message": scrub(text or "", "ntfy")[:3500], "priority": int(priority), "tags": list(tags)}
     try:
         if post:
             res = post(s.ntfy_server, body)
@@ -367,6 +372,9 @@ def _synth(text, out, settings=None):
     """Kokoro to an Ogg/Opus file: the warm server on 127.0.0.1:8899 first, else kokoro_say.py in its own venv.
     True when the file was written."""
     import urllib.request
+
+    from .outredact import scrub
+    text = scrub(text, "tts")
     s = settings or Settings.load()
     body = json.dumps({"text": text, "out": str(out), "voice": s.voice_note_voice,
                        "speed": s.voice_note_speed}).encode()
@@ -394,8 +402,9 @@ def voice(text, settings=None, urgent=False, asked=False, origin="manual", topic
           now=None, synth=None, source=None, chat="", ref=None):
     """Say `text` as a Telegram voice note (with the words as text underneath). Falls back to a plain text message
     when synthesis fails, so the content is never lost."""
+    from .outredact import scrub
     s = settings or Settings.load()
-    spoken = " ".join((text or "").split())[:600]
+    spoken = " ".join(scrub(text or "", "tts").split())[:600]  # redact before cutting: no half key survives the cut
     folder = data_path("voice_out")
     folder.mkdir(parents=True, exist_ok=True)
     out = folder / f"{uuid.uuid4().hex[:10]}.ogg"

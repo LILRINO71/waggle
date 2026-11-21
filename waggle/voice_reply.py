@@ -28,6 +28,8 @@ import uuid
 import wave
 from pathlib import Path
 
+from .outredact import scrub
+
 MAX_SENTENCES = 3
 MAX_WORDS = 45
 MAX_AUDIO_S = 20.0
@@ -93,8 +95,9 @@ _SENT = re.compile(r"(?<=[.!?])[\"')\]]*\s+")
 
 
 def speakable(text):
-    """The words of `text` as they can be said: no code blocks, links, paths, list markers or markdown."""
-    t = _FENCE.sub(" ", text or "")
+    """The words of `text` as they can be said: no code blocks, links, paths, list markers or markdown, and no
+    credential (every spoken text, whoever says it, is derived here)."""
+    t = _FENCE.sub(" ", scrub(text or "", "tts"))
     t = _LINK.sub(r"\1", t)
     t = _URL.sub(" ", t)
     t = _PATH.sub(" ", t)
@@ -138,7 +141,7 @@ def spoken_sentences(text, final=False, max_sentences=MAX_SENTENCES, max_words=M
     the first can be said while the model writes the rest. A sentence is finished when its full stop has been
     followed by more text; the last one is finished when the ANSWER marker has arrived (or final is True, the
     reply is complete). A reply without a SPOKEN part gives [] (its spoken form is worked out at the end)."""
-    t = (text or "").lstrip()
+    t = scrub(text or "", "tts").lstrip()  # whole text first: a key or key block can span sentences
     m = _SPOKEN.match(t)
     if not m:
         return []
@@ -166,7 +169,7 @@ def fallback_spoken(answer, **caps):
 
 def synth_wav(text, out, voice, speed, timeout):
     """Kokoro through the warm local server: the WAV is written to `out`; returns its length in seconds."""
-    body = json.dumps({"text": text, "out": str(out), "voice": voice, "speed": float(speed)}).encode()
+    body = json.dumps({"text": scrub(text, "tts"), "out": str(out), "voice": voice, "speed": float(speed)}).encode()
     req = urllib.request.Request(f"http://127.0.0.1:{KOKORO_PORT}/", data=body,
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=max(1.0, timeout)) as r:
