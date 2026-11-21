@@ -258,6 +258,9 @@ WAGGLE_TOOLS = {
     "cad_convert": (ALLOW, _NEW_FILE), "doc_to_pdf": (ALLOW, _NEW_FILE), "media_convert": (ALLOW, _NEW_FILE),
     "image_convert": (ALLOW, _NEW_FILE),
     "ftc_team": (ALLOW, "reads one FTC team's public FTCScout page (read-only)"),
+    # focus blocks (waggle/focus.py): the owner's own request starts a timer that only speaks or texts the owner
+    "focus_start": (ALLOW, "starts a focus block: short nudges to the owner only (waggle/focus.py)"),
+    "focus_stop": (ALLOW, "ends the owner's focus block"), "focus_status": (ALLOW, _READS),
     # Waggle's own memory, skills, routines and agents (agent work goes through this policy again)
     "remember": (ALLOW, _OWN), "project_update": (ALLOW, _OWN), "rate_finding": (ALLOW, _OWN),
     "skill_create": (ALLOW, _OWN), "skill_update": (ALLOW, _OWN), "agent_note": (ALLOW, _OWN),

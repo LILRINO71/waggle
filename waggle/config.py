@@ -163,6 +163,10 @@ class Settings:
     # cloud folder, because the data includes tokens. Empty = %USERPROFILE%\WaggleBackups.
     backup_dir: str = ""
     backup_keep: int = 14
+    # ActivityWatch (waggle/aw_sensor.py): window, AFK and browser activity across the PC, read from 127.0.0.1:5600 and
+    # kept as derived facts only. Does nothing while ActivityWatch is not running. Focus nudges (waggle/focus.py)
+    # have no switch: they exist only inside a block the owner starts.
+    activitywatch_enabled: bool = True
     chat_effort: str = "low"
     chat_idle_s: int = 1800  # an idle chat process is stopped; the next message resumes the same session
     chat_turn_timeout_s: int = 600

@@ -240,6 +240,11 @@ def check_backup(s):
     return backup.doctor_check(s)
 
 
+def _aw_check(s):
+    from . import aw_sensor
+    return aw_sensor.doctor_check(s)
+
+
 def check_context():
     """Hooks alive: recent chat turns exist but none carried the injected context block (context_alive.py)."""
     from . import context_alive
@@ -253,7 +258,8 @@ def run_all(settings=None):
               ("Scheduled jobs", check_cron), ("Vault + memory", lambda: check_vault(s)), ("Skills", check_skills),
               ("Builds", check_jobs), ("Startup", check_startup), ("Disk", check_disk), ("Phone calls", check_phone),
               ("Background work", lambda: check_background(s)), ("Chat context", check_context),
-              ("Backups", lambda: check_backup(s))]
+              ("Backups", lambda: check_backup(s)),
+              ("ActivityWatch", lambda: _aw_check(s))]
     out = []
     for name, fn in checks:
         try:

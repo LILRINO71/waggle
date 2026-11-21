@@ -42,6 +42,14 @@ def isolated_home(tmp_path, monkeypatch):
     import waggle.dropbox_markitdown as dmk
     monkeypatch.setattr(dmk, "venv_python", lambda: None)  # never the real markitdown venv (tests opt in)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))  # never the real Hermes state, cron or `hermes send`
+    import waggle.aw_sensor as aw_sensor
+
+    def no_aw(*a, **k):
+        raise aw_sensor.AwDown("no ActivityWatch in tests")
+    monkeypatch.setattr(aw_sensor, "_get", no_aw)  # never the real ActivityWatch on this PC (tests pass get=)
+    import waggle.focus as focus
+    monkeypatch.setattr(focus, "_cache", {})
+    monkeypatch.setattr(focus, "_backoff", {"until": 0.0})
     import waggle.wincred as wincred
     vault_ = {}  # never the real Windows Credential Manager
     monkeypatch.setattr(wincred, "read", lambda target: vault_.get(target))

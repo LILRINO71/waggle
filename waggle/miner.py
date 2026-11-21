@@ -4,6 +4,9 @@ mine() reads what the activity model already derived (nothing is read twice, no 
   command sequences  the command shapes of each Claude Code session in time order ("git add > git commit >
                      git push"). A chain typed as one command, or two or three consecutive commands within ten
                      minutes, is a sequence. Read-only sequences (status, log, ls...) are ignored.
+  app sequences      ActivityWatch's derived window rows (waggle/aw_sensor.py): three different apps in a row, each
+                     within ten minutes of the last ("code > chrome:onshape > vls"), from work apps only. They stay
+                     "found": there is no recipe to run, so no shadow run (they say what the owner repeats by hand).
   requests           the owner's own turns (Claude Code sessions and Waggle chat turns with origin 'user'), grouped
                      by their keywords (Jaccard >= 0.5 with the group's first turn). Long pasted briefs are ignored.
 A repetition becomes a candidate at MIN_COUNT occurrences in MIN_SESSIONS sessions on MIN_DAYS different days.
@@ -165,10 +168,21 @@ def qualifies(ev):
     return ev["count"] >= MIN_COUNT and ev["sessions"] >= MIN_SESSIONS and ev["days"] >= MIN_DAYS
 
 
-def mine(sessions=None, chat=None, now=None, settings=None):
-    """Repeated command sequences and requests that qualify, best first. Pure apart from reading the cache."""
+def _aw_rows(since, settings):
+    try:
+        from . import aw_sensor
+        return aw_sensor.slices_since(since) if aw_sensor.enabled(settings) else []
+    except Exception:  # noqa: BLE001 - the sensor is optional
+        return []
+
+
+def mine(sessions=None, chat=None, now=None, settings=None, aw=None):
+    """Repeated command sequences, app sequences and requests that qualify, best first. Pure apart from reading the
+    cache. aw: ActivityWatch rows; read from the store when sessions are not given."""
     now = store_.now_or(now)
     since = now - 30 * 86400
+    if aw is None:
+        aw = _aw_rows(since, settings) if sessions is None else []
     sessions = _sessions(settings) if sessions is None else sessions
     out = []
     for label, occ in command_sequences(sessions).items():
@@ -183,6 +197,14 @@ def mine(sessions=None, chat=None, now=None, settings=None):
             out.append({"key": _key("commands", label), "kind": "commands", "label": label, "evidence": ev,
                         "recipe": pre + [{"shape": x, "class": classify(x)} for x in steps],
                         "value": ev["count"] * len(steps)})
+    if aw:
+        from . import aw_sensor
+        for label, occ in aw_sensor.sequences(aw).items():
+            occ = [o for o in occ if o["ts"] >= since]
+            ev = _evidence(occ) if occ else None
+            if ev and qualifies(ev):
+                out.append({"key": _key("appseq", label), "kind": "app_sequence", "label": label, "evidence": ev,
+                            "recipe": None, "value": ev["count"] * 2})
     turns = [{"ts": t[0], "keywords": t[2], "ws": t[1], "session": d.get("session"), "source": "claude_code"}
              for d in sessions if not d.get("agent") for t in d.get("turns") or [] if t[0] >= since]
     for row in (activity.chat_turns(since) if chat is None else chat):

@@ -10,6 +10,8 @@ Which `/commands` exist, and who answers them (checked 2026-11-20):
                                    /waggle memory       the last changes Waggle made to your vault (vault_git.py)
                                    /waggle memory show <id>      what one change did
                                    /waggle memory restore <id>   undo one change, as a new change
+                                   /waggle focus 45 calculus   start a focus block (waggle/focus.py); `focus stop`
+                                                        ends it, `focus` alone says how it is going
                                    /waggle help         this list
   Hermes only (left on the old path: the gateway answers them, the engine never sees them):
                                    /new /reset /stop /status /model /usage /retry /undo /compress /voice /yolo
@@ -37,6 +39,7 @@ HELP = ("Waggle commands:\n"
         "- /waggle media: what the media folder holds\n"
         "- /waggle media clean: shows what it would clean and asks; \"/waggle media clean confirm\" cleans without asking\n"
         "- /waggle memory: the last changes Waggle made to your notes; \"memory show <id>\" and \"memory restore <id>\"\n"
+        "- /waggle focus 45 calculus: a focus block; \"/waggle focus stop\" ends it, \"/waggle focus\" says how it is going\n"
         "- /waggle help: this list\n"
         "Everything else starting with / (/new, /stop, /model and so on) is answered by Hermes.")
 
@@ -225,6 +228,9 @@ def serve(text, settings=None, chat="", origin="user"):
             return _media(s, sub[1] if len(sub) > 1 else "", chat, origin)
         if word in ("memory", "mem"):
             return _memory(s, sub[1] if len(sub) > 1 else "")
+        if word == "focus":
+            from . import focus
+            return focus.command(sub[1] if len(sub) > 1 else "", s)
         if word in ("help", "?", "commands"):
             return HELP
         return f"I don't know \"/waggle {args[:40]}\".\n\n{HELP}"
