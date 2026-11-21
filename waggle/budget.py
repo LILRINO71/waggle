@@ -251,6 +251,9 @@ def check(model, purpose="", settings=None, now=None, window_used=None, con=None
         st = quota._state()
         if st.get("blocked_until", 0) > now:
             return False, "Claude limit reached", st["blocked_until"]
+        blocked, why7, retry7 = quota.seven_day_block(s, now)  # the owner's week comes first
+        if blocked:
+            return False, why7, retry7
         if window_used is None:
             window_used = quota.window_used_units(s, now, con)
         cap = quota.window_estimate(s, con)

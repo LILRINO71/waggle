@@ -221,6 +221,11 @@ def check_background(s):
     return "ok", detail, ""
 
 
+def check_backup(s):
+    from . import backup
+    return backup.doctor_check(s)
+
+
 def check_context():
     """Hooks alive: recent chat turns exist but none carried the injected context block (context_alive.py)."""
     from . import context_alive
@@ -233,7 +238,8 @@ def run_all(settings=None):
               ("Local AI (Ollama)", lambda: check_ollama(s)), ("Voice", check_voice), ("Claude", check_claude),
               ("Scheduled jobs", check_cron), ("Vault + memory", lambda: check_vault(s)), ("Skills", check_skills),
               ("Builds", check_jobs), ("Startup", check_startup), ("Disk", check_disk), ("Phone calls", check_phone),
-              ("Background work", lambda: check_background(s)), ("Chat context", check_context)]
+              ("Background work", lambda: check_background(s)), ("Chat context", check_context),
+              ("Backups", lambda: check_backup(s))]
     out = []
     for name, fn in checks:
         try:

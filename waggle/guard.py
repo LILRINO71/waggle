@@ -101,6 +101,7 @@ CONFIG_KEYS = (
     "max_selfbuilds_per_day",
     "extra_write_roots", "vault", "jobs_dir", "self_emails",
     "owner_instructions",  # false turns the owner-instruction rule off (policy.owner_rule)
+    "seven_day_stop_at",  # background work defers above this share of the weekly limit (quota/budget)
 )
 CONFIG_KEY = "home:config.json#keys"
 

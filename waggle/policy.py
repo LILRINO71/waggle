@@ -237,6 +237,7 @@ WAGGLE_TOOLS = {
     "portfolio_audit": (ALLOW, _READS),
     "cad_convert": (ALLOW, _NEW_FILE), "doc_to_pdf": (ALLOW, _NEW_FILE), "media_convert": (ALLOW, _NEW_FILE),
     "image_convert": (ALLOW, _NEW_FILE),
+    "ftc_team": (ALLOW, "reads one FTC team's public FTCScout page (read-only)"),
     # Waggle's own memory, skills, routines and agents (agent work goes through this policy again)
     "remember": (ALLOW, _OWN), "project_update": (ALLOW, _OWN), "rate_finding": (ALLOW, _OWN),
     "skill_create": (ALLOW, _OWN), "skill_update": (ALLOW, _OWN), "agent_note": (ALLOW, _OWN),
