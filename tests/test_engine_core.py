@@ -282,8 +282,8 @@ def test_typed_text_in_the_engine_chat_goes_to_the_core(core):
 
 @pytest.mark.parametrize("text,mtype,media,src,why", [
     ("hello", "voice", (), {}, "caption"),
-    ("", "audio", ("C:/in/song.mp3",), {}, "not typed text"),
-    ("look at this", "photo", ("C:/in/p.jpg",), {}, "not typed text"),
+    ("", "audio", ("C:/in/song.mp3",), {}, "no usable file"),  # media routing: tests/test_engine_media.py
+    ("look at this", "photo", ("C:/in/p.jpg",), {}, "no usable file"),
     ("caption", "text", ("C:/in/doc.pdf",), {}, "not typed text"),
     ("/status", "text", (), {}, "command"),
     ("approve ABCD", "text", (), {}, "approval reply"),

@@ -977,58 +977,193 @@ def _start_bridge():
 # {"action": "handled"} only when the core answers 202, so the gateway never starts its own turn. A voice note
 # of the owner's direct chat goes the same way (kind "voice", the downloaded audio file as media): Hermes
 # transcribes AFTER this hook, so the engine transcribes the file itself (waggle/stt.py, the same local model).
-# Everything else (other chats and platforms, groups, topics, music files, photos, documents, /commands,
+# Photos, documents (images included), audio files and stickers go too (kind "photo" / "document" / "audio" /
+# "sticker", settings.engine_media): the media items carry Hermes's cached local file when there is one and
+# Telegram's file_id, name, mime type and size, so the core saves the file into its own per-chat media folder
+# (waggle/media_intake.py: copied, or downloaded through the Bot API's getFile when the local copy is missing).
+# The caption (the event's text without any file content Hermes inlined) is the message text: the owner's own words.
+# Slash commands never reach this hook (Hermes dispatches them first), so pre_gateway_dispatch sends the ones
+# Waggle serves itself (waggle/engine_commands.py: /waggle ...) to the core as kind "command" and drops the
+# event (action "skip"). Everything else (other chats and platforms, groups, topics, videos, other /commands,
 # approval replies, feedback and objective commands), and any failure to reach the core, returns None: the old
 # path answers as before. The admission payload has no message type, so pre_gateway_dispatch records each
 # event's type and media first; a message without that record is never routed.
 
 _seen_types = {}  # message id -> (message type, has media), from pre_gateway_dispatch
 _seen_audio = {}  # message id -> the audio file paths of that event (voice notes)
+_seen_meta = {}  # message id -> {"caption", "items", "emoji"} of a photo / document / audio / sticker event
+MEDIA_TYPES = ("photo", "document", "audio", "sticker")
+MEDIA_ITEMS_MAX = 10
+CAPTION_TEXT_ATTR = "_telegram_caption_text"  # Hermes's name for an event's text without inlined file content
 _seen_lock = threading.Lock()
 SEEN_MAX = 500
 CORE_POST_TIMEOUT_S = 2.0
 
 
+def _source_dict(src):
+    """A message source (a dict, or Hermes's SessionSource) as a plain dict."""
+    if isinstance(src, dict):
+        return src
+    try:
+        return dict(src.to_dict())
+    except Exception:
+        pass
+    out = {}
+    for k in ("platform", "chat_id", "chat_type", "user_id", "thread_id"):
+        v = getattr(src, k, None)
+        out[k] = getattr(v, "value", v)
+    return out
+
+
+def _raw_media(raw):
+    """What Telegram's own message says about its one attachment: {"file_id", "name", "mime", "size", "duration",
+    "emoji"}; empty when there is nothing. Read by attribute name only, so any message-like object works."""
+    if raw is None:
+        return {}
+    try:
+        photo = getattr(raw, "photo", None)
+        if photo:
+            big = list(photo)[-1]  # PhotoSize list: the largest last
+            return {"file_id": getattr(big, "file_id", None), "size": getattr(big, "file_size", None),
+                    "name": "photo.jpg", "mime": "image/jpeg"}
+        sticker = getattr(raw, "sticker", None)
+        if sticker:
+            return {"emoji": getattr(sticker, "emoji", "") or ""}
+        for attr in ("document", "audio"):
+            f = getattr(raw, attr, None)
+            if f:
+                return {"file_id": getattr(f, "file_id", None), "size": getattr(f, "file_size", None),
+                        "name": getattr(f, "file_name", None) or getattr(f, "title", None) or "",
+                        "mime": getattr(f, "mime_type", None) or "", "duration": getattr(f, "duration", None)}
+    except Exception:
+        pass
+    return {}
+
+
+def _media_meta(event, mtype):
+    """The record the admission hook needs for a photo / document / audio / sticker event, else None."""
+    if mtype not in MEDIA_TYPES:
+        return None
+    raw = getattr(event, "raw_message", None)
+    rm = _raw_media(raw)
+    if mtype == "sticker":
+        return {"caption": "", "items": [], "emoji": rm.get("emoji", "")}
+    flags = list(getattr(event, "media_text_inlined", None) or [])
+    attrs = getattr(event, "__dict__", {}) or {}
+    if attrs.get(CAPTION_TEXT_ATTR) is not None:
+        caption = attrs[CAPTION_TEXT_ATTR]  # Hermes's own: the text without the file content it inlined
+    elif any(f is True for f in flags):
+        caption = getattr(raw, "caption", None) or ""  # file content is in event.text: only Telegram's caption is words
+    else:
+        caption = getattr(event, "text", "") or ""
+    types = list(getattr(event, "media_types", None) or [])
+    items = []
+    for i, p in enumerate(str(p) for p in (getattr(event, "media_urls", None) or []) if p):
+        if Path(p).is_file():
+            items.append({"path": p, "kind": mtype, "mime": types[i] if i < len(types) else ""})
+    if len(items) <= 1 and rm.get("file_id"):  # one attachment: Telegram's own details, and a way to download it
+        base = items[0] if items else {"kind": mtype}
+        for k in ("file_id", "size", "name", "duration"):
+            if rm.get(k):
+                base[k] = rm[k]
+        if rm.get("mime") and not base.get("mime"):
+            base["mime"] = rm["mime"]
+        items = [base]
+    return {"caption": str(caption).strip(), "items": items, "emoji": ""}
+
+
 def on_pre_gateway_dispatch(event=None, **kwargs):
-    """Remember what kind of message this is (the admission hook does not get it). Never changes dispatch."""
+    """Remember what kind of message this is (the admission hook does not get it), and hand the owner's /commands
+    that Waggle serves itself to the core. Dispatch is only ever changed for such a command, and only when the
+    core accepted it (the event is then skipped); otherwise Hermes answers as before."""
     try:
         mid = getattr(event, "message_id", None)
         if mid is None:
             return None
         mtype = getattr(getattr(event, "message_type", None), "value", None) or str(getattr(event, "message_type", ""))
         paths = [str(p) for p in (getattr(event, "media_urls", None) or []) if p]
+        meta = _media_meta(event, str(mtype).lower())
         with _seen_lock:
             _seen_types[str(mid)] = (str(mtype).lower(), bool(paths))
             _seen_audio[str(mid)] = paths
+            if meta is not None:
+                _seen_meta[str(mid)] = meta
             while len(_seen_types) > SEEN_MAX:
                 _seen_types.pop(next(iter(_seen_types)))
             while len(_seen_audio) > SEEN_MAX:
                 _seen_audio.pop(next(iter(_seen_audio)))
+            while len(_seen_meta) > SEEN_MAX:
+                _seen_meta.pop(next(iter(_seen_meta)))
+        return _serve_command(event, mid, str(mtype).lower())
     except Exception as e:
         log.warning("waggle pre_gateway_dispatch record failed: %s", e)
     return None
+
+
+def _serve_command(event, mid, mtype):
+    """{"action": "skip"} when the owner's command is one Waggle answers and the core took it, else None."""
+    text = (getattr(event, "text", "") or "").strip()
+    if mtype not in ("text", "command") or not text.startswith("/") or getattr(event, "media_urls", None):
+        return None
+    from waggle import engine_commands
+    if not engine_commands.serves(text):
+        return None
+    s = Settings.load()
+    src = _source_dict(getattr(event, "source", None))
+    platform = str(src.get("platform") or "")
+    why = _owner_dm(platform, src, s)
+    if why:
+        return None
+    ok, detail = post_turn(str(src.get("chat_id")), text, mid, kind="command")
+    events.log("engine_admission", routed="engine" if ok else "old", reason=detail, platform=platform, command=True)
+    return {"action": "skip", "reason": "waggle command answered by the core"} if ok else None
+
+
+def _owner_dm(platform, src, s):
+    """"" when this message comes from the owner's own direct chat on an engine chat, else why not."""
+    if platform != "telegram":
+        return "not telegram"
+    chat_id = str(src.get("chat_id") or "")
+    wanted = {str(c).strip() for c in (getattr(s, "engine_chats", None) or [])}
+    if not chat_id or chat_id not in wanted:
+        return "engine off for this chat"
+    if (src.get("chat_type") or "dm") != "dm" or src.get("thread_id"):
+        return "not the direct chat"
+    if src.get("user_id") and str(src.get("user_id")) != chat_id:
+        return "sender is not the chat's owner"
+    return ""
 
 
 def engine_route(platform, source, message_id, text, settings=None):
     """(route, reason): route "engine" when this message may go to the core's turn engine, else "old"."""
     s = settings or Settings.load()
     src = source or {}
-    if platform != "telegram":
-        return "old", "not telegram"
+    why = _owner_dm(platform, src, s)
+    if why:
+        return "old", why
     chat_id = str(src.get("chat_id") or "")
-    wanted = {str(c).strip() for c in (getattr(s, "engine_chats", None) or [])}
-    if not chat_id or chat_id not in wanted:
-        return "old", "engine off for this chat"
-    if (src.get("chat_type") or "dm") != "dm" or src.get("thread_id"):
-        return "old", "not the direct chat"
-    if src.get("user_id") and str(src.get("user_id")) != chat_id:
-        return "old", "sender is not the chat's owner"
     with _seen_lock:
         seen = _seen_types.pop(str(message_id), None)
         paths = _seen_audio.pop(str(message_id), None) or []
+        meta = _seen_meta.pop(str(message_id), None)
     if seen is None:
         return "old", "message type unknown"
     t = (text or "").strip()
+    if seen[0] in MEDIA_TYPES:
+        if not getattr(s, "engine_media", True):
+            return "old", "media off"
+        if meta is None:
+            return "old", "media details unknown"
+        if seen[0] != "sticker":
+            if not meta["items"]:
+                return "old", "no usable file"
+            if len(meta["items"]) > MEDIA_ITEMS_MAX:
+                return "old", "too many files"
+            if (meta["caption"] or "").startswith("/"):
+                return "old", "command caption"
+        with _seen_lock:
+            _seen_meta[str(message_id)] = meta  # the admission hook takes it from here
+        return "engine", seen[0]
     if seen[0] == "voice":
         if t or len(paths) != 1:
             return "old", "voice note with a caption or several files"
@@ -1077,9 +1212,10 @@ def _engine_owns_approval(chat_key, text):
         return False
 
 
-def post_turn(chat_id, text, message_id, timeout=CORE_POST_TIMEOUT_S, audio=None):
+def post_turn(chat_id, text, message_id, timeout=CORE_POST_TIMEOUT_S, audio=None, kind=None, media=None):
     """POST the message to the core's /turn. (accepted, detail): accepted only on HTTP 202. `audio`: the file
-    of a voice note (sent as kind "voice" with an empty text; the engine transcribes it)."""
+    of a voice note (sent as kind "voice" with an empty text; the engine transcribes it). `kind` and `media`:
+    "photo" / "document" / "audio" / "sticker" with the media items, "command" with the command as text."""
     import urllib.error
     import urllib.request
     from waggle.core import settings as core_settings
@@ -1090,7 +1226,8 @@ def post_turn(chat_id, text, message_id, timeout=CORE_POST_TIMEOUT_S, audio=None
     if not token:
         return False, "empty core token"
     body = {"chat": f"telegram:{chat_id}", "address": str(chat_id), "text": "" if audio else text,
-            "kind": "voice" if audio else "text", "media": [{"path": str(audio), "kind": "audio"}] if audio else [],
+            "kind": kind or ("voice" if audio else "text"),
+            "media": list(media) if media is not None else ([{"path": str(audio), "kind": "audio"}] if audio else []),
             "platform": "telegram", "origin": "user", "dedupe_key": f"telegram:{chat_id}:{message_id}"}
     req = urllib.request.Request(f"http://127.0.0.1:{core_settings.port()}/turn", method="POST",
                                  data=json.dumps(body).encode("utf-8"),
@@ -1126,13 +1263,36 @@ def on_gateway_admission(session_key="", platform="", source=None, message_id=No
                 audio = (_seen_audio.pop(str(message_id), None) or [None])[0]
             if not audio:
                 return None
-        ok, detail = post_turn(str((source or {}).get("chat_id")), text, message_id, audio=audio)
+        chat_id = str((source or {}).get("chat_id"))
+        if why in MEDIA_TYPES:
+            with _seen_lock:
+                meta = _seen_meta.pop(str(message_id), None)
+            if meta is None:
+                return None
+            if why == "sticker":
+                ok, detail = post_turn(chat_id, "", message_id, kind="sticker",
+                                       media=[{"kind": "sticker", "emoji": meta.get("emoji", "")}])
+            else:
+                ok, detail = post_turn(chat_id, meta["caption"], message_id, kind=why, media=meta["items"])
+            events.log("engine_admission", routed="engine" if ok else "old", reason=detail, platform=platform,
+                       ms=round((time.time() - t0) * 1000), media=why)
+            return {"action": "handled"} if ok else None
+        ok, detail = post_turn(chat_id, text, message_id, audio=audio)
         events.log("engine_admission", routed="engine" if ok else "old", reason=detail, platform=platform,
                    ms=round((time.time() - t0) * 1000), voice=bool(audio))
         return {"action": "handled"} if ok else None
     except Exception as e:  # never block a message: the old path answers
         log.warning("waggle admission hook failed: %s", e)
         return None
+
+
+def _waggle_command(raw=""):
+    """/waggle for chats the engine does not serve (the CLI, other chats): the same plain-text answer."""
+    try:
+        from waggle import engine_commands
+        return engine_commands.serve(("/waggle " + str(raw or "")).strip())
+    except Exception:
+        return json.dumps(quota.status(), indent=2)
 
 
 def register(ctx):
@@ -1158,5 +1318,4 @@ def register(ctx):
             ctx.register_hook(hook, fn)
         except Exception as e:  # an older Hermes without these hooks: everything stays on the old path
             log.warning("waggle could not register %s: %s", hook, e)
-    ctx.register_command("waggle", lambda raw: json.dumps(quota.status(), indent=2),
-                         description="Waggle quota and status")
+    ctx.register_command("waggle", _waggle_command, description="Waggle quota and status")

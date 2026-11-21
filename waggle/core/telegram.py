@@ -306,6 +306,58 @@ class BotApi:
         extra = {"disable_notification": "true"} if silent else {}
         return self._send_file("sendDocument", "document", chat_id, path, caption, reply_to, extra)
 
+    def get_file(self, file_id):
+        """getFile: {"file_id", "file_size", "file_path"} (the bot API serves files up to 20 MB)."""
+        return self._call("getFile", {"file_id": str(file_id)})
+
+    def download_file(self, file_path, dest, *, max_bytes=20 * 1024 * 1024):
+        """Download what getFile named to `dest` (written to a .part file first, moved into place when complete).
+        Returns the number of bytes written. A body larger than `max_bytes` is stopped and refused (permanent)."""
+        if self._host == REAL_HOST and not real_api_allowed():
+            raise TelegramError("permanent", "the real Telegram is off limits in a test run or a temporary home")
+        token = self._get_token()
+        path = f"{self._prefix}/file/bot{token}/{str(file_path).lstrip('/')}"
+        dest = Path(dest)
+        part = dest.with_name(dest.name + ".part")
+        conn = self._new_conn()
+        written = 0
+        try:
+            conn.connect()
+            conn.sock.settimeout(self.read_timeout)
+            conn.request("GET", path, headers={"Connection": "close"})
+            resp = conn.getresponse()
+            if resp.status != 200:
+                resp.read(1024)
+                raise TelegramError(_kind_for(resp.status), f"file download answered HTTP {resp.status}",
+                                    status=resp.status)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with part.open("wb") as out:
+                while True:
+                    chunk = resp.read(64 * 1024)
+                    if not chunk:
+                        break
+                    written += len(chunk)
+                    if written > max_bytes:
+                        raise TelegramError("permanent", "the file is larger than the download limit")
+                    out.write(chunk)
+            part.replace(dest)
+            return written
+        except TelegramError:
+            raise
+        except TimeoutError:
+            raise TelegramError("retryable", "file download timed out") from None
+        except (OSError, http.client.HTTPException) as e:
+            raise TelegramError("retryable", redact(f"file download failed: {type(e).__name__}: {e}", token)) from None
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
+            try:
+                part.unlink()
+            except OSError:
+                pass
+
     def get_updates(self, offset=None, *, timeout=25, limit=100):
         payload = {"timeout": int(timeout), "limit": int(limit)}
         if offset is not None:
