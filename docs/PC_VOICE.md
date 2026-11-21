@@ -134,6 +134,39 @@ mid-sentence stops "finished". Synthesised speech has no hesitation in its voice
 switch on here, not that it fails with people: try it with a real voice before changing the default.
 Costs: Silero under 1 ms per 30 ms, Smart Turn about 40 ms per check on one CPU thread.
 
+## Answering faster (21 November, after the first test with a real voice)
+
+You said it was good but a little slow, or that it might not hear you. The log showed the cause of most of the wait:
+
+- **The judge never answered.** It used `local_model` (qwen3.6, 22 GB). Ollama needed about 20 s to load it next to the
+  other models and then evicted it again when the notes search needed the embedder, so each judgement hit the 3 s
+  limit and "(fallback)" sent the words as they were, 3 s late. Now the judge is `gemma4:latest` (49/50 on
+  `bench/voice_intent.jsonl`, the same as qwen3.6; qwen3:8b 48/50; qwen3:4b only 41/50; median 0.2 s, about 3 GB), it
+  waits at most 1.5 s, and after one failure it is skipped for a minute (the words are sent at once) while the model
+  is loaded again in the background. It is also loaded when the PC voice starts.
+- **The recogniser in the core unloads after 3 idle minutes** and loads again in 3-12 s. The PC voice now sends it a
+  quarter second of silence (`/voice/transcribe`) as soon as speech has begun in the room or you press the hotkey, so it
+  is loaded when your sentence ends. Nothing new is stored or logged.
+- **The first message of a new day** starts a fresh Claude session (22 tools, the transcript): 5-18 s. The core's
+  5-minute reap timer now starts that session after 4 am, while nobody waits (`chat_session.rollover`; the
+  transcript is read again when your first message arrives).
+- **Voice turns give the notes search 0.4 s instead of 0.8 s** before the model is asked without it.
+
+Every voice turn writes one line to `pcvoice.log` (never the words), seconds per stage:
+
+`turn timing: end=1.23s stt=0.31s judge=0.20s context=0.80s first_words=3.10s first_audio=3.90s total=5.40s (...)`
+
+`end` is the silence waited to be sure you had finished, `stt` and `judge` are this process asking the core and the
+judge (a dash: not done this turn, e.g. the hotkey is never judged), `context` is the core building the notes block,
+`first_words` and `first_audio` count from sending the request, `total` is from the end of your last word to the first
+sound. In brackets: where the judge's answer came from, the core's own `core_stt`, `model_first` (message to the
+model's first words), and how loud you were (`rms`, `peak`, `floor`), so "can't hear me" can be checked: a peak near
+the floor means the microphone, not the software. A failed judge also says why in the "heard in a conversation window"
+line (for example `fallback: TimeoutError: timed out`).
+
+Not changed: `pc_voice_endturn` stays `silence` and `pc_voice_end_silence_s` stays 1.2 s (the biggest fixed wait; the
+measurements above show shorter silences cut thinking pauses), and `pc_voice_min_level` is untouched.
+
 ## Switching things off
 
 
@@ -149,8 +182,8 @@ All settings go in `config.json` in the Waggle home. They are read when the PC v
 | Only the judge, echo and stop (keep the streaming) | `"pc_voice_judge": false` | on |
 | Only the sentence-by-sentence speech | `"pc_voice_stream": false` | on |
 | Follow-up window after a question | `"pc_voice_question_s": 10` | 10 s |
-| Which local model judges | `"pc_voice_judge_model": "gemma4"` (empty: `local_model`) | empty |
-| How long the judge may take, and how sure it must be | `"pc_voice_judge_timeout_s": 3`, `"pc_voice_judge_min": 0.5` | 3 s, 0.5 |
+| Which local model judges | `"pc_voice_judge_model": "qwen3:8b"` (empty: `gemma4:latest`) | empty |
+| How long the judge may take, and how sure it must be | `"pc_voice_judge_timeout_s": 1.5`, `"pc_voice_judge_min": 0.5` | 1.5 s, 0.5 |
 | Silence that ends what you say | `"pc_voice_end_silence_s": 1.2` | 1.2 s |
 | What counts as "away" | `"pc_presence_idle_s": 300` | 5 minutes without input |
 | How loud sound must be to count as speech | `"pc_voice_min_level": 120` | 120 (frame RMS of 16-bit samples) |
@@ -182,5 +215,6 @@ All settings go in `config.json` in the Waggle home. They are read when the PC v
 | Level | a 0.5 s test tone at 5% of full scale on the speakers reaches the microphone at about 3%; quiet recordings are raised before recognition (at most 30x); a request fed at 8% of full scale was recognised word for word |
 | Wake word, 10 min | 5 min of the room as it was + 5 min of 31 played sentences without the name (including "Wiggle the cable" and "the waggle dance"): 45 utterances, 41 transcribed (0.32 s each), **0 false triggers**; a played "Hey Waggle, what time is it?" triggered |
 | Wake word, cost | PC voice 0.8% of one CPU core, transcribing 1.7% of one core: 0.16% of the whole machine; GPU 0-0.2% on average (10 s samples) |
+| Owner's first real test (21 Nov 09:48) | turn 1: 18 s from "heard" to the answer, turn 2: 4 s; both "(fallback)". Ollama's log shows the judge's 22 GB model loading for 20 s and being evicted; the notes search's embedder waited 9.7 s behind it. Not yet re-measured after the changes above |
 | End of speech to Waggle's voice | Two real Haiku turns: **17.7 s** (1.2 s of silence to end the request, 12.0 s recognition because the recogniser was loading in a fresh process on a busy machine, 3.7 s Claude, 0.6 s speech) and **24.5 s** (4.7 s recognition, about 8.6 s Claude, 9.7 s speech while the speech server was busy with another program). Warm, the parts measured separately add up to about 6-11 s: 1.2 s silence + 0.3 s recognition + Claude + 0.6 s speech |
 | Screen | `tools/window_probe.py` around three full cycles (65 process starts): 0 windows, 0 focus changes, 0 busy cursors from these processes |

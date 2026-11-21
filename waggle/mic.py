@@ -200,6 +200,11 @@ class Endpointer:
                 return True
         return False
 
+    @property
+    def silence_s(self):
+        """The silence at the end of what was heard so far: how long the endpointer waited to be sure."""
+        return self._silent_ms / 1000.0
+
     def speech_rms(self):
         return math.sqrt(self._sum_sq / self._n) if self._n else 0.0
 

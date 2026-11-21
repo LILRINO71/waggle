@@ -83,7 +83,9 @@ def reap(payload=None):
     wanted = chat_engine.engine_chats()
     keep = {r["chat"] for r in chat_store.chats_with_address() if r.get("address") in wanted}
     keep |= chat_engine.engine_chat_keys()  # also an engine chat that has no row yet
-    return {"stopped": chat_engine.pool().reap(keep=keep)}
+    stopped = chat_engine.pool().reap(keep=keep)
+    started = chat_engine.pool().rollover(keep=keep)  # after 4 am: today's session is ready before the first message
+    return {"stopped": stopped, "rolled": started}
 
 
 def prewarm(payload=None):

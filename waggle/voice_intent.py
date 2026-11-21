@@ -32,7 +32,13 @@ import urllib.request
 ECHO_WINDOW_S = 60.0  # what Waggle said within this long ago can come back through the microphone
 ECHO_MIN_WORDS = 3
 ECHO_THRESHOLD = 0.75
-JUDGE_TIMEOUT_S = 3.0
+# A warm small model answers in about 0.2 s; a slower one is as good as absent, so it is not waited for. The model
+# that was here before (settings.local_model, 22 GB) took 20 s to load next to the other Ollama models, so the 3 s
+# wait ended in the fallback on 2026-11-21 while the owner waited. gemma4 scored 49/50 on bench/voice_intent.jsonl
+# (qwen3:8b 48, qwen3:4b 41), median 0.2 s, 3 GB loaded.
+DEFAULT_JUDGE_MODEL = "gemma4:latest"
+JUDGE_TIMEOUT_S = 1.5
+JUDGE_BACKOFF_S = 60.0  # after a failed judgement the judge is skipped for this long
 JUDGE_MIN_CONFIDENCE = 0.5
 QUESTION_MIN_CONFIDENCE = 0.3  # Waggle just asked something: an answer is very likely meant for it
 STOP_MIN_CONFIDENCE = 0.6
@@ -177,6 +183,23 @@ def warm(model, *, url="http://127.0.0.1:11434", timeout=60.0):
         return True
     except (OSError, ValueError, urllib.error.URLError):
         return False
+
+
+class Backoff:
+    """After the judge fails (down, still loading, too slow) it is skipped for a while, so a judge that is not
+    there is never waited for twice in a row. A good answer ends the backoff."""
+
+    def __init__(self, seconds=JUDGE_BACKOFF_S, clock=time.monotonic):
+        self.seconds, self.clock, self.until = seconds, clock, 0.0
+
+    def active(self):
+        return self.clock() < self.until
+
+    def failed(self):
+        self.until = self.clock() + self.seconds
+
+    def worked(self):
+        self.until = 0.0
 
 
 class Verdict:

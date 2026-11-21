@@ -294,6 +294,7 @@ class ChatSession:
         self.lock = threading.Lock()
         self.last_used = clock()
         self._seed = ""  # transcript to put in front of the first message of a fresh session
+        self._reseed = False  # started ahead of the day's first message: read the transcript again when it comes
         self._fresh = False
         self.origin = "user"  # where this chat's messages come from (set per turn by the engine)
         self._proc_origin = None
@@ -365,6 +366,30 @@ class ChatSession:
             except Exception as e:
                 return {"error": f"{type(e).__name__}: {e}"[:300]}
             return {"started": True, "resumed": resumed}
+
+    def rollover(self):
+        """A new day has begun (DAY_STARTS_HOUR) and this chat's process is from an earlier one, or is gone: start
+        today's fresh session now, while nobody waits, so the first message of the day does not pay the cold start
+        (a new session is seeded with the transcript and 22 tools start: 5-18 s). Skipped while a turn is running.
+        Returns True when it started one."""
+        if session_day(self.chat) in ("", day_key()) or not self.lock.acquire(blocking=False):
+            return False
+        try:
+            if self.alive():
+                self.stop(grace=3.0)
+            self.last_used = self.clock()
+            started = "error" not in self._start_quietly()
+            self._reseed = started
+            return started
+        finally:
+            self.lock.release()
+
+    def _start_quietly(self):
+        try:
+            self._start(allow_resume=True)
+            return {}
+        except Exception as e:  # noqa: BLE001  (the first message starts it the ordinary way)
+            return {"error": f"{type(e).__name__}: {e}"[:300]}
 
     # -- one turn
     def turn(self, text, on_text=None, on_tool=None, timeout=None, origin=None):
@@ -438,6 +463,9 @@ class ChatSession:
     def _run(self, text, on_text, on_tool, t0, timeout, res):
         parser = claude_cli.StreamParser(on_text=on_text, on_tool=on_tool, clock=self.clock)
         msg = text
+        if self._seed and self._reseed and self.transcript:
+            self._seed = self.transcript(self.chat) or self._seed
+        self._reseed = False
         if self._seed:
             msg = f"<earlier_conversation>\n{self._seed}\n</earlier_conversation>\n\n{text}"
         try:
@@ -514,6 +542,13 @@ class SessionPool:
                 finally:
                     sess.lock.release()
         return stopped
+
+    def rollover(self, keep=()):
+        """Start the new day's session of every chat in `keep` (the owner's engine chats) whose process or session
+        is from an earlier day. Returns the chats that were started."""
+        with self._lock:
+            items = [(c, s) for c, s in self.sessions.items() if c in keep]
+        return [c for c, s in items if s.rollover()]
 
     def stop_all(self, grace=3.0):
         for sess in list(self.sessions.values()):

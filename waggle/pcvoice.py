@@ -51,8 +51,10 @@ Settings (config.json in the Waggle home, all optional): pc_voice_hotkey ("ctrl+
 (true), pc_voice_wake_names (["Waggle"]), pc_voice_followup_s (6), pc_voice_end_silence_s (1.2),
 pc_voice_max_s (30), pc_voice_start_timeout_s (6), pc_voice_min_level (120, the lowest frame RMS that can start
 speech), pc_voice_speak_messages (true), pc_voice_smart (true: the master switch of the two paragraphs above),
-pc_voice_judge (true), pc_voice_stream (true), pc_voice_question_s (10), pc_voice_judge_model ("": settings.local_model),
-pc_voice_judge_timeout_s (3), pc_voice_judge_min (0.5, how sure the judge must be that it was said to Waggle).
+pc_voice_judge (true), pc_voice_stream (true), pc_voice_question_s (10), pc_voice_judge_model ("": gemma4:latest),
+pc_voice_judge_timeout_s (1.5), pc_voice_judge_min (0.5, how sure the judge must be that it was said to Waggle).
+A failed judgement skips the judge for a minute (the words are sent at once) and loads its model again in the background.
+Every turn logs one "turn timing:" line (seconds per stage, never the words); see docs/PC_VOICE.md.
 
 Hearing (waggle/vad.py, two small ONNX models in <home>/models, fetched with `python -m waggle.vad fetch`):
   * pc_voice_vad ("silero", the default | "energy"): which gate finds speech. Silero VAD judges the sound itself, so
@@ -118,6 +120,7 @@ WAKE_END_SILENCE_S, WAKE_MAX_S, WAKE_MIN_SPEECH_MS = 0.8, 10.0, 300
 MAX_TURNS = 12
 SPOOL_MAX_AGE_S = 180.0
 REQUEST_TIMEOUT_S = 120.0
+STT_WARM_S = 120.0  # the core unloads its recogniser after 180 idle seconds: ask for it again after this long
 
 LINES = {
     "core_down": "I can't reach Waggle's core right now, sir. It may be restarting.",
@@ -278,15 +281,39 @@ class Hotkey:
 
 # ---- talking to the core -----------------------------------------------------------------------------------
 
+def format_timing(stages, extra=None):
+    """The one log line per voice turn: seconds per stage in the order they happen (a dash: not measured this
+    turn). end = silence waited to be sure you had finished; stt, judge: this process asking the core and the local
+    model; context: the core building the notes block; first_words, first_audio: from sending the request;
+    total: the end of your last word to the first sound of the answer."""
+    def sec(v):
+        return "-" if v is None else f"{v:.2f}s"
+    out = "turn timing: " + " ".join(f"{k}={sec(stages.get(k))}" for k in
+                                     ("end", "stt", "judge", "context", "first_words", "first_audio", "total"))
+    extra = {k: v for k, v in (extra or {}).items() if v not in (None, "")}
+    if extra:
+        out += " (" + " ".join(f"{k}={v}" for k, v in extra.items()) + ")"
+    return out
+
+
 def ends_in_question(text):
     """Does what Waggle said end in a question (so the owner's next words are probably the answer)?"""
     return str(text or "").rstrip().rstrip("\"')]}*_ \u201d\u2019").endswith("?")
 
 
+def core_timings(raw):
+    """The seconds the core reports for a turn (numbers only, whatever else it sends is dropped)."""
+    if not isinstance(raw, dict):
+        return {}
+    return {k: round(float(v), 2) for k, v in raw.items()
+            if isinstance(k, str) and isinstance(v, (int, float)) and not isinstance(v, bool)}
+
+
 class Reply:
-    def __init__(self, status, *, wav=None, spoken="", http=0, error="", line="", streamed=0):
+    def __init__(self, status, *, wav=None, spoken="", http=0, error="", line="", streamed=0, timings=None):
         self.status, self.wav, self.spoken, self.http, self.error, self.line = status, wav, spoken, http, error, line
         self.streamed = streamed  # sentences handed to the speaker while the answer was still coming
+        self.timings = timings or {}  # what the core measured: stt_s, context_s, model_first_s (seconds)
 
     def __repr__(self):
         return f"Reply({self.status!r}, http={self.http}, wav={bool(self.wav)}, line={self.line!r})"
@@ -398,7 +425,18 @@ class CoreClient:
             conn.close()
         if final is None:
             return Reply("failed", error="the stream ended early", streamed=count, line="" if count else "failed")
-        return Reply(str(final.get("status") or "done"), spoken=str(final.get("spoken") or ""), http=200, streamed=count)
+        return Reply(str(final.get("status") or "done"), spoken=str(final.get("spoken") or ""), http=200, streamed=count,
+                     timings=core_timings(final.get("timings")))
+
+    def warm_stt(self):
+        """Have the core load its recogniser now: a quarter second of silence goes through /voice/transcribe (the
+        core unloads the recogniser after 3 idle minutes and a cold load takes seconds). True when it answered."""
+        try:
+            code, _, _ = self._post("/voice/transcribe", mic.wav_bytes(bytes(2) * (mic.RATE // 4)), "audio/wav",
+                                    timeout=60)
+        except (OSError, http.client.HTTPException):
+            return False
+        return code == 200
 
     def transcribe(self, pcm):
         """{"text", "ok", ...} or {"error"}; the words are for the caller only (never logged here)."""
@@ -473,12 +511,15 @@ class SentenceSpeaker:
     def __init__(self, sounds, spk, log=None):
         self.sounds, self.spk, self.log = sounds, spk, log
         self.items, self.errors = [], []
+        self.first_at = None  # time.monotonic() when the first sentence arrived
         self._q = queue.Queue()
         self._cancelled = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True, name="waggle-pcvoice-sentences")
         self._thread.start()
 
     def add(self, text):
+        if self.first_at is None:
+            self.first_at = time.monotonic()
         if self.log is not None:
             self.log.add(text)
         self._q.put(text)
@@ -545,6 +586,9 @@ class PcVoice:
         self.asked = False  # Waggle's last words were a question
         self._sink = None
         self._warmed = 0.0
+        self._judge_off = voice_intent.Backoff()  # a failed judgement: skip the judge for a minute, never wait twice
+        self._stt_used = 0.0  # when the core's recogniser was last known to be loaded
+        self._turn = {}  # this turn's stage times, logged once the answer has started (see _log_turn)
         self._gate_notes = set()
         self.stats.update(ignored=0, echoes=0, stops=0, judged=0, judge_fallbacks=0, streamed_turns=0)
 
@@ -568,21 +612,48 @@ class PcVoice:
         from waggle.config import Settings
         s = Settings.load()
         recent = self.spoken.recent()
-        return voice_intent.decide(
+        skip = self._judge_off.active()
+        d = voice_intent.decide(
             text, spoken_texts=recent, last_spoken=recent[-1] if recent else "", asked_question=asked_question,
-            model=setting("pc_voice_judge_model") or s.local_model, url=s.ollama_url,
+            model=self.judge_model(), url=s.ollama_url, use_model=not skip,
             timeout=setting("pc_voice_judge_timeout_s"), min_confidence=setting("pc_voice_judge_min"))
+        if d.source == "fallback" and d.verdict is not None:  # it was asked and did not answer in time
+            self._judge_off.failed()
+            self._warm_judge(force=True)  # load it properly in the background (a cut-off request aborts a load)
+        elif d.source == "model":
+            self._judge_off.worked()
+        elif skip and d.source == "fallback":
+            d.reason = "the judge failed a moment ago: skipped"
+        return d
 
-    def _warm_judge(self):
-        """A conversation has begun: load the judge's model in the background (at most once in ten minutes)."""
-        if not self.judging() or time.monotonic() - self._warmed < 600 or self.decide != self._decide:
+    def judge_model(self):
+        return setting("pc_voice_judge_model") or voice_intent.DEFAULT_JUDGE_MODEL
+
+    def _warm_judge(self, force=False):
+        """Load the judge's model in the background: when the process starts, and when a conversation begins (at
+        most once in ten minutes), so the first judgement does not wait for a cold model."""
+        if not self.judging() or self.decide != self._decide:
+            return
+        if not force and time.monotonic() - self._warmed < 600:
             return
         self._warmed = time.monotonic()
         from waggle.config import Settings
         s = Settings.load()
-        model = setting("pc_voice_judge_model") or s.local_model
-        threading.Thread(target=voice_intent.warm, args=(model,), kwargs={"url": s.ollama_url}, daemon=True,
-                         name="waggle-pcvoice-warm").start()
+        threading.Thread(target=voice_intent.warm, args=(self.judge_model(),), kwargs={"url": s.ollama_url},
+                         daemon=True, name="waggle-pcvoice-warm").start()
+
+    def _warm_stt(self, force=False):
+        """Have the core load its speech recogniser in the background (it unloads after 3 idle minutes; a cold load
+        took 3-12 s of the first turn). Called when speech has begun or a conversation starts."""
+        warm = getattr(self.client, "warm_stt", None)
+        if not callable(warm) or (not force and time.monotonic() - self._stt_used < STT_WARM_S):
+            return
+        self._stt_used = time.monotonic()
+        threading.Thread(target=warm, daemon=True, name="waggle-pcvoice-stt-warm").start()
+
+    def warm_models(self):
+        """At start: the judge's model (the recogniser is loaded when speech begins)."""
+        self._warm_judge(force=True)
 
     def _event(self, name, **info):
         if self.on_event:
@@ -663,7 +734,7 @@ class PcVoice:
         ep = self.new_endpointer(end_silence_s or setting("pc_voice_end_silence_s"), max_s or setting("pc_voice_max_s"))
         t0 = time.monotonic()
         info = {"ended_by": "", "speech_ms": 0}
-        last_loud = None
+        last_loud = ended_at = end_s = None
         while not self.stopping.is_set():
             if self._pressed():
                 info["ended_by"] = "hotkey"
@@ -681,12 +752,14 @@ class PcVoice:
                 self._event("speech_start")
             if r == "end":
                 info["ended_by"] = ep.ended_by or "silence"
+                ended_at, end_s = time.monotonic(), round(ep.silence_s, 2)
                 break
             if not ep.in_speech and time.monotonic() - t0 > start_timeout_s:
                 info["ended_by"] = "no speech"
                 break
         info.update(speech_ms=ep.speech_ms, floor=round(ep.floor(), 1), peak=ep.peak,
-                    speech_rms=round(ep.speech_rms(), 1), last_loud=last_loud)
+                    speech_rms=round(ep.speech_rms(), 1), last_loud=last_loud, ended_at=ended_at,
+                    end_s=end_s)
         if not ep.in_speech:
             return None, info
         self._event("speech_end", last_loud=last_loud)
@@ -711,10 +784,16 @@ class PcVoice:
                     self.tone("stop")
                 log.info("conversation ends: %s", info["ended_by"])
                 return None
+            self._turn = {"end_s": info.get("end_s"), "ended_at": info.get("ended_at") or time.monotonic(),
+                          "speech_ms": info.get("speech_ms"), "rms": info.get("speech_rms"), "peak": info.get("peak"),
+                          "floor": info.get("floor")}
             if not judged:
                 self.tone("stop", wait=False)
                 return ("audio", pcm)
+            t_stt = time.monotonic()
             r = self.client.transcribe(pcm)
+            self._turn["stt_s"] = time.monotonic() - t_stt
+            self._stt_used = time.monotonic()
             self.stats["transcribed"] += 1
             words = (r.get("text") or "").strip()
             if r.get("error"):  # cannot judge what cannot be read: send the audio, as before
@@ -726,11 +805,16 @@ class PcVoice:
                 if time.monotonic() >= deadline:
                     return None
                 continue
+            t_judge = time.monotonic()
             d = self.decide(words, asked_question=self.asked)
+            self._turn["judge_s"] = time.monotonic() - t_judge
+            self._turn["judge"] = d.source
             self.stats["judged"] += 1
             if d.source == "fallback":
                 self.stats["judge_fallbacks"] += 1
-            log.info("heard in a conversation window: %s (%s)", d.action, d.source)  # never the words
+            # never the words; a fallback says why (a timeout, no such model, the judge skipped)
+            log.info("heard in a conversation window: %s (%s%s)", d.action, d.source,
+                     f": {d.reason}" if d.source == "fallback" and d.reason else "")
             if d.action == "send":
                 self.tone("stop", wait=False)
                 return ("audio", pcm)
@@ -783,7 +867,9 @@ class PcVoice:
                 if mode == "text":
                     request = ("text", text)
                 else:
+                    self._turn = {}
                     if mode == "hotkey":
+                        self._warm_stt()
                         self.tone("start")
                     src.flush()
                     request = self._hear(src, mode)
@@ -793,7 +879,9 @@ class PcVoice:
                         self._stopped()
                         return
                 self._event("request_sent")
+                self._turn["sent_at"] = time.monotonic()
                 reply, sink = self._ask(request)
+                self._turn["reply_at"] = time.monotonic()
                 del request
                 self.stats["turns"] += 1
                 self._event("reply", status=reply.status, http=reply.http)
@@ -821,6 +909,7 @@ class PcVoice:
                     item = self.spk.say(reply.wav, delete=True, label="reply") if reply.wav else self.say_line(
                         reply.line or "failed")
                 cut = self.wait_speech(item)
+                self._log_turn(reply, sink, item)
                 if cut:
                     mode = "hotkey"
                     continue
@@ -833,6 +922,27 @@ class PcVoice:
             self.in_conversation = False
             self._sink = None
 
+    def _log_turn(self, reply, sink, item):
+        """One INFO line with the seconds each stage of this voice turn took (never the words)."""
+        t, self._turn = self._turn, {}
+        try:
+            first = (sink.items[0] if sink is not None and sink.items else item)
+            audio_at = first.started if first is not None and first.label == "reply" else None
+            sent = t.get("sent_at")
+            words_at = (sink.first_at if sink is not None else t.get("reply_at"))
+            end_s = t.get("end_s")
+            f = {"end": end_s, "stt": t.get("stt_s"), "judge": t.get("judge_s"),
+                 "context": reply.timings.get("context_s"),
+                 "first_words": words_at - sent if words_at and sent else None,
+                 "first_audio": audio_at - sent if audio_at and sent else None,
+                 "total": (audio_at - t["ended_at"] + (end_s or 0.0)) if audio_at and t.get("ended_at") else None}
+            extra = {"judge": t.get("judge"), "core_stt": reply.timings.get("stt_s"),
+                     "model_first": reply.timings.get("model_first_s"), "speech_ms": t.get("speech_ms"),
+                     "rms": t.get("rms"), "peak": t.get("peak"), "floor": t.get("floor"), "status": reply.status}
+            log.info("%s", format_timing(f, extra))
+        except Exception as e:  # noqa: BLE001  (a timing line must never break a turn)
+            log.debug("turn timing not logged: %s", e)
+
     # -- the wake word
     def heard(self, src, ep):
         """An utterance ended while idle: transcribe it, act on a wake name, drop everything else."""
@@ -843,6 +953,10 @@ class PcVoice:
         t0 = time.monotonic()
         r = self.client.transcribe(pcm)
         del pcm
+        self._stt_used = time.monotonic()
+        self._turn = {"end_s": round(ep.silence_s, 2), "ended_at": t0,
+                      "stt_s": time.monotonic() - t0, "speech_ms": ep.speech_ms, "rms": round(ep.speech_rms(), 1),
+                      "peak": ep.peak, "floor": round(ep.floor(), 1)}
         self.stats["transcribed"] += 1
         self.stats["transcribe_s"] = round(self.stats["transcribe_s"] + time.monotonic() - t0, 2)
         if r.get("error"):
@@ -937,7 +1051,10 @@ class PcVoice:
                     if f is None:
                         continue
                     ep = ep or self.new_endpointer(WAKE_END_SILENCE_S, WAKE_MAX_S)
-                    if ep.feed(f) == "end":
+                    r = ep.feed(f)
+                    if ep.in_speech and ep.speech_ms >= WAKE_MIN_SPEECH_MS:
+                        self._warm_stt()  # real speech is coming: have the recogniser loaded when it ends
+                    if r == "end":
                         done, ep = ep, None
                         self.heard(src, done)
                         src.flush()
@@ -1028,6 +1145,7 @@ def cmd_run(args):
             pv._error(str(e))
     threading.Thread(target=sounds.prepare, daemon=True, name="waggle-pcvoice-lines").start()
     threading.Thread(target=pv.warm_hearing, daemon=True, name="waggle-pcvoice-hearing").start()
+    threading.Thread(target=pv.warm_models, daemon=True, name="waggle-pcvoice-models").start()
     stop_file = home() / STOP_FILE
     stop_file.unlink(missing_ok=True)
     if args.seconds:
