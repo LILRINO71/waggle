@@ -64,7 +64,7 @@ def _status(settings):
             line += f", resets about {_when(q['resets_at'])}"
         lines.append(line + (f" ({q['source']})" if q.get("source") else ""))
         lines.append(f"- Waggle's own use this window: {q['waggle_units']:g} units")
-        if q.get("blocked_until"):
+        if (q.get("blocked_until") or 0) > time.time():  # a block that has ended is history, not status
             lines.append(f"- Claude is blocked until about {_when(q['blocked_until'])}; the small local model answers")
     except Exception as e:
         lines.append(f"- usage: could not be read ({type(e).__name__})")

@@ -25,7 +25,8 @@ MAILS = [
  ("high", "From: Mom\nSubject: pick up\n\nCan you pick up your sister from practice at 6 today? Text me back.", "2026-11-20"),
  ("skip", "From: Chase <no-reply@chase.com>\nSubject: Your monthly statement is ready\n\nYour statement is available online.", ""),
 ]
-CHAT = ["In two sentences: why does a mixture-of-experts model run fast on a small GPU?",
+CHAT = ["What should I wear if it is 40 F and raining? One short sentence.",
+        "In two sentences: why does a mixture-of-experts model run fast on a small GPU?",
         "I have a chemistry lab report due Tuesday and robotics Saturday. Give me a 3-step plan for this weekend."]
 
 def call(model, messages, fmt=None):
