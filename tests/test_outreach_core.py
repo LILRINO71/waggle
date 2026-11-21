@@ -172,7 +172,7 @@ def test_late_call_becomes_a_text_that_says_so(s, twilio):
         call.call_sender(row, opener=twilio["opener"], now=at(9))
     assert e.value.permanent and twilio["posts"] == 0
     late = rows()[1]
-    assert late["kind"] == "text" and "late: the PC was off" in late["body"] and "07:00" in late["body"]
+    assert late["kind"] == "text" and "late: the PC was off" in late["body"] and "7:00 AM" in late["body"]
 
 
 # ---- readiness only from evidence ----------------------------------------------------------------------------
@@ -260,11 +260,11 @@ def test_reminder_that_fires_late_says_so(s):
     from waggle.core import timers
     tick.register_jobs()
     fid = followups.add(at(7, day=20), "Charge the batteries", now=at(12))
-    timers.catch_up(at(9, 30, day=20))  # the PC was off at 07:00
+    timers.catch_up(at(9, 30, day=20))  # the PC was off at 7:00 AM
     done = run_jobs("outreach.reminder", at(9, 30, day=20))
     assert len(done) == 1 and done[0]["payload"]["late_s"] == 2.5 * 3600
     body = rows()[0]["body"]
-    assert body.startswith("⏰ Charge the batteries") and "late: the PC was off at 07:00" in body
+    assert body.startswith("⏰ Charge the batteries") and "late: the PC was off at 7:00 AM" in body
     assert followups.get(fid)["status"] == "sent"
 
 
@@ -285,11 +285,11 @@ def test_scheduled_call_on_time_queues_a_call_and_late_becomes_a_text(s):
     call.schedule_at(at(7, day=20), "wake up for the meet")
     timers.fire_due(at(13))
     run_jobs("outreach.call", at(13))
-    timers.catch_up(at(9, day=20))  # PC off at 07:00
+    timers.catch_up(at(9, day=20))  # PC off at 7:00 AM
     run_jobs("outreach.call", at(9, day=20))
     got = [(r["kind"], r["origin"], r["body"]) for r in rows()]
     assert got[0] == ("call", "asked", "the meet starts soon")
-    assert got[1][0] == "text" and "late: the PC was off, so I didn't call at 07:00" in got[1][2]
+    assert got[1][0] == "text" and "late: the PC was off, so I didn't call at 7:00 AM" in got[1][2]
     assert len(got) == 2
 
 

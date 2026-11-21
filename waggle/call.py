@@ -251,7 +251,7 @@ def _fallback(row, why, *, late=False):
     kw = dict(origin=origin, chat=chat, topic=meta.get("topic", ""), decision_id=meta.get("decision_id"))
     if late:
         at = dt.datetime.fromtimestamp(meta.get("scheduled_ts") or row.get("created") or time.time())
-        return [notify.deliver("text", f"📞 late: the PC was off, so I didn't call at {at:%H:%M}. {text}".strip(),
+        return [notify.deliver("text", f"📞 late: the PC was off, so I didn't call at {at:%#I:%M %p}. {text}".strip(),
                                asked=True, ref=f"callfb:{rid}:late", **kw)]
     return [notify.deliver("push", text, title="Waggle tried to call you", urgent=True, ref=f"callfb:{rid}:push",
                            **kw),
@@ -370,7 +370,7 @@ def call_due(payload, *, settings=None):
     cause = payload.get("origin") or ""
     if float(payload.get("late_s") or 0) > CALL_MAX_LATE_S:
         at = dt.datetime.fromtimestamp(payload.get("scheduled_ts") or time.time())
-        row = notify.deliver("text", f"📞 late: the PC was off, so I didn't call at {at:%H:%M}. {msg}", asked=True,
+        row = notify.deliver("text", f"📞 late: the PC was off, so I didn't call at {at:%#I:%M %p}. {msg}", asked=True,
                              origin="asked", ref=ref, source=cause, settings=s)
         return {"late": True, "outbox": row["id"]}
     row = notify.deliver("call", msg, urgent=True, asked=True, origin="asked", ref=ref, source=cause, settings=s)

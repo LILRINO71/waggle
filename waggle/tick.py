@@ -198,7 +198,7 @@ def reminder_due(payload, *, settings=None, now=None):
     text = f"⏰ {item['what']}"
     if _late(payload):
         at = dt.datetime.fromtimestamp(payload.get("scheduled_ts") or item["due"])
-        text += f"\n(late: the PC was off at {at:%H:%M}, when this was due)"
+        text += f"\n(late: the PC was off at {at:%#I:%M %p}, when this was due)"
     cause = item.get("origin") or "user"
     row = notify.deliver("text", text, asked=True, origin="reminder", ref=item["id"], topic=f"reminder:{item['id']}",
                          chat=item.get("chat") or "", source=None if cause == "user" else cause, settings=s, now=now)

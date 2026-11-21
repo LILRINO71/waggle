@@ -188,7 +188,8 @@ def build_context(chat, text, voice=False, settings=None, since=None):
     if voice:
         from .voice_turn import VOICE_HINT
         parts.append(VOICE_HINT + "\n" + VOICE_STYLE)
-    parts.append(f"Now: {time.strftime('%A %Y-%m-%d %H:%M')} (user's local time).")
+    parts.append(f"Now: {time.strftime('%A %Y-%m-%d %#I:%M %p')} (user's local time). Write every time for the user "
+                 "in 12-hour form with AM or PM (5:44 PM), never in 24-hour form.")
     return "<waggle_context>\n" + "\n\n".join(parts) + "\n</waggle_context>"
 
 

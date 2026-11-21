@@ -214,7 +214,7 @@ def when_ts(args, now=None):
 
 def _local(ts):
     import datetime as dt
-    return dt.datetime.fromtimestamp(ts).strftime("%a %Y-%m-%d %H:%M")
+    return dt.datetime.fromtimestamp(ts).strftime("%a %Y-%m-%d %#I:%M %p")
 
 
 def t_remind_me(args):

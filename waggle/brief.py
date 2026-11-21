@@ -50,7 +50,7 @@ def facts(settings=None, now=None):
         ups = watchers.upcoming_items(s, day0, day0 + dt.timedelta(days=1))
         if ups:
             out.append("Dated items today: " + "; ".join(
-                (f"{i['when']:%H:%M} " if i["has_time"] else "") + i["text"][:80] for i in ups[:5]))
+                (f"{i['when']:%#I:%M %p} " if i["has_time"] else "") + i["text"][:80] for i in ups[:5]))
     except Exception:  # noqa: BLE001
         pass
     cal = calendar_today(s)
@@ -171,7 +171,7 @@ def evening_note(settings=None, now=None, activity=None):
     after = tomorrow + dt.timedelta(days=1)
     open_ = [f"check in: {i['what'][:80]}" for i in followups.upcoming(tomorrow.timestamp(), after.timestamp())]
     try:
-        open_ += [f"{i['when']:%H:%M} " * i["has_time"] + i["text"][:80]
+        open_ += [f"{i['when']:%#I:%M %p} " * i["has_time"] + i["text"][:80]
                   for i in watchers.upcoming_items(s, tomorrow, after)]
     except Exception:  # noqa: BLE001
         pass
