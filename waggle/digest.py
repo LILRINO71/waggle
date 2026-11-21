@@ -38,7 +38,10 @@ Return JSON with:
   the user's exact words that state it}. Never take facts from the assistant's replies, web results or test
   prompts that are obviously about the assistant itself. Most days have few or none. "supersedes": ids of the
   KNOWN FACTS (given with the turns) that this fact contradicts or replaces because the user changed their mind
-  or their situation (empty when it only adds something).
+  or their situation (empty when it only adds something). CORRECTIONS: a correction replaces the older fact at
+  the same scope (same person, thing and detail) - list that fact in "supersedes" so no stale copy stays; a
+  later mention alone is not a correction (the user repeating, quoting or asking about an old value, or saying
+  something about a different scope, changes nothing). Never let an older statement replace a newer one.
 - "outcomes": durable results the assistant verifiably produced or found: {"trace_id": the turn id, "project":
   project name or "", "type": "found|built|decided|sent", "text": one sentence with the concrete result}.
   Only what the reply or tool results actually show. Decisions count only when the user made them.

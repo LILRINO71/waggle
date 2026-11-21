@@ -254,6 +254,43 @@ def _close(old, by, day, s, why):
     _log("replaced", old, why, old.get("source", ""), by=by)
 
 
+def _when(row):
+    """When a fact was STATED: its source turn's time (observed), else its valid_from day, else when it was filed."""
+    t = row.get("observed")
+    if t:
+        return float(t)
+    vf = row.get("valid_from")
+    if vf:
+        try:
+            return time.mktime(dt.date.fromisoformat(str(vf)[:10]).timetuple())
+        except ValueError:
+            pass
+    return float(row.get("created") or 0)
+
+
+def _stale_against(f, supersedes):
+    """The active fact that `f` would close but which was stated AFTER `f`, or None. A statement that arrives late
+    (the digest of an older day, a correction processed after a later conversation) must not overwrite a newer one:
+    the newer fact stays and the old one is dropped (graphiti's temporal invalidation: the candidate that starts
+    later supersedes, never the other way round). Only facts that were stated by the owner count as the newer
+    side (a conversation turn, or the remember tool): a calendar, mail or quiz fact carries the day it was
+    synced, not the day it was said."""
+    stamp = _when(f)
+    ids = {int(i) for i in (supersedes or []) if str(i).lstrip("-").isdigit()}
+    for a in facts("active"):
+        if not (a.get("source_turn") is not None or (a.get("origin") or "user") == "user"):
+            continue
+        hit = a["id"] in ids
+        if not hit and f["kind"] == "about" and f.get("key") in SINGLE:
+            hit = a["kind"] == "about" and a["key"] == f["key"]
+        if not hit and f["kind"] in OPPOSITE and a["kind"] == OPPOSITE[f["kind"]]:
+            sa, sf = _subject(a["text"]), _subject(f["text"])
+            hit = bool(sa and sf and len(sa & sf) / len(sa | sf) >= 0.5)
+        if hit and _when(a) > stamp:
+            return a
+    return None
+
+
 def file_fact(fact, settings=None, source="", evidence="", ref=None, embedder=None, turn=None, supersedes=(),
               origin=None):
     """File one fact (after check()). Returns (True, fact_id) or (False, reason). Always logged.
@@ -303,6 +340,10 @@ def file_fact(fact, settings=None, source="", evidence="", ref=None, embedder=No
             if any(_similar(l, f["text"]) for l in lines) or _embed_dup(lines, f["text"], embedder):
                 _log("rejected", f, f"already in {rel}", source)
                 return False, f"already in {rel}"
+    newer = _stale_against(f, supersedes)
+    if newer:  # an older statement that arrived late never replaces a newer one
+        _log("rejected", f, f"older than fact #{newer['id']}, which was stated later", source, existing=newer["id"])
+        return False, f"older than fact #{newer['id']}, which was stated later"
     fid = _insert({**f, "source": source, "evidence": evidence})
     if f["kind"] == "about" and f["key"] in SINGLE:
         for a in active:

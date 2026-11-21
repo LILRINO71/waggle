@@ -221,13 +221,19 @@ def check_background(s):
     return "ok", detail, ""
 
 
+def check_context():
+    """Hooks alive: recent chat turns exist but none carried the injected context block (context_alive.py)."""
+    from . import context_alive
+    return context_alive.as_doctor()
+
+
 def run_all(settings=None):
     s = settings or Settings.load()
     checks = [("Hermes config", check_hermes_config), ("Gateway + bridge", check_gateway),
               ("Local AI (Ollama)", lambda: check_ollama(s)), ("Voice", check_voice), ("Claude", check_claude),
               ("Scheduled jobs", check_cron), ("Vault + memory", lambda: check_vault(s)), ("Skills", check_skills),
               ("Builds", check_jobs), ("Startup", check_startup), ("Disk", check_disk), ("Phone calls", check_phone),
-              ("Background work", lambda: check_background(s))]
+              ("Background work", lambda: check_background(s)), ("Chat context", check_context)]
     out = []
     for name, fn in checks:
         try:

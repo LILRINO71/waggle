@@ -146,6 +146,7 @@ class TurnRecord:
     trace_id: int = None
     session: dict = field(default_factory=dict)
     voice: dict = field(default_factory=dict)  # a voice turn: transcript source, stage times, the spoken reply
+    context: dict = field(default_factory=dict)  # which parts of the context block this turn really carried
 
     def _voice_why(self):
         """A voice turn whose spoken reply was asked for but not sent is degraded, with the reason."""
@@ -165,9 +166,19 @@ class TurnRecord:
 
 # ---- context ------------------------------------------------------------------------------------------------
 
+class ContextBlock(str):
+    """The context text of one turn, with `marker`: what it really carried. The marker is written on the turn's
+    trace (extra.context) so "did the context step work?" can be checked afterwards (context_alive.py: doctor and
+    the daily canary). {"v", "core": the core block was in it, "sources": the parts that produced text,
+    "lessons_checked": the lessons step ran, "lessons": ids injected, "chars"}."""
+    marker = None
+
+
 def build_context(chat, text, voice=False, settings=None, since=None):
-    """The per-turn <waggle_context> block. Every source is optional: a failing one is skipped, never fatal."""
+    """The per-turn <waggle_context> block (a ContextBlock: a str that also carries `.marker`). Every source is
+    optional: a failing one is skipped, never fatal."""
     parts = []
+    marker = {"v": 1, "core": False, "sources": [], "lessons_checked": False, "lessons": []}
 
     def add(name, fn, budget=None):
         """budget: seconds this source may take; a slower one (the memory search embeds the message through
@@ -194,15 +205,27 @@ def build_context(chat, text, voice=False, settings=None, since=None):
                 out = box.get("out")
             if out and out.strip():
                 parts.append(out.strip())
+                marker["sources"].append(name)
+                if name == "core" and "<waggle_core>" in out:
+                    marker["core"] = True
         except Exception as e:
             events.log("context_error", source=name, error=str(e)[:200])
+
+    def lessons_step():
+        from . import lessons
+        marker["lessons_checked"] = True
+        got, ids = lessons.block(text or "")
+        marker["lessons"] = ids
+        return got
 
     from . import memory, projects
     # The small maintained core (who the user is, current focus, commitments, deadlines, yesterday) is read from
     # files and the facts table: always there, never waiting on the embedder. Retrieval is gated: only notes that
     # clearly stand out for this message, none at all otherwise, and the memory tools (note_read, related_to,
-    # vault_search, recall) are there for the rest.
+    # vault_search, recall) are there for the rest. Lessons (waggle/lessons.py) are the owner's behaviour rules,
+    # added only when the message contains one of their keywords (at most 3, 600 characters).
     add("core", lambda: memory.safe_core_block(settings)[:6500])
+    add("lessons", lessons_step)
     add("memory", lambda: memory.retrieval_block(text or "", settings, session=chat)[:4500], budget=CONTEXT_BUDGET_S)
     add("projects", lambda: projects.context_for(text or "")[:2000])
     add("graph", lambda: __import__("waggle.graph", fromlist=["x"]).context_for(text))
@@ -215,7 +238,10 @@ def build_context(chat, text, voice=False, settings=None, since=None):
         parts.append(VOICE_HINT + "\n" + VOICE_STYLE)
     parts.append(f"Now: {time.strftime('%A %Y-%m-%d %#I:%M %p')} (user's local time). Write every time for the user "
                  "in 12-hour form with AM or PM (5:44 PM), never in 24-hour form.")
-    return "<waggle_context>\n" + "\n\n".join(parts) + "\n</waggle_context>"
+    block = ContextBlock("<waggle_context>\n" + "\n\n".join(parts) + "\n</waggle_context>")
+    marker["chars"] = len(block)
+    block.marker = marker
+    return block
 
 
 def recent_deliveries(chat, since=None, within_s=86400, now=None):
@@ -389,8 +415,10 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
     try:
         ctx = context if context is not None else build_context(
             chat, text if owner_text is None else owner_text, voice and vr is None, s, since=prev_user)
+        rec.context = dict(getattr(ctx, "marker", None) or {"v": 1, "given": True})
     except Exception as e:
         ctx = ""
+        rec.context = {"v": 1, "core": False, "built": False, "error": type(e).__name__}
         events.log("engine_error", stage="context", error=str(e)[:200])
     message = ((ctx + "\n\n" if ctx else "") + ("<waggle_note>" + note + "</waggle_note>\n\n" if note else "")
                + ("<voice_reply_format>" + voice_reply.FORMAT_NOTE + "</voice_reply_format>\n\n" if vr else "") + text
@@ -578,7 +606,7 @@ def record_turn(rec, voice=False, note="", route="chat"):
                              turn_outcome=rec.outcome, outcome_why=rec.outcome_why, claims=rec.claims,
                              extra={"voice": voice, "voice_turn": rec.voice or None, "note": bool(note), "outbox": rec.outbox_id,
                                     "session": rec.session, "tools": tool_calls(rec.steps),
-                                    "first_visible_s": rec.first_visible_s})
+                                    "first_visible_s": rec.first_visible_s, "context": rec.context or None})
     except Exception as e:
         events.log("engine_error", stage="trace", error=str(e)[:200])
         return None
