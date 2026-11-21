@@ -31,7 +31,8 @@ def test_describe_sends_image_to_vision_model(tmp_path):
     bodies = []
     screen.describe(img, "what?", post=lambda b: bodies.append(b) or "ok")
     msg = bodies[0]["messages"][1]
-    assert bodies[0]["model"] == "gemma4" and msg["images"] == ["iVBORw=="] and msg["content"] == "what?"
+    from waggle.config import Settings
+    assert bodies[0]["model"] == Settings.load().vision() and msg["images"] == ["iVBORw=="] and msg["content"] == "what?"
 
 
 def test_screen_control_guardrails():
@@ -44,3 +45,11 @@ def test_screen_control_guardrails():
     assert not ok({"action": "type", "text": "my password is hunter2"})
     assert not ok({"action": "focus_app", "app": "Outlook"})
     assert ok({"action": "focus_app", "app": "Obsidian"})
+
+
+def test_pictures_and_the_screen_use_the_local_model_unless_a_vision_model_is_set():
+    from waggle.config import Settings
+    s = Settings()
+    assert s.vision_model == "" and s.vision() == s.local_model  # gemma4 is blind to images on Ollama 0.40.16
+    s.vision_model = "other-vision"
+    assert s.vision() == "other-vision"

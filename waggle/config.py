@@ -74,7 +74,9 @@ class Settings:
     max_verifications_per_day: int = 4
     max_calls_per_day: int = 2
     calls_enabled: bool = False  # phone calls (Twilio) are off until `python -m waggle.call enable`; off = no check, no log
-    vision_model: str = "gemma4"
+    # Pictures, the screen and Hermes's image tool. Empty = local_model. gemma4 is blind to images on Ollama 0.40.16
+    # (2026-11-21: "no image provided" for a plain page of text), qwen3.6 reads them.
+    vision_model: str = ""
     # The Drop folder (waggle/dropbox_ingest.py): summaries and the weekly tidy use this local Ollama model (empty =
     # local_model); pictures are described by vision_model. Claude is never used for dropped files.
     drop_local_model: str = ""
@@ -168,6 +170,10 @@ class Settings:
     sync_wait_s: float = 25.0  # surfaces without message editing (desktop, voice notes) wait this long, then ack
     stream_platforms: list = field(default_factory=lambda: ["telegram"])
     edit_interval_s: float = 1.2  # Telegram allows about one edit per second per chat
+
+    def vision(self):
+        """The local model that looks at pictures and the screen."""
+        return self.vision_model or self.local_model
 
     @classmethod
     def load(cls):

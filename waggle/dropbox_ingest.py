@@ -223,7 +223,7 @@ def _model(s):
 
 
 def _image_model(s):
-    return s.vision_model
+    return s.vision()
 
 
 def _clip(text):

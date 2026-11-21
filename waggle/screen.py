@@ -70,7 +70,7 @@ SYSTEM = ("You are the eyes of a personal assistant. Look at the user's screensh
 def describe(image, question, settings=None, post=None):
     """Ask the local vision model about an image. Returns its answer text."""
     s = settings or Settings.load()
-    body = {"model": s.vision_model, "stream": False, "keep_alive": "2m",
+    body = {"model": s.vision(), "stream": False, "keep_alive": "2m",
             "options": {"temperature": 0.2, "num_ctx": 8192},
             "messages": [{"role": "system", "content": SYSTEM},
                          {"role": "user", "content": question or "What is on my screen?",

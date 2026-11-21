@@ -273,7 +273,7 @@ def configure_hermes(s):
     hermes("config", "set", "tools.tool_search.enabled", "off")
     # Hermes's image tool + Telegram photos: the local vision model (the chat model is text-only).
     hermes("config", "set", "auxiliary.vision.provider", "main")
-    hermes("config", "set", "auxiliary.vision.model", s.vision_model)
+    hermes("config", "set", "auxiliary.vision.model", s.vision())
     hermes("config", "set", "auxiliary.vision.timeout", "120")
     # Every enabled toolset is re-read by the model on every turn; drop the ones Waggle covers or never uses.
     for platform in ("cli", "telegram"):
