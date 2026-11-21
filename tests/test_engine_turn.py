@@ -263,3 +263,9 @@ def test_chat_never_consults_the_window_estimate_only_a_recorded_block(settings,
     chat_engine._available.clear()
     ok, why = chat_engine.claude_available(settings)
     assert not ok and why.startswith("limit: Claude limit reached")
+
+def test_voice_labels_never_leak_into_a_typed_answer(settings, no_local):
+    def script(proc, msg):
+        proc.emit(ev_result(proc.session_id, "SPOKEN: It's eight PM, sir.\nANSWER:\nIt's 8:00 PM."))
+    rec, d, fake = turn(settings, script)
+    assert "SPOKEN" not in rec.reply and "ANSWER" not in rec.reply and "8:00 PM" in rec.reply

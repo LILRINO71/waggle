@@ -431,6 +431,12 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
             reply, rec.answered_by, rec.failure_notice = FAILED.format(why=_why_short(why)), "none", True
     if vr and not rec.failure_notice:
         reply, _ = vr.finish(reply)  # the written answer without its SPOKEN part
+    elif not vr:
+        _, answer_only, had_spoken = voice_reply.split_reply(reply)
+        if had_spoken and answer_only.strip():
+            # a typed turn in a chat that recently had voice turns: the brain copied the voice format. Its labels
+            # must never reach the user (seen 2026-11-20: "SPOKEN: ... ANSWER: ..." sent as text).
+            reply = answer_only
     if attempt and attempt >= 2 and not rec.failure_notice:
         reply += INTERRUPTED_LINE
     rec.reply = reply
