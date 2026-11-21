@@ -40,8 +40,8 @@ class Settings:
     # Share of the Pro limit Waggle may use, and the point where it stops escalating at all.
     waggle_share: float = 0.30
     stop_at: float = 0.85
-    # Starting guess for one 5-hour Pro window, in millions of weighted tokens (see quota.py).
-    # Only a guess: it is recalibrated every time the real limit is hit.
+    # The user's estimate of one 5-hour Pro window, in millions of weighted tokens (see quota.py). Waggle never
+    # writes it: what it learns from real limit hits lives in budget.db, kept within quota.ESTIMATE_BOUNDS of this.
     window_units_estimate: float = 6.0
     window_hours: float = 5.0
     # Background budget (waggle/budget.py): objectives, routines, proactive checks, brief, learning.
@@ -66,12 +66,44 @@ class Settings:
     ntfy_topic: str = ""  # generated on first use; private channel for urgent push alerts
     brief_time: str = "30 7 * * *"  # morning brief (cron)
     stale_days: int = 7
+    # Initiative (waggle/tick.py, initiative.py, watchers.py, followups.py): what Waggle tells the user unprompted.
+    daily_text_cap: int = 8  # unprompted texts/voice notes/calls a day; urgent items and things asked for bypass it
+    initiative_every_min: int = 120  # how often the reasoning step looks at new signals (urgent ones: right away)
+    initiative_model: str = "sonnet"
+    topic_repeat_hours: int = 48  # the same topic is not raised again within this window
+    evening_time: str = "21:00"  # the daily evening note (always sent)
+    brief_catchup_hours: float = 3.0  # a missed morning brief is still sent this long after its time, never later
+    evening_catchup_hours: float = 1.5
+    followup_hour: int = 19  # check-in time for "I'll do X today/tomorrow" with no clock time
+    followup_platforms: list = field(default_factory=lambda: ["telegram"])
+    github_watch: bool = True
+    github_repos: list = field(default_factory=list)  # "owner/name"; empty = the user's recently pushed repos
+    github_every_min: int = 15
+    upcoming_note: str = ""  # vault note with dated items and mail to answer; empty = Upcoming / Me/Upcoming
+    outbox_max_age_h: float = 24.0  # undelivered messages give up (recorded as expired) after this long
+    dev_sources: list = field(default_factory=lambda: ["oneshot", "cli", "tool", "test", "api", "batch"])
+    voice_note_voice: str = "af_heart"
+    voice_note_speed: float = 1.1
+    scout_enabled: bool = True
     phone_target: str = "telegram"
     # Saved by install.py: cron scripts run with a trimmed environment and may not see LOCALAPPDATA.
     claude_bin: str = ""
     # Weather: saved the first time the user names a city; imperial = °F / mph.
     home_location: str = ""
     units: str = "imperial"
+    # Turn engine (waggle/chat_engine.py): one long-lived Claude process per chat, streamed replies.
+    engine_enabled: bool = False  # True = the turn engine answers in the gateway; False = the old router path
+    # Telegram chat ids whose typed messages the gateway hands to the core's turn engine (empty = none).
+    engine_chats: list = field(default_factory=list)
+    chat_tools: list = field(default_factory=lambda: ["Read", "Glob", "Grep", "Bash", "PowerShell", "WebSearch",
+                                                      "WebFetch"])
+    chat_effort: str = "low"
+    chat_idle_s: int = 1800  # an idle chat process is stopped; the next message resumes the same session
+    chat_turn_timeout_s: int = 600
+    chat_session_max_turns: int = 40  # then a fresh session starts, seeded with the recent transcript
+    sync_wait_s: float = 25.0  # surfaces without message editing (desktop, voice notes) wait this long, then ack
+    stream_platforms: list = field(default_factory=lambda: ["telegram"])
+    edit_interval_s: float = 1.2  # Telegram allows about one edit per second per chat
 
     @classmethod
     def load(cls):
@@ -79,11 +111,28 @@ class Settings:
         if CONFIG_FILE.exists():
             data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
         known = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
-        return cls(**known)
+        s = cls(**known)
+        s._loaded = asdict(s)
+        return s
 
     def save(self):
+        """Write the settings this object changed (since it was loaded, or from the defaults when it was built in
+        code) into config.json as the file is now. Settings nobody changed, keys the file leaves out and keys this
+        version does not know stay exactly as they are: the tamper guard hashes the budget/limit keys, so a save that
+        only sets ntfy_topic must not rewrite them. A missing file is written in full, as a template to edit. The
+        write is atomic, so a reader never sees half a file."""
         HOME.mkdir(parents=True, exist_ok=True)
-        CONFIG_FILE.write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
+        now = asdict(self)
+        if CONFIG_FILE.exists():
+            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            base = getattr(self, "_loaded", None) or asdict(type(self)())
+            data.update({k: v for k, v in now.items() if k not in base or base[k] != v})
+        else:
+            data = now
+        tmp = CONFIG_FILE.with_name(f"{CONFIG_FILE.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        os.replace(tmp, CONFIG_FILE)
+        self._loaded = now
 
 
 def data_path(name):

@@ -170,12 +170,114 @@ add(schema("send_to_me", "Send the user (only the user) a message and/or a file 
                                                                                   "attach"}}, []), t_send_to_me)
 
 
+# ---- reminders and scheduled calls (core one-shot timers, see waggle/followups.py and waggle/call.py) --------
+
+def _now():
+    import time
+    return time.time()
+
+
+def _chat_and_origin():
+    import os
+    origin = (os.environ.get("WAGGLE_TURN_ORIGIN") or os.environ.get("WAGGLE_ORIGIN") or "user").strip().lower()
+    return os.environ.get("WAGGLE_CHAT", ""), origin or "user"
+
+
+def when_ts(args, now=None):
+    """Epoch seconds from tool args: in_minutes, or at (epoch, ISO local time like 2026-11-20T07:30, or words
+    like "in 2 minutes", "at 7 tomorrow", "friday 9am"). Raises ValueError when it can't tell or it is past."""
+    import datetime as dt
+
+    from waggle import when
+    now = _now() if now is None else float(now)
+    if args.get("in_minutes") not in (None, ""):
+        ts = now + float(args["in_minutes"]) * 60
+    else:
+        at = args.get("at")
+        if at in (None, ""):
+            raise ValueError("say when: give in_minutes or at")
+        text = str(at).strip()
+        try:
+            ts = float(text)
+        except ValueError:
+            try:
+                ts = dt.datetime.fromisoformat(text).timestamp()
+            except ValueError:
+                parsed, _ = when.parse(text, dt.datetime.fromtimestamp(now))
+                if parsed is None:
+                    raise ValueError(f"I can't tell when {text!r} is; give an exact time or in_minutes") from None
+                ts = parsed.timestamp()
+    if ts < now - 5:
+        raise ValueError("that time is already past")
+    return ts
+
+
+def _local(ts):
+    import datetime as dt
+    return dt.datetime.fromtimestamp(ts).strftime("%a %Y-%m-%d %H:%M")
+
+
+def t_remind_me(args):
+    from waggle import followups
+    text = str(args.get("text") or "").strip()
+    if not text:
+        return "Say what to remind them of (text)."
+    try:
+        ts = when_ts(args)
+    except ValueError as e:
+        return f"Not scheduled: {e}"
+    chat, origin = _chat_and_origin()
+    fid = followups.add(ts, text, chat=chat, origin=origin)
+    return json.dumps({"reminder": fid, "due": _local(ts), "note": "Scheduled as a core timer; it fires even after a "
+                       "restart (late, with a note, if the PC was off). Confirm the time to the user in one line."})
+
+
+def t_cancel_reminder(args):
+    from waggle import followups
+    fid = str(args.get("id") or "").strip()
+    return json.dumps({"cancelled": bool(fid) and followups.cancel(fid), "id": fid})
+
+
+def t_list_reminders(args):
+    from waggle import followups
+    chat, _ = _chat_and_origin()
+    rows = [r for r in followups.items(status="open", kind="reminder") if not chat or r.get("chat") in ("", chat)]
+    return json.dumps([{"id": r["id"], "what": r["what"], "due": _local(r["due"])} for r in rows[:20]])
+
+
+def t_schedule_call(args):
+    from waggle import call
+    try:
+        ts = when_ts(args)
+    except ValueError as e:
+        return f"Not scheduled: {e}"
+    _, origin = _chat_and_origin()
+    msg = str(args.get("message") or "").strip() or "You asked me to call you."
+    call.schedule_at(ts, msg, origin=origin)
+    return json.dumps({"call_at": _local(ts), "message": msg, "note": "A phone call at that time (a text instead if "
+                       "the PC was off then). Confirm the time to the user in one line."})
+
+
+_WHEN = {"at": {"type": "string", "description": "when: an exact local time (2026-11-20T07:30) or words "
+                "('in 2 minutes', 'at 7 tomorrow', 'friday 9am')"},
+         "in_minutes": {"type": "number", "description": "or: this many minutes from now"}}
+add(schema("remind_me", "Set a reminder for the user: at that time Waggle sends them the text in this chat "
+           "('remind me in 2 minutes to stand up'). Use this, never a promise to remember.",
+           {"text": {"type": "string", "description": "what to remind them of, as they should read it"}, **_WHEN},
+           ["text"]), t_remind_me)
+add(schema("cancel_reminder", "Cancel one of the user's open reminders by its id (see list_reminders).",
+           {"id": {"type": "string"}}, ["id"]), t_cancel_reminder)
+add(schema("list_reminders", "The user's open reminders with their ids and times.", {}, []), t_list_reminders)
+add(schema("schedule_call", "Call the user's phone at a time they asked for ('call me at 7 about the meet').",
+           {"message": {"type": "string", "description": "what the call is about"}, **_WHEN}, []), t_schedule_call)
+
+
 def _load_providers():
     """Optional modules add their own tools (agents, routines, recall, models)."""
     import importlib
     for mod in ("waggle.traces", "waggle.learning", "waggle.agents", "waggle.routines", "waggle.models",
                 "waggle.engines", "waggle.memory_care", "waggle.doctor",
-                "waggle.objectives", "waggle.graph"):
+                "waggle.objectives", "waggle.graph", "waggle.chat_jobs"):
         try:
             m = importlib.import_module(mod)
         except ImportError:

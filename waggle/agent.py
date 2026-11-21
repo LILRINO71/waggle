@@ -76,7 +76,9 @@ def _python():
 
 
 def settings_json():
-    hook = f'"{_python()}" "{REPO / "waggle" / "agent_hook.py"}"'
+    # -I -S: no PYTHONPATH / PYTHON* variables, no user or site packages, no .pth or sitecustomize code before the
+    # hook's own integrity check (tests/test_guard.py::test_isolated_mode_closes_the_startup_code_route).
+    hook = f'"{_python()}" -I -S "{REPO / "waggle" / "agent_hook.py"}"'
     return {"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": hook,
                                                                   "timeout": 30}]}]},
             "permissions": {"defaultMode": "default"}}

@@ -53,5 +53,8 @@ home = profile & "\.hermes"
 sh.Environment("Process")("HERMES_HOME") = home
 ' Hermes's own ffmpeg: Telegram voice notes (speech in and out) need it.
 sh.Environment("Process")("PATH") = home & "\tools\ffmpeg-9.0.1-win32-x64\bin;" & sh.ExpandEnvironmentStrings("%PATH%")
+' Telegram's API sometimes stops answering from this network for a short while. Give up on a dead
+' connection after 4 s instead of 10 s so the next path is tried sooner (a healthy connect takes 0.2 s).
+sh.Environment("Process")("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT") = "4"
 ' A second copy exits on its own if the gateway is already running (it holds a lock).
 sh.Run """" & home & "\bin\hermes.exe"" gateway run", 0, False

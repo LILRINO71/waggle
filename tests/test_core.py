@@ -93,7 +93,7 @@ def test_can_escalate_and_calibration(settings, monkeypatch):
     monkeypatch.setattr(quota, "window_usage", lambda *a, **k: 4.0)
     quota.note_limit_hit(settings, reset_in_hours=2)
     from waggle.config import Settings
-    assert Settings.load().window_units_estimate == 4.0
+    assert quota.window_estimate(Settings.load()) == 4.0  # learned into budget.db, not config.json
     ok, why = quota.can_escalate("sonnet", Settings.load())
     assert not ok and "limit reached" in why
 
@@ -242,7 +242,7 @@ def test_cap_rises_when_usage_passes_it_without_a_limit(settings, monkeypatch):
     ok, _ = quota.can_escalate("sonnet", settings)
     from waggle.config import Settings
     # raised so usage lands at 70% (stop_at 0.85 - 0.15), safely under the stop line
-    assert Settings.load().window_units_estimate == pytest.approx(10.0 / 0.7, rel=1e-3)
+    assert quota.window_estimate(Settings.load()) == pytest.approx(10.0 / 0.7, rel=1e-3)  # budget.db, not config
     assert ok  # uncalibrated: the estimate is only a lower bound
 
 

@@ -77,8 +77,29 @@ def screen_risk(args):
     return ""
 
 
+def guard_directive(tool_name, args):
+    """The tamper guard (waggle.guard) for Hermes's own tools, which never pass through the Claude Code hook: every
+    call is blocked while the safety files fail their check, and a file, shell or code tool that could change a
+    protected file needs the user's yes. A guard that errors asks rather than allows."""
+    try:
+        from . import guard, policy
+        bad = guard.gate()
+        if bad:
+            return {"action": "block", "message": guard.denial_text(bad)}
+        name = (tool_name or "").lower()
+        hit = policy._guard_hit(name, name.split("__")[-1], args if isinstance(args, dict) else {}, None)
+    except Exception:
+        hit = "the guard could not check whether this touches Waggle's safety files"
+    if hit:
+        return {"action": "approve", "message": f"Waggle wants to use {tool_name}: {hit}."}
+    return None
+
+
 def check_tool_call(tool_name, args):
     """None = allowed. Otherwise a Hermes pre_tool_call directive."""
+    directive = guard_directive(tool_name, args)
+    if directive:
+        return directive
     name = (tool_name or "").lower()
     if name in APPROVAL_TOOLS or any(k in name for k in ("payment", "purchase", "checkout")):
         return {"action": "approve", "message": f"Waggle wants to use {tool_name}. This affects other "

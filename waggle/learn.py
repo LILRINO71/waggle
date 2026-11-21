@@ -402,7 +402,8 @@ def extract(user_msg, reply=None, settings=None, chat=None):
 
 
 def learn_async(user_msg, reply):
-    """Retired: learning now happens from whole conversations in the daily digest (digest.py). No-op."""
+    """Retired, no-op. Per-message extraction filed passing remarks, and development test prompts, as
+    permanent profile facts with no source. Learning returns with whole conversations and a recorded origin."""
     return None
 
 

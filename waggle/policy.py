@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import guard
 from .config import Settings, data_path
 
 ALLOW, ASK, DENY = "allow", "ask", "deny"
@@ -201,13 +202,46 @@ OUTWARD = re.compile(r"(^|_)(send|forward|reply|post|publish|share|invite|tweet|
                      r"make_call|transfer|payment|purchase|buy|checkout|pay)(_|$)", re.I)
 DESTROY = re.compile(r"(^|_)(delete|trash|remove|purge|wipe|archive_all|empty|spam|unsubscribe|revoke)(_|$)", re.I)
 MONEY = re.compile(r"payment|purchase|checkout|transfer|trade|order|billing|invoice|refund", re.I)
-WAGGLE_SAFE = {"vault_search", "remember", "project_status", "project_update", "build_status", "waggle_status",
-               "weather", "look_at_screen", "skill_search", "skill_load", "skill_list", "recall", "routine_list",
-               "routine_add", "routine_pause", "routine_resume", "delegate", "agent_list", "jobs_list",
-               "hermes_tools", "model_catalog", "start_build", "notify_me", "send_to_me", "rate_finding", "skill_create",
-               "skill_update", "skill_hub_search", "agent_status", "learning_report", "memory_status",
-               "objective_create", "objective_status", "objective_control", "graph_query", "graph_note",
-               "agent_note", "routine_add", "routine_list", "routine_pause", "routine_resume", "memory_review"}
+# Waggle's own MCP tools (waggle/waggle_mcp.py and the modules it loads), one row each: the decision and why.
+# Allowed: what reaches only the user (their own chat, phone and reminders), reads and status, and Waggle's own
+# memory, skills, routines and agent work (which runs under this same policy). Asks: anything that reaches other
+# people, spends money, deletes, or installs code. A Waggle tool missing from this table asks
+# (tests/test_guard.py checks that every tool the server offers has a row).
+_ONLY_USER = "reaches only the user"
+_READS = "reads or reports status"
+_OWN = "Waggle's own memory, skills or agent work"
+WAGGLE_TOOLS = {
+    # to the user only: their own chat, phone and reminders
+    "remind_me": (ALLOW, "a reminder in the user's own chat"),
+    "cancel_reminder": (ALLOW, "cancels one of the user's own reminders"),
+    "list_reminders": (ALLOW, _READS),
+    "schedule_call": (ALLOW, "a call to the user's own phone at a time they asked for"),
+    "call_me": (ALLOW, "a call to the user's own phone"),
+    "notify_me": (ALLOW, _ONLY_USER),
+    "send_to_me": (ALLOW, _ONLY_USER),
+    # reads and status
+    "vault_search": (ALLOW, _READS), "project_status": (ALLOW, _READS), "build_status": (ALLOW, _READS),
+    "waggle_status": (ALLOW, _READS), "weather": (ALLOW, _READS), "look_at_screen": (ALLOW, _READS),
+    "skill_search": (ALLOW, _READS), "skill_load": (ALLOW, _READS), "skill_list": (ALLOW, _READS),
+    "skill_hub_search": (ALLOW, _READS), "recall": (ALLOW, _READS), "routine_list": (ALLOW, _READS),
+    "agent_list": (ALLOW, _READS), "agent_status": (ALLOW, _READS), "jobs_list": (ALLOW, _READS),
+    "hermes_tools": (ALLOW, _READS), "model_catalog": (ALLOW, _READS), "learning_report": (ALLOW, _READS),
+    "memory_status": (ALLOW, _READS), "memory_review": (ALLOW, _READS), "objective_status": (ALLOW, _READS),
+    "graph_query": (ALLOW, _READS), "background_status": (ALLOW, _READS), "waggle_doctor": (ALLOW, _READS),
+    # Waggle's own memory, skills, routines and agents (agent work goes through this policy again)
+    "remember": (ALLOW, _OWN), "project_update": (ALLOW, _OWN), "rate_finding": (ALLOW, _OWN),
+    "skill_create": (ALLOW, _OWN), "skill_update": (ALLOW, _OWN), "agent_note": (ALLOW, _OWN),
+    "graph_note": (ALLOW, _OWN), "routine_add": (ALLOW, _OWN), "routine_pause": (ALLOW, _OWN),
+    "routine_resume": (ALLOW, _OWN), "delegate": (ALLOW, _OWN), "start_build": (ALLOW, _OWN),
+    "objective_create": (ALLOW, _OWN), "objective_control": (ALLOW, _OWN),
+    # still asks
+    "background_task": (ASK, "starts a background agent job from chat"),
+    "graph_correct": (ASK, "retracts or merges what Waggle knows about you"),
+    "routine_remove": (ASK, "deletes a routine"),
+    "skill_install": (ASK, "installs community code"),
+    "hermes_tool": (ASK, "runs a Hermes tool"),  # decided as the Hermes tool it names (decide() below)
+}
+WAGGLE_SAFE = {name for name, (action, _why) in WAGGLE_TOOLS.items() if action == ALLOW}
 
 
 HERMES_READ = {"memory", "session_search", "todo_list", "skills_list", "skill_view", "text_to_speech", "read_terminal",
@@ -264,12 +298,48 @@ def _only_to_self(args, settings=None):
     return bool(mine and who) and all(w in mine for w in who)
 
 
-def decide(tool_name, args=None, settings=None):
+# Names the older Hermes bridge used for a shell; kept so the guard still looks at their command.
+_OTHER_SHELL = {"terminal", "shell", "execute_command", "run_command", "process"}
+_MUTATING_MCP = re.compile(r"write|edit|create|save|move|copy|rename|delete|remove|append|patch|replace|upload|"
+                           r"overwrite", re.I)
+# MCP tool names that only look: every other MCP tool (put_file, run, apply...) has all its string arguments checked.
+_LOOKING_MCP = re.compile(r"^(read|get|list|search|find|view|show|query|fetch|describe|stat|head|tree|count|"
+                          r"download|export)(_|$)|_(info|status|metadata)$", re.I)
+
+
+def _guard_hit(name, base, args, cwd):
+    """Why this call needs the user's yes because it could change a protected safety file (waggle.guard), or None.
+    Runs before the write-roots test, so a protected file inside a write root is still asked about."""
+    try:
+        if name in WRITE_TOOLS or name in {"write_file", "patch"}:
+            return guard.write_hit(args, cwd, patch=name == "patch")
+        if name in SHELL_TOOLS or name in _OTHER_SHELL:
+            # Claude Code's Bash tool runs Git Bash and its PowerShell tool runs PowerShell; other shell tools: any.
+            return guard.shell_hit(args.get("command") or args.get("cmd") or "",
+                                   args.get("cwd") or args.get("workdir") or cwd, shell=name if name in SHELL_TOOLS
+                                   else None)
+        if name == "execute_code":  # Hermes runs this Python itself
+            return guard.code_hit(args.get("code") or "", args.get("cwd") or args.get("workdir") or cwd)
+        if name.startswith("mcp__") and not name.startswith("mcp__waggle__") and (
+                _MUTATING_MCP.search(base) or not _LOOKING_MCP.search(base)):
+            return guard.write_hit(args, cwd, deep=True)
+    except Exception:  # prefer asking too often over letting an unchecked call through
+        return "the guard could not check whether this touches Waggle's safety files"
+    return None
+
+
+def decide(tool_name, args=None, settings=None, cwd=None):
     """Decision for one tool call (before approvals are consulted)."""
+    bad = guard.gate()  # fail closed like the hook when the safety files on disk no longer match the manifest
+    if bad:
+        return Decision(DENY, "integrity_violation: " + guard.denial_text(bad))
     args = args or {}
     raw = tool_name or ""
     name = raw.lower()
     base = name.split("__")[-1]  # mcp__server__tool -> tool
+    hit = _guard_hit(name, base, args, cwd) if isinstance(args, dict) else None
+    if hit and not (name in SHELL_TOOLS and classify_shell(str(args.get("command") or args.get("cmd") or ""))[0] == DENY):
+        return Decision(ASK, hit)
     if name in READ_TOOLS:
         path = args.get("file_path") or args.get("path") or args.get("notebook_path") or ""
         if path and is_secret_path(path):
@@ -290,8 +360,9 @@ def decide(tool_name, args=None, settings=None):
         return Decision(action, why)
     if name.startswith("mcp__waggle__"):
         if base == "hermes_tool":
-            return decide(str(args.get("name", "")), args.get("args") or {}, settings)
-        return Decision(ALLOW) if base in WAGGLE_SAFE else Decision(ASK, f"Waggle tool {base}")
+            return decide(str(args.get("name", "")), args.get("args") or {}, settings, cwd)
+        action, why = WAGGLE_TOOLS.get(base, (ASK, "a Waggle tool the policy does not know"))
+        return Decision(action) if action == ALLOW else Decision(ASK, f"Waggle tool {base}: {why}")
     if name == "computer_use":
         from .security import screen_risk
         why = screen_risk(args)
@@ -524,9 +595,9 @@ def audit(tool, args, decision, source="agent"):
         f.write(json.dumps(row) + "\n")
 
 
-def check(tool, args=None, session="", source="agent", settings=None):
+def check(tool, args=None, session="", source="agent", settings=None, cwd=None):
     """Full check: policy, then one-time approvals; logs to the audit trail. Returns a Decision."""
-    d = decide(tool, args, settings)
+    d = decide(tool, args, settings, cwd)
     if d.action == ASK:
         if _consume(tool, args, session):
             d = Decision(ALLOW, "approved by the user")
