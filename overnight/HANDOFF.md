@@ -1,4 +1,4 @@
-# Handoff (2026-11-20 evening)
+# Handoff (2026-11-20 night)
 
 Read this first, then `overnight/REBUILD_PLAN.md` (the governing plan) and `overnight/USER_TESTS.md`.
 
@@ -19,6 +19,33 @@ from it. Feature work happens in worktrees on `rebuild/*` branches, all pushed t
 
 Old path (Hermes turn through the plugin's router) still answers: photos, files, stickers, audio files,
 captions, `/commands`, other chats.
+
+## Added 2026-11-20 night (main 459dfd1 + chat fix 1dc0d71)
+
+| Part | State |
+|---|---|
+| Mail watch (`waggle/mailwatch.py`) | Live. IMAP + app password (Windows Credential Manager `waggle-mail-imap:personal`), no Claude. Core timer `knowledge.mailwatch` every 5 min 06:00-23:00. Triage: rules + local model `mailwatch_local_model` = gemma4. Seen-store `~/.waggle/mailwatch.db`. Real-inbox dry run caught the college email correctly; school account is blocked by its admin. `python -m waggle.mailwatch status|run --dry-run|login` |
+| Drop folder (`waggle/dropbox_ingest.py`) | Live. Desktop shortcut "Feed Waggle" -> `WaggleVault/Drop`; files become `Sources/<YYYY-MM>/*.md` with local summaries; weekly tidy plan Sunday 10:00. No Claude |
+| PC voice (`waggle/pcvoice.py`, task "Waggle PC Voice") | Live, untested with the owner's real voice. Hotkey Ctrl+Alt+` (Ctrl+Alt+Space is taken), wake word "Waggle" on, speaks Waggle's own messages when the owner is at the PC (`waggle/presence.py`) |
+| Test client (`tools/testclient/`, venv `~/.waggle-testclient`) | Logged in as the owner. `ask.py "question"` sends `[waggle-test] question` to the owner's normal bot chat (@hermes_t2pnnyl42gz3f5eu_bot) and prints every reply; the mark makes the turn origin "test" (`chat_engine.test_marked`). No Waggle Lab group |
+| Local models | `local_model` = qwen3.6:35b-a3b (MoE, 73 tok/s, cold load ~2 min), mail = gemma4. Eval (16 emails): both 14/16, waggle-4b 12/16. qwen3.8:27b not yet downloaded: download only at night (see memory no-heavy-work-while-user-at-pc) |
+| Hands-free phone line | Tailscale Serve live at https://pranavaura.tailf0a221.ts.net/voice (answers 401 without the token); owner's iPhone Shortcut set up, not yet proven |
+| Tools | All Hermes toolsets enabled; chat tools include Write/Edit; hidden on purpose: Higgsfield (paid), Onshape (school cap), REA (size), Miro (sign-in) |
+
+### Found by the first end-to-end test (fix 1dc0d71, deploy pending if not on main)
+Waggle refused the owner's message "usage limit reached" while the real window was 51%: chat consulted
+`quota.can_escalate` (estimate said 97%) and the core inbound path passed no `local=`. Now chat is refused only on a
+recorded block (`quota._state()["blocked_until"]`) and the local model answers then. Prove with
+`tools/testclient/ask.py` after deploy. The estimate itself (`quota.learned_cap`) is still wrong for background work.
+
+### Next, in order
+1. Deploy 1dc0d71, then prove with ask.py: a normal question, a reminder, a file create+delete (owner permission rule).
+2. Fix the window estimate for background work (it reads ~2x the real usage), or read the real usage if any local source has it.
+3. Group repeated identical mail alerts in one pass (3 Google security alerts = 3 texts).
+4. Infrastructure still to build: learning loop from feedback; Waggle proposing its own code changes (owner approves merges);
+   daily automatic end-to-end checks with ask.py; cron jobs -> core timers + one off switch; photos/files/commands on
+   the engine; autonomy switched on with charters (money experiment: lawful, $0, honest); calendar without Claude;
+   phone calls (Twilio); settings changes by request (voice, speed, quiet hours).
 
 ## Proven on the real machine
 
