@@ -97,6 +97,11 @@ class Settings:
     gates_enabled: bool = True  # a pre-check may skip a background Claude call when it is very sure (P >= 0.95)
     gates_local: bool = True  # the pre-check may ask the local model (only when Ollama already has a model loaded)
     notify_check_enabled: bool = True  # a local yes/no decides if a background result is worth a message now
+    # Outreach timing and choice (waggle/holdq.py, outreach_ev.py). Each switch is independent; false = the old behaviour.
+    hold_for_breaks: bool = True  # an unprompted, non-urgent message waits for the owner's next natural break
+    hold_max_wait_min: float = 90.0  # ...and goes out anyway after this long
+    outreach_ev_enabled: bool = True  # send an unprompted message only when P(welcome) x value - cost clears the threshold
+    outreach_ev_threshold: float = 0.0
     engine_cooldowns_enabled: bool = True  # an engine that just failed (limit, credit, busy, auth...) rests a while
     phone_target: str = "telegram"
     # Saved by install.py: cron scripts run with a trimmed environment and may not see LOCALAPPDATA.

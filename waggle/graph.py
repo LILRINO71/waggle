@@ -215,6 +215,16 @@ NOT decisions: requests or instructions to the assistant (write/remind/check/sen
 Entities: only real named people, projects, tools, organisations, places, events the user wrote; not dates, times,
 files or generic words. Use empty lists when there is nothing. No guesses."""
 
+_STR = {"type": "string"}
+EXTRACT_SCHEMA = {"type": "object", "required": ["entities", "relations", "decisions"], "properties": {
+    "entities": {"type": "array", "items": {"type": "object", "required": ["name", "type"], "properties": {
+        "name": _STR, "type": _STR}}},
+    "relations": {"type": "array", "items": {"type": "object", "required": ["src", "rel", "dst"], "properties": {
+        "src": _STR, "rel": _STR, "dst": _STR}}},
+    "decisions": {"type": "array", "items": {"type": "object", "required": ["decision"], "properties": {
+        "project": _STR, "decision": _STR, "status": {"type": "string", "enum": ["decided", "considering"]},
+        "replaces": _STR, "quote": _STR}}}}}
+
 STOP_NAMES = {"today", "tomorrow", "tonight", "yesterday", "now", "morning", "evening", "week", "this week",
               "next week", "weekend", "it", "this", "that", "something", "everything", "anything", "me", "you",
               "user", "assistant", "the user", "notes", "note", "file", "files", "email", "emails", "message",
@@ -316,7 +326,7 @@ def extract_from_traces(since=None, settings=None, chat=None, max_turns=40):
         return {"turns": 0}
     if chat is None:
         from . import ollama
-        chat = lambda msgs: ollama.chat_json(msgs, settings=s, timeout=120)  # noqa: E731
+        chat = lambda msgs: ollama.chat_json(msgs, schema=EXTRACT_SCHEMA, settings=s, timeout=120)  # noqa: E731
     known = [p["name"] for p in projects.all_projects(s)]
     added, filed, dropped = 0, 0, 0
     for i in range(0, len(rows), 8):

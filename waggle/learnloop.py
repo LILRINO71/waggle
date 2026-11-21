@@ -44,6 +44,7 @@ Report and undo
 The ledger is the table `improvements` in knowledge.db. A core timer (register_core, a little before the evening
 note) runs the loop; `python -m waggle.learnloop run --dry-run` shows what it would do on the real data without
 writing anything."""
+import functools
 import hashlib
 import json
 import re
@@ -398,8 +399,9 @@ def word_claim(turn, prev, verdict, s, *, chat=None, claude=None):
     why = ""
     try:
         from . import ollama
-        out = (chat or ollama.chat_json)([{"role": "system", "content": WORDING_SYSTEM},
-                                          {"role": "user", "content": _prompt(turn, prev)}], settings=s)
+        out = (chat or functools.partial(ollama.chat_json, schema=WORDING_SCHEMA))(
+            [{"role": "system", "content": WORDING_SYSTEM}, {"role": "user", "content": _prompt(turn, prev)}],
+            settings=s)
         got, fact = _accept(out, turn, prev)
         if got != "unclear":
             return got, fact, "" if fact else "the owner objects to the style, not a fact", "local"

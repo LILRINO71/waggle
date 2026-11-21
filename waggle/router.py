@@ -7,6 +7,7 @@
    request into a detailed build prompt (route=opus).
 4. If the Pro budget says no, the local model does the work anyway.
 """
+import functools
 import re
 import time
 
@@ -164,9 +165,14 @@ SORT_SYSTEM = """Sort the user's message for a personal assistant. Categories:
 Return JSON: {"category": "...", "confidence": 0.0-1.0}"""
 
 
+SORT_SCHEMA = {"type": "object", "required": ["category", "confidence"], "properties": {
+    "category": {"type": "string", "enum": ["simple", "reasoning", "build", "unsure"]},
+    "confidence": {"type": "number"}}}
+
+
 def local_sort(text, settings=None, chat=None):
     """(category, confidence) from the local model; ('unsure', 0) if it fails."""
-    chat = chat or ollama.chat_json
+    chat = chat or functools.partial(ollama.chat_json, schema=SORT_SCHEMA)
     try:
         out = chat([{"role": "system", "content": SORT_SYSTEM}, {"role": "user", "content": text[:2000]}],
                    settings=settings, timeout=60)

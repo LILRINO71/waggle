@@ -189,9 +189,14 @@ wake=true means the expensive model should look at this. p_needed is how sure yo
 0 = surely not); p_urgent is how sure you are that it cannot wait until tomorrow morning. When in doubt, wake=true."""
 
 
+LOCAL_SCHEMA = {"type": "object", "required": ["wake", "p_needed"], "properties": {
+    "wake": {"type": "boolean"}, "p_needed": {"type": "number"}, "p_urgent": {"type": "number"},
+    "why": {"type": "string"}}}
+
+
 def _local_ask(messages, settings, timeout):
     from . import ollama
-    return ollama.chat_json(messages, settings=settings, timeout=timeout)
+    return ollama.chat_json(messages, schema=LOCAL_SCHEMA, settings=settings, timeout=timeout)
 
 
 def local_check(question, facts="", *, settings=None, ask=None, timeout=TIMEOUT_S):

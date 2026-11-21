@@ -157,6 +157,11 @@ def track_responses(settings=None, now=None, window_s=6 * 3600, turns=None):
     turns from traces.db (origin.user_turns: tests, benches, the CLI and agents never count)."""
     s = settings or Settings.load()
     now = now or time.time()
+    try:  # what the owner did after each unprompted message, per kind (waggle/outreach_ev.py)
+        from . import outreach_ev
+        outreach_ev.label_outcomes(s, now, turns=turns)
+    except Exception:  # noqa: BLE001 - learning the odds never breaks response tracking
+        pass
     sent = [r for r in notify.rows(since=now - 2 * 86400, status="sent") if r.get("sent_at")]
     con = _db()
     answered = {r[0] for r in con.execute("SELECT outbox_id FROM responses")}
@@ -171,7 +176,7 @@ def track_responses(settings=None, now=None, window_s=6 * 3600, turns=None):
                      origin.user_turns(traces.all_traces(since=now - 3 * 86400, limit=500), s)]
         except Exception:  # noqa: BLE001
             turns = []
-    user_times = sorted(t for t, p in turns if p in s.followup_platforms)
+    user_times = sorted(t[0] for t in turns if t[1] in s.followup_platforms)  # (time, platform[, text])
     marked = 0
     con = _db()
     for r in open_:
@@ -261,7 +266,7 @@ def recent_topics(now, hours):
     for t, ts in rows:
         out[_norm_topic(t)] = max(out.get(_norm_topic(t), 0), ts)
     for r in notify.rows(since=now - hours * 3600):
-        if r["topic"] and r["status"] in ("sent", "queued", "sending"):
+        if r["topic"] and r["status"] in ("sent", "queued", "sending", "held"):
             out[_norm_topic(r["topic"])] = max(out.get(_norm_topic(r["topic"]), 0), r["created"])
     return out
 
@@ -305,6 +310,14 @@ def guard(sig, action, settings, now, state):
         action, note = "text", "no calls in quiet hours"
     if not (urgent or asked) and state["cap_used"] >= s.daily_text_cap:
         return "evening", f"daily cap of {s.daily_text_cap} reached"
+    if not (urgent or asked) and action in ("text", "voice"):
+        try:  # expected value: a kind the owner usually ignores waits for the evening note (waggle/outreach_ev.py)
+            from . import outreach_ev
+            ok, why = outreach_ev.allow(sig, s, now, state)
+        except Exception:  # noqa: BLE001 - a bug in the odds must never stop a message
+            ok, why = True, ""
+        if not ok:
+            return "evening", why
     return action, note
 
 
@@ -341,7 +354,7 @@ def context(settings, now, activity=None):
                 f"waggle: {(r.get('reply') or '')[:120]}" for r in turns))
     except Exception:  # noqa: BLE001
         pass
-    told = [r for r in notify.rows(since=now - 2 * 86400) if r["status"] in ("sent", "queued", "sending")]
+    told = [r for r in notify.rows(since=now - 2 * 86400) if r["status"] in ("sent", "queued", "sending", "held")]
     if told:
         parts.append("Already told them (last 2 days):\n" + "\n".join(
             f"[{dt.datetime.fromtimestamp(r['created']):%a %H:%M}] {r['text'][:140]}" for r in told[-15:]))
@@ -461,7 +474,7 @@ def gate_check(sigs, settings, now, ask=None):
                                                                        "is used up: nothing can go out"}}
         if getattr(settings, "gates_local", True) and (ask is not None or gates.ollama_ready(settings)):
             told = [r["text"][:100] for r in notify.rows(since=now - 2 * 86400)
-                    if r["status"] in ("sent", "queued", "sending")][-8:]
+                    if r["status"] in ("sent", "queued", "sending", "held")][-8:]
             facts = ("New signals:\n" + "\n".join(f"- [{x['kind']}] {x['title'][:120]}" for x in sigs[:12])
                      + ("\n\nAlready told in the last 2 days:\n" + "\n".join(f"- {t}" for t in told) if told else ""))
             return gates.local_check(GATE_QUESTION, facts, settings=settings, ask=ask)()
@@ -658,9 +671,24 @@ def keep_for_evening(key, kind, title, detail="", now=None, topic=None):
     return key
 
 
+def main(argv=None):
+    """python -m waggle.initiative stats: what the expected-value check has learned, per kind of signal."""
+    import sys
+    args = sys.argv[1:] if argv is None else argv
+    if args[:1] == ["stats"]:
+        from . import outreach_ev
+        return outreach_ev.main(["stats"])
+    print("usage: python -m waggle.initiative stats")
+    return 2
+
+
 def close_evening(keys, now):
     con = _db()
     for k in keys:
         con.execute("UPDATE signals SET status='in_evening_note', decided_at=? WHERE key=?", (now, k))
     con.commit()
     con.close()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
