@@ -209,3 +209,6 @@ Owner's live voice test drove these, each proven live:
   (v0.14.1 portable, task "ActivityWatch", live on :5600; Chrome extension is the owner's step, docs/ACTIVITY.md),
   focus blocks (`/waggle focus 45 calculus`, proven start/status/stop live).
 - Owner's "no audio" was Chrome muted in the Windows volume mixer (not Waggle).
+- 13:50: owner finished the Google setup (published app, signed in). Live: Waggle created "Waggle test doc" by chat in
+  6.5 s, Tasks read (3), Classroom "nothing due" (personal account). ActivityWatch Chrome extension connected
+  (bucket aw-watcher-web-chrome). Cloudflare dead-man switch SKIPPED by the owner for now (code stays inert).
