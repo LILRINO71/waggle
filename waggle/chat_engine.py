@@ -30,7 +30,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
-from . import chat_store, claude_cli, events, quota, stt, traces, voice_reply, voice_turn
+from . import chat_store, claude_cli, engine_commands, events, media_intake, quota, stt, traces, voice_reply, voice_turn
 from . import guard  # turn state for the owner-instruction rule
 from .chat_session import VOICE_STYLE, ChatSession, SessionPool
 from .config import Settings, data_path
@@ -347,12 +347,15 @@ def local_answer(chat, text, context, settings):
 
 def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=None, note="", context=None,
              settings=None, session=None, local=None, stream=True, record=True, address=None, turn_id=None,
-             typing=None, attempt=1, voice_info=None):
+             typing=None, attempt=1, voice_info=None, attachments="", owner_text=None):
     """Answer one user message into `delivery`. Never raises; returns a TurnRecord (also written to traces).
 
     typing: a running delivery.Typing (else one is started here); it stops when the first words are posted.
     attempt >= 2: the core restarted while this message was being answered. The model is told to check what was
-    already done before repeating any action, and the reply tells the user a restart interrupted the work."""
+    already done before repeating any action, and the reply tells the user a restart interrupted the work.
+    attachments: the <waggle_attachments> block (media_note) that goes to the brain after the message; it is data,
+    so owner_text (the owner's own words: the caption, "" when there is none; default: `text`) is what the
+    safety turn state and the notes search see, never the block."""
     s = settings or Settings.load()
     t0 = t0 or time.time()
     rec = TurnRecord(chat=chat, text=text, origin=origin or origin_for(platform), platform=platform or "")
@@ -381,18 +384,21 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
         note = (note + " " if note else "") + INTERRUPTED_NOTE
     reply, why = "", ""
     try:
-        ctx = context if context is not None else build_context(chat, text, voice and vr is None, s, since=prev_user)
+        ctx = context if context is not None else build_context(
+            chat, text if owner_text is None else owner_text, voice and vr is None, s, since=prev_user)
     except Exception as e:
         ctx = ""
         events.log("engine_error", stage="context", error=str(e)[:200])
     message = ((ctx + "\n\n" if ctx else "") + ("<waggle_note>" + note + "</waggle_note>\n\n" if note else "")
-               + ("<voice_reply_format>" + voice_reply.FORMAT_NOTE + "</voice_reply_format>\n\n" if vr else "") + text)
+               + ("<voice_reply_format>" + voice_reply.FORMAT_NOTE + "</voice_reply_format>\n\n" if vr else "") + text
+               + ("\n\n" + attachments if attachments else ""))
     ok, why = claude_available(s)
     if ok:
         try:
             sess = session or pool(s).get(chat)
             t_model = time.time()
-            guard.write_turn_state(chat, rec.turn_id, rec.origin, text, voice=voice, confident=rec.voice.get(
+            guard.write_turn_state(chat, rec.turn_id, rec.origin, text if owner_text is None else owner_text,
+                                   voice=voice, confident=rec.voice.get(
                 "stt_confident", True), max_age_s=(s.chat_turn_timeout_s or 600) + 60)  # what the owner said (policy)
             res = sess.turn(message, on_text=vr.feed if vr else _after_heard(writer.update, rec.voice.get("heard_line")),
                             on_tool=None if vr else writer.tool,
@@ -626,18 +632,43 @@ def delivery_for(chat, platform, address=None):
     raise ValueError(f"no delivery for platform {platform!r}")
 
 
-def media_note(media):
-    """What the brain is told about attachments: their local paths (it can Read them)."""
+def media_note(media, failed=()):
+    """What the brain is told about attachments: a <waggle_attachments> block with one <attachment path=... type=...
+    .../> per file (it Reads them). Attachments are data, so the block is passed beside the owner's words (run_turn's
+    `attachments`), never inside them."""
     items = media if isinstance(media, (list, tuple)) else [media]
-    lines = []
-    for m in items:
-        if isinstance(m, dict):
-            path, kind = m.get("path") or m.get("file") or "", m.get("kind") or m.get("type") or "file"
-        else:
-            path, kind = str(m), "file"
-        if path:
-            lines.append(f"- {kind}: {path}")
-    return ("The user attached:\n" + "\n".join(lines)) if lines else ""
+    return media_intake.attachment_note([m for m in items if m], failed)
+
+
+MEDIA_KINDS = ("photo", "image", "document", "file", "audio")
+TRANSCRIBE_MAX_UNKNOWN_BYTES = 12 * 1024 * 1024  # an audio file of unknown length above this is attached, not transcribed
+TRANSCRIPT_MAX_CHARS = 8000
+
+
+def transcribe_attachment(att, settings):
+    """Give an audio file attachment its transcript when it is short (settings.audio_transcribe_max_s, 10 minutes),
+    with the same local recogniser as voice notes (waggle/stt.py); otherwise say in `note` why it was only attached.
+    The words are the file's content, not the owner's: they stay inside the attachment block."""
+    limit = float(getattr(settings, "audio_transcribe_max_s", 600) or 600)
+    dur = att.get("duration") or media_intake.audio_duration_s(att["path"])
+    if dur is None and att.get("size", 0) > TRANSCRIBE_MAX_UNKNOWN_BYTES:
+        att["note"] = "length unknown and the file is large: not transcribed"
+        return att
+    if dur is not None and float(dur) > limit:
+        att["note"] = f"{float(dur) / 60:.0f} minutes long: not transcribed (the limit is {limit / 60:g})"
+        return att
+    res = stt.transcribe(att["path"])
+    if res.get("ok") and (res.get("text") or "").strip():
+        att["transcript"] = res["text"].strip()[:TRANSCRIPT_MAX_CHARS]
+        att["note"] = "transcript made by Waggle's local speech recogniser; it may contain mistakes"
+    else:
+        att["note"] = f"could not be transcribed: {str(res.get('error') or 'no speech')[:100]}"
+    return att
+
+
+def _failed_reply(failed):
+    what = "; ".join(f"{f['name']}: {f['why']}" for f in failed[:3]) or "it was not available"
+    return f"I couldn't use what you sent ({what}). Nothing was done with it; try sending it again, or a smaller file."
 
 
 NO_TEXT = ("I got your message but couldn't read anything in it{what}. Could you send it again, or type it?")
@@ -695,9 +726,6 @@ def handle_inbound(chat, text, *, kind="text", media=None, platform="telegram", 
                      "transcript_cleaned": text, "stt_confident": False,
                      "stt_confident_why": [f"{voice_source}: no recogniser numbers"]}
     body = (text or "").strip()
-    extra = media_note(media) if media else ""
-    if extra:
-        body = (body + "\n\n" + extra).strip()
     prev = (chat_store.get_chat(chat) or {}).get("last_user") or 0.0
 
     def direct(reply, route, failure_notice=False):
@@ -714,13 +742,33 @@ def handle_inbound(chat, text, *, kind="text", media=None, platform="telegram", 
                             turn_id=turn_id, voice=info or None)
         return rec
 
+    if kind == "command":  # a command Waggle serves itself (waggle/engine_commands.py): no model
+        return direct(engine_commands.serve(body, s), "command")
+    if kind == "sticker":  # a short local answer, never a model call
+        emoji = next((m.get("emoji") for m in (media or []) if isinstance(m, dict) and m.get("emoji")), "")
+        body = f"(sticker {emoji})".replace(" )", ")")
+        return direct(engine_commands.sticker_reply(emoji), "sticker")
+    attachments, owner_text = "", None
+    if media and not voice:
+        # Photos, files, audio files: saved to the chat's media folder, described in a note beside the caption.
+        # The caption is the owner's own words (like typed text); the files and their names and transcripts are data.
+        got = media_intake.ingest(chat, media, settings=s)
+        for att in got["ok"]:
+            if att["kind"] == "audio":
+                transcribe_attachment(att, s)
+        attachments = media_note(got["ok"], got["failed"])
+        if not got["ok"] and not body:
+            return direct(_failed_reply(got["failed"]), "attachment", failure_notice=True)
+        owner_text = body
+        if not body and got["ok"]:
+            body = media_intake.placeholder(got["ok"])
     if not body:
         if voice and vinfo:
             return direct(voice_turn.FAILED_REPLY, "empty", failure_notice=True)
         what = " (the voice note could not be transcribed)" if voice else ""
         return direct(NO_TEXT.format(what=what), "empty", failure_notice=True)
     try:
-        pre = approval_preflight(chat, body, prev)
+        pre = approval_preflight(chat, body, prev) if owner_text != "" else None  # a caption can answer an approval
     except Exception as e:
         events.log("engine_error", stage="approvals", error=str(e)[:200])
         pre = None
@@ -728,7 +776,8 @@ def handle_inbound(chat, text, *, kind="text", media=None, platform="telegram", 
         return direct(pre[1], "approval")
     return run_turn(chat, body, d, platform=platform, origin=origin, voice=voice, t0=t0,
                     note=pre[1] if pre else "", settings=s, session=session, local=local, address=address,
-                    turn_id=turn_id, typing=keeper, attempt=attempt, voice_info=vinfo)
+                    turn_id=turn_id, typing=keeper, attempt=attempt, voice_info=vinfo,
+                    attachments=attachments, owner_text=owner_text)
 
 
 def transcribe_note(path, settings):

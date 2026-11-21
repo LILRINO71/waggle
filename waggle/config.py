@@ -98,6 +98,12 @@ class Settings:
     engine_enabled: bool = False  # True = the turn engine answers in the gateway; False = the old router path
     # Telegram chat ids whose typed messages the gateway hands to the core's turn engine (empty = none).
     engine_chats: list = field(default_factory=list)
+    # Photos, files, audio files, stickers and Waggle's own /commands in an engine chat go to the engine too
+    # (waggle/media_intake.py, waggle/engine_commands.py); False = only typed text and voice notes.
+    engine_media: bool = True
+    media_max_mb: float = 20  # a file larger than this is refused with a plain reply (also the Bot API's own limit)
+    media_keep_days: float = 14  # saved attachments are deleted after this many days
+    audio_transcribe_max_s: float = 600  # an audio file (not a voice note) up to this long is transcribed
     chat_tools: list = field(default_factory=lambda: ["Read", "Glob", "Grep", "Bash", "PowerShell", "WebSearch", "Write", "Edit", "NotebookEdit",
                                                       "WebFetch"])
     chat_effort: str = "low"

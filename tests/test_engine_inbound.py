@@ -207,11 +207,15 @@ def test_on_inbound_voice_hands_the_audio_file_to_the_turn(settings, monkeypatch
     assert seen == ["C:/in/note.ogg"] and out["delivered"] and "C:/in/note.ogg" not in fake.procs[0].inputs[0]
 
 
-def test_handle_inbound_media_and_origin(settings, monkeypatch):
+def test_handle_inbound_media_and_origin(settings, monkeypatch, tmp_path):
     monkeypatch.setattr(chat_engine, "build_context", lambda *a, **k: "")
-    rec, api, fake = inbound(settings, "what is this?", kind="photo", media=[{"path": "inbox/photo.jpg", "kind": "photo"}],
+    photo = tmp_path / "photo.jpg"
+    photo.write_bytes(b"\xff\xd8\xff-jpeg")
+    rec, api, fake = inbound(settings, "what is this?", kind="photo", media=[{"path": str(photo), "kind": "photo"}],
                              origin="test")
-    assert "- photo: inbox/photo.jpg" in fake.procs[0].inputs[0] and rec.origin == "test"
+    sent = fake.procs[0].inputs[0]  # the file is saved into the chat's media folder and described in a note
+    assert sent.startswith("what is this?") and '<attachment path="' in sent and 'kind="image"' in sent
+    assert rec.origin == "test"
     assert traces.all_traces() == [] and traces.get(rec.trace_id)["origin"] == "test"
     with pytest.raises(ValueError):
         chat_engine.handle_inbound("telegram:42", "x", origin="robot", delivery=FakeDelivery())
