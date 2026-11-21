@@ -357,3 +357,64 @@ def test_a_missing_ffmpeg_is_a_clear_error(tmp_path, monkeypatch):
     monkeypatch.setattr(voice_reply, "find_ffmpeg", lambda: None)
     with pytest.raises(RuntimeError, match="ffmpeg was not found"):
         voice_reply.to_ogg(tmp_path / "a.wav", tmp_path / "a.ogg", 5)
+
+
+# ---- speech-to-text ------------------------------------------------------------------------------------------
+
+class _Seg:
+    def __init__(self, text, no_speech=0.0, logprob=-0.2):
+        self.text, self.no_speech_prob, self.avg_logprob = text, no_speech, logprob
+
+
+class _Model:
+    def __init__(self, segs, duration=2.5):
+        self.segs, self.duration, self.calls = segs, duration, []
+
+    def transcribe(self, audio, **kw):
+        self.calls.append((audio, kw))
+        return iter(self.segs), type("Info", (), {"duration": self.duration})()
+
+
+def _note(tmp_path, name="n.ogg"):
+    f = tmp_path / name
+    f.write_bytes(b"OggS....")
+    return f
+
+
+def test_stt_joins_segments_drops_silence_hallucinations_and_uses_hermes_settings(tmp_path, monkeypatch):
+    from waggle import stt
+    model = _Model([_Seg(" Remind me"), _Seg("Thank you.", no_speech=0.9, logprob=-1.5), _Seg("to stand up. ")])
+    monkeypatch.setattr(stt, "decode", lambda path, timeout=60: "samples")
+    r = stt.transcribe(_note(tmp_path), loader=lambda name: (model, 0.25))
+    assert r["ok"] and r["text"] == "Remind me to stand up." and r["load_s"] == 0.25 and r["audio_s"] == 2.5
+    kw = model.calls[0][1]
+    assert kw["beam_size"] == 5 and kw["vad_filter"] is True and kw["condition_on_previous_text"] is False
+    assert kw["no_speech_threshold"] == 0.6 and kw["log_prob_threshold"] == -1.0
+
+
+def test_stt_failures_are_results_not_exceptions(tmp_path, monkeypatch):
+    from waggle import stt
+    monkeypatch.setattr(stt, "decode", lambda path, timeout=60: "samples")
+    assert "no speech" in stt.transcribe(_note(tmp_path), loader=lambda n: (_Model([]), 0))["error"]
+    assert stt.transcribe(tmp_path / "missing.ogg")["error"] == "the audio file is missing"
+    assert stt.transcribe(_note(tmp_path, "a.txt"))["error"] == "not an audio file"
+    empty = tmp_path / "e.ogg"
+    empty.write_bytes(b"")
+    assert stt.transcribe(empty)["error"] == "the audio file is empty"
+
+    def boom(name):
+        raise OSError("model files missing")
+    assert "model files missing" in stt.transcribe(_note(tmp_path), loader=boom)["error"]
+
+
+@pytest.mark.skipif(voice_reply.find_ffmpeg() is None, reason="no ffmpeg under ~/.hermes/tools")
+def test_stt_decodes_with_the_real_ffmpeg_to_sixteen_khz_samples(tmp_path):
+    from waggle import stt
+    wav = tmp_path / "t.wav"
+    with wave.open(str(wav), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(24000)
+        w.writeframes(b"\0\0" * 24000)
+    samples = stt.decode(wav)
+    assert 15900 <= len(samples) <= 16100 and str(samples.dtype) == "float32"

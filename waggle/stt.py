@@ -10,6 +10,7 @@ the last note and is then released (about a gigabyte), so a chat that is quiet f
     transcribe(path) -> {"ok", "text", "error", "seconds" (total), "load_s", "audio_s", "source"}
 """
 import os
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -87,6 +88,23 @@ def _keep(segment):
                 and getattr(segment, "avg_logprob", 0.0) < LOGPROB_THRESHOLD)
 
 
+def decode(path, timeout=60):
+    """The note as 16 kHz mono float samples, decoded by the ffmpeg that ships under ~/.hermes/tools: the PyAV in
+    this interpreter is newer than faster-whisper 1.2.1 accepts (its own file decoding fails with a TypeError),
+    and faster-whisper takes samples directly. Returns the file's path itself when there is no ffmpeg."""
+    from . import voice_reply
+    exe = voice_reply.find_ffmpeg()
+    if not exe:
+        return str(path)
+    import numpy as np
+    flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    r = subprocess.run([exe, "-v", "error", "-i", str(path), "-f", "f32le", "-ac", "1", "-ar", "16000", "-"],
+                       capture_output=True, timeout=timeout, creationflags=flags)
+    if r.returncode != 0 or not r.stdout:
+        raise RuntimeError(("ffmpeg could not decode the note: " + r.stderr.decode("utf-8", "replace").strip())[:200])
+    return np.frombuffer(r.stdout, dtype=np.float32)
+
+
 def audio_file_problem(path):
     """Why `path` cannot be transcribed, or "" when it can."""
     p = Path(str(path or ""))
@@ -116,13 +134,15 @@ def transcribe(path, *, idle_s=None, loader=None):
         return out
     try:
         model, out["load_s"] = (loader or _load)(model_name())
+        samples = decode(path)
         segments, info = model.transcribe(
-            str(path), beam_size=5, condition_on_previous_text=False, vad_filter=True,
+            samples, beam_size=5, condition_on_previous_text=False, vad_filter=True,
             vad_parameters={"min_silence_duration_ms": VAD_MIN_SILENCE_MS},
             no_speech_threshold=NO_SPEECH_THRESHOLD, log_prob_threshold=LOGPROB_THRESHOLD)
         parts = [s.text.strip() for s in list(segments) if _keep(s)]  # the decode runs while iterating
         out["text"] = " ".join(p for p in parts if p).strip()
-        out["audio_s"] = round(float(getattr(info, "duration", 0.0) or 0.0), 2)
+        dur = float(getattr(info, "duration", 0.0) or 0.0)
+        out["audio_s"] = round(dur or (0.0 if isinstance(samples, str) else len(samples) / 16000.0), 2)
         out["ok"] = bool(out["text"])
         if not out["ok"]:
             out["error"] = "no speech was recognised"
