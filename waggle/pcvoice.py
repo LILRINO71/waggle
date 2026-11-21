@@ -683,8 +683,10 @@ class PcVoice:
         threading.Thread(target=warm, daemon=True, name="waggle-pcvoice-stt-warm").start()
 
     def warm_models(self):
-        """At start: the judge's model (the recogniser is loaded when speech begins)."""
+        """At start: the judge's model and the core's recogniser (a cold recogniser load took over 20 s right after
+        a restart, and a wake word said meanwhile was lost)."""
         self._warm_judge(force=True)
+        self._warm_stt(force=True)
 
     def _event(self, name, **info):
         if self.on_event:
@@ -1091,6 +1093,7 @@ class PcVoice:
                         ep = None
                         time.sleep(0.05)
                         continue
+                    self._warm_stt()  # keep the recogniser loaded while listening (a quiet spell let it unload)
                     f = src.read(0.5)
                     if f is None:
                         continue

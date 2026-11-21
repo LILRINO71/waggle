@@ -433,3 +433,10 @@ def test_sentences_that_arrive_together_are_spoken_as_one_piece_after_the_first(
     sp.finished(5)
     assert made[0] == "First one."
     assert "Second one. Third one." in made or made[1:] == ["Second one.", "Third one."]
+
+
+def test_the_recogniser_is_kept_loaded_while_listening_even_in_a_quiet_room(rig, tmp_path):
+    client = WarmClient(tmp_path)
+    pv = smart(rig, client, wake=True, source=source(tmp_path, [(6.0, 0)]))  # silence only: nobody talks
+    pv.warm_models()
+    assert until(lambda: client.warms >= 1)
