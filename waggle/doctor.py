@@ -144,13 +144,48 @@ def check_jobs():
     return "ok", "no stuck builds", ""
 
 
+GATEWAY_TASK = "Waggle Gateway"
+
+
+def _task_state(name):
+    """'ready', 'disabled' or None (no such task) for a Windows scheduled task. Read from the task's XML, whose
+    tags are the same in every display language (the list format prints "Status" in the system's own)."""
+    if os.name != "nt":
+        return None
+    import re
+    import subprocess
+    try:
+        r = subprocess.run(["schtasks", "/Query", "/TN", name, "/XML"], capture_output=True, timeout=15,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    # schtasks writes the XML as UTF-16 with a byte-order mark on some systems and in the console's code page on others
+    raw = r.stdout or b""
+    xml = raw.decode("utf-16", errors="ignore") if raw[:2] in (b"\xff\xfe", b"\xfe\xff") \
+        else raw.decode("utf-8", errors="ignore")
+    settings = re.search(r"<Settings>(.*?)</Settings>", xml, re.S)
+    off = settings and re.search(r"<Enabled>\s*false\s*</Enabled>", settings.group(1), re.I)
+    return "disabled" if off else "ready"
+
+
 def check_startup():
+    """Does Waggle come back after a restart of the PC? The gateway starts from the scheduled task "Waggle Gateway"
+    (tools/install-gateway-task.ps1) since 2026-11-20; a launcher in the Startup folder, the older way, counts too.
+    The voice window is started by hand unless its shortcut is in the Startup folder: that is a choice, not a fault."""
     startup = Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
-    need = ["Waggle Gateway.vbs", "Waggle Voice.lnk"]
-    missing = [n for n in need if not (startup / n).exists()]
-    if missing:
-        return "warn", f"not starting at login: {', '.join(missing)}", "Run install-startup.ps1."
-    return "ok", "gateway + voice start at login", ""
+    task = _task_state(GATEWAY_TASK)
+    in_folder = (startup / "Waggle Gateway.vbs").exists()
+    voice = "starts too" if (startup / "Waggle Voice.lnk").exists() else "is started by hand"
+    if task == "ready":
+        return "ok", f"gateway starts at login (scheduled task); the voice window {voice}", ""
+    if in_folder:
+        return "ok", f"gateway starts at login (Startup folder); the voice window {voice}", ""
+    if task == "disabled":
+        return "warn", f'the "{GATEWAY_TASK}" task is switched off, so Waggle will not start at login', \
+            f'In PowerShell: Enable-ScheduledTask -TaskName "{GATEWAY_TASK}"'
+    return "warn", "the gateway does not start at login", "Run tools/install-gateway-task.ps1."
 
 
 def check_disk():
