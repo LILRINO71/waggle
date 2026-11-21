@@ -152,3 +152,13 @@ def test_a_late_voice_reminder_says_so_in_both_forms(speech):
 def test_checkin_payload_carries_the_flag():
     item = followups._add_checkin("test the shooter", at(20), "i'll test it", at(12), None, at(12), voice=True)
     assert timers.get(f"checkin:{item['id']}")["payload"].get("voice") is True
+
+def test_the_running_turn_decides_before_any_recorded_turn(monkeypatch):
+    """The turn that creates the reminder is not in the trace store yet, so the live turn state wins."""
+    from waggle import followups, guard
+    monkeypatch.setattr(guard, "current_turn", lambda env=None: {"origin": "user", "voice": True})
+    assert followups.asked_by_voice() is True
+    monkeypatch.setattr(guard, "current_turn", lambda env=None: {"origin": "user", "voice": False})
+    assert followups.asked_by_voice() is False
+    monkeypatch.setattr(guard, "current_turn", lambda env=None: {"origin": "test", "voice": True})
+    assert followups.asked_by_voice(turns=None) in (True, False)  # falls back to recorded turns; never raises

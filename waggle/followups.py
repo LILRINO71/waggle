@@ -84,6 +84,11 @@ def asked_by_voice(now=None, chat="", turns=None, window_s=VOICE_WINDOW_S):
     chat is known. turns: trace dicts, newest first (default: learn.user_turns from traces.db). Never raises."""
     try:
         from . import learn
+        if turns is None:  # the running turn says how it arrived; its own trace is only written afterwards
+            from . import guard
+            cur = guard.current_turn()
+            if cur and cur.get("origin") == "user":
+                return bool(cur.get("voice"))
         now = time.time() if now is None else float(now)
         rows = learn.user_turns(now - window_s) if turns is None else turns
         for r in rows:
