@@ -762,7 +762,7 @@ def _lock(now):
     return True
 
 
-def run_due(now=None, settings=None, force=(), only=None, **ctx):
+def run_due(now=None, settings=None, force=(), only=None, exclude=(), **ctx):
     """Run every job that is due (or the ones in `force`/`only`). Idempotent: running it twice in a row does
     nothing the second time. ctx: fakes for tests (runner, gh, asker, connectors, embedder, doc_embedder).
     Returns {job: result} and logs one 'ingest' event."""
@@ -772,6 +772,7 @@ def run_due(now=None, settings=None, force=(), only=None, **ctx):
         return {"skipped": "another ingest is running"}
     try:
         names = list(only) if only else sorted(set(due(now)) | set(force), key=list(JOBS).index)
+        names = [n for n in names if n not in exclude]  # the core runs the digest and learning on their own timers
         report, last = {}, kstore.get("ingest.last_run", {})
         changed = False
         for name in names:

@@ -117,7 +117,7 @@ def run(settings=None, embedder=None, dirs=None, now=None, bank=None):
     if not items:
         return {"items": 0, "answered": 0, "score": None, "known": None, "misses": []}
     everything = _vault_text(s)
-    answered = known = 0
+    answered = known = errors = 0
     misses = []
     for it in items:
         ans = it["answer"].lower()
@@ -126,12 +126,14 @@ def run(settings=None, embedder=None, dirs=None, now=None, bank=None):
         try:
             hits, _ = memory.relevant(it["question"], s, embedder)
         except Exception:
-            hits = []
+            hits, errors = [], errors + 1
         if any(ans in h["text"].lower() for h in hits):
             answered += 1
         else:
             misses.append({"note": it["note"], "question": it["question"][:160], "answer": it["answer"],
                            "in_vault": has})
     n = len(items)
+    if errors == n:  # retrieval itself is down (no embedder): a score of 0 would be a lie, not a baseline
+        raise RuntimeError(f"retrieval unavailable: all {n} quiz items failed to search")
     return {"items": n, "answered": answered, "score": round(answered / n, 3), "known": round(known / n, 3),
             "misses": misses[:20]}
