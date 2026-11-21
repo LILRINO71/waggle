@@ -12,6 +12,7 @@ POST /turn           an inbound message, JSON {chat, address, text, kind, media,
                      message itself.
 POST /voice          the hands-free line (waggle/core/voiceline.py): its own bearer token, the file voice.token;
                      the core token does not open it, and the voice token opens nothing else.
+POST /voice/transcribe  the same token: the words of one recording (the PC voice's wake word); no turn runs.
 Anything else is 404; without the token everything is 401."""
 import hmac
 import json
@@ -244,8 +245,9 @@ def serve(loops_fn=None, port=None, accepting_fn=None):
         def do_POST(self):  # noqa: N802 - http.server API
             arrived = self.server.arrival(self.request)
             url = urlparse(self.path)
-            if url.path == voiceline.PATH:  # its own token, checked inside: the core token is not what opens it
-                code, headers, data = voiceline.respond(self.headers, self.rfile, url.query, accepting=accepting_fn)
+            if url.path in (voiceline.PATH, voiceline.TRANSCRIBE_PATH):  # its own token, checked inside
+                code, headers, data = voiceline.respond(self.headers, self.rfile, url.query, accepting=accepting_fn,
+                                                        path=url.path)
                 try:
                     return self._send_raw(code, headers, data)
                 except OSError:

@@ -250,13 +250,15 @@ class BotApi:
     def get_me(self):
         return self._call("getMe")
 
-    def send_message(self, chat_id, text, *, parse_mode=None, reply_to=None, disable_preview=True):
+    def send_message(self, chat_id, text, *, parse_mode=None, reply_to=None, disable_preview=True, silent=False):
         parts = split_text(text)
         if not parts:
             raise TelegramError("permanent", "message text is empty")
         ids = []
         for n, part in enumerate(parts):
             payload = {"chat_id": _chat_id(chat_id), "text": part}
+            if silent:  # delivered without a notification sound (the owner already heard it on the PC)
+                payload["disable_notification"] = True
             if disable_preview:
                 payload["link_preview_options"] = {"is_disabled": True}
             if reply_to is not None and n == 0:
@@ -294,12 +296,15 @@ class BotApi:
         self._call("sendChatAction", {"chat_id": _chat_id(chat_id), "action": action})
         return True
 
-    def send_voice(self, chat_id, path, *, caption=None, duration=None, reply_to=None):
+    def send_voice(self, chat_id, path, *, caption=None, duration=None, reply_to=None, silent=False):
         extra = {} if duration is None else {"duration": int(duration)}
+        if silent:
+            extra["disable_notification"] = "true"
         return self._send_file("sendVoice", "voice", chat_id, path, caption, reply_to, extra)
 
-    def send_document(self, chat_id, path, *, caption=None, reply_to=None):
-        return self._send_file("sendDocument", "document", chat_id, path, caption, reply_to, {})
+    def send_document(self, chat_id, path, *, caption=None, reply_to=None, silent=False):
+        extra = {"disable_notification": "true"} if silent else {}
+        return self._send_file("sendDocument", "document", chat_id, path, caption, reply_to, extra)
 
     def get_updates(self, offset=None, *, timeout=25, limit=100):
         payload = {"timeout": int(timeout), "limit": int(limit)}
@@ -455,20 +460,22 @@ def send_row(row, api=None):
     body = row.get("body") or ""
     parse_mode = meta.get("parse_mode")
     reply_to = meta.get("reply_to")
+    quiet = {"silent": True} if meta.get("silent") else {}  # meta.silent: no notification sound
     if kind == "text":
-        return str(api.send_message(chat, body, parse_mode=parse_mode, reply_to=reply_to)[-1])
+        return str(api.send_message(chat, body, parse_mode=parse_mode, reply_to=reply_to, **quiet)[-1])
 
     file = row.get("file")
     if not file or not Path(file).is_file():
         if meta.get("text_fallback"):
-            return str(api.send_message(chat, body, parse_mode=parse_mode, reply_to=reply_to)[-1])
+            return str(api.send_message(chat, body, parse_mode=parse_mode, reply_to=reply_to, **quiet)[-1])
         raise TelegramError("permanent", f"file for the {kind} message is missing")
     long_caption = len(body) > MAX_CAPTION
     caption = None if long_caption else (body or None)
     if kind == "voice":
-        msg_id = api.send_voice(chat, file, caption=caption, duration=meta.get("duration"), reply_to=reply_to)
+        msg_id = api.send_voice(chat, file, caption=caption, duration=meta.get("duration"), reply_to=reply_to,
+                                **quiet)
     else:
-        msg_id = api.send_document(chat, file, caption=caption, reply_to=reply_to)
+        msg_id = api.send_document(chat, file, caption=caption, reply_to=reply_to, **quiet)
     if long_caption:
-        api.send_message(chat, body, parse_mode=parse_mode)
+        api.send_message(chat, body, parse_mode=parse_mode, **quiet)
     return str(msg_id)

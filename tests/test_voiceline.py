@@ -432,3 +432,107 @@ def test_with_several_engine_chats_the_first_one_is_the_owners(line):
     cfg["engine_chats"] = ["777", "123"]
     Path(config.CONFIG_FILE).write_text(json.dumps(cfg), encoding="utf-8")
     assert voiceline.owner_chat() == "telegram:123"
+
+
+# ---- the PC voice's options -----------------------------------------------------------------------------------
+
+def copy_meta():
+    rows = sent_copies()
+    assert len(rows) == 1
+    return rows[0]["meta"]
+
+
+def test_format_wav_gives_the_speech_servers_wav_without_conversion(line, monkeypatch):
+    monkeypatch.setattr(voice_reply, "to_m4a", lambda *a, **k: pytest.fail("no AAC encoding for the PC"))
+    code, headers, data = line.post({"text": "Remind me to call Sam."}, query="?format=wav&client=pc")
+    assert code == 200 and headers["content-type"] == "audio/wav" and kind(data) == "wav"
+    assert headers["content-disposition"].endswith('.wav"')
+    with wave.open(BytesIO(data)) as w:
+        assert w.getnframes() > 0
+    assert spoken_of(headers) == "The reminder is set, sir."
+
+
+def test_the_holding_line_also_comes_as_wav(line, monkeypatch):
+    monkeypatch.setenv("WAGGLE_VOICE_HOLD_S", "0.3")
+    line.slow_s = 1.0
+    code, headers, data = line.post({"text": "SLOWTURN long"}, query="?format=wav&client=pc")
+    assert code == 200 and headers["x-waggle-status"] == "working" and kind(data) == "wav"
+    deadline = time.time() + 30  # let the turn finish here, so its copy cannot land in the next test's home
+    while not sent_copies() and time.time() < deadline:
+        time.sleep(0.05)
+
+
+def test_pc_text_is_labelled_as_the_wake_word_and_its_copy_is_silent(line):
+    code, headers, _ = line.post({"text": "What time is it?"}, query="?format=wav&client=pc")
+    v = json.loads(traces.by_turn_id(headers["x-waggle-turn"])["extra"])["voice_turn"]
+    assert v["transcript_source"] == "PC wake word" and v["stt_confident"] is False
+    meta = copy_meta()
+    assert meta["silent"] is True and meta["via"] == "pc voice" and "speak_pc" not in meta
+
+
+def test_a_phone_request_is_unchanged_by_the_pc_options(line):
+    code, headers, _ = line.post({"text": "What time is it?"}, query="?client=unknown")
+    v = json.loads(traces.by_turn_id(headers["x-waggle-turn"])["extra"])["voice_turn"]
+    assert v["transcript_source"] == "phone dictation"
+    meta = copy_meta()
+    assert "silent" not in meta and "speak_pc" not in meta and meta["via"] == "voice line"
+
+
+def test_a_pc_answer_after_the_holding_line_is_marked_to_be_spoken_on_the_pc(line, monkeypatch):
+    monkeypatch.setenv("WAGGLE_VOICE_HOLD_S", "0.3")
+    line.slow_s = 1.0
+    code, headers, _ = line.post({"text": "SLOWTURN long"}, query="?format=wav&client=pc")
+    assert headers["x-waggle-status"] == "working"
+    deadline = time.time() + 30
+    while not sent_copies() and time.time() < deadline:
+        time.sleep(0.05)
+    meta = copy_meta()
+    assert meta["speak_pc"] is True and "silent" not in meta
+
+
+def transcribe_post(line, body, *, token="own", content_type="audio/wav"):
+    h = {"Content-Type": content_type}
+    if token:
+        h["Authorization"] = f"Bearer {line.token if token == 'own' else token}"
+    conn = http.client.HTTPConnection("127.0.0.1", line.port, timeout=60)
+    try:
+        conn.request("POST", "/voice/transcribe", body=body, headers=h)
+        r = conn.getresponse()
+        return r.status, r.read()
+    finally:
+        conn.close()
+
+
+def test_transcribe_gives_the_words_runs_no_turn_and_keeps_nothing(line, monkeypatch, caplog):
+    seen = {}
+
+    def fake(path, **kw):
+        seen.update(path=path, bytes=Path(path).read_bytes())
+        return {"ok": True, "text": "Waggle what is the weather", "error": "", "seconds": 0.2, "load_s": 0.0,
+                "audio_s": 1.5, "source": "fake", "confidence": {"confident": True}}
+    monkeypatch.setattr(stt, "transcribe", fake)
+    caplog.set_level(logging.DEBUG)
+    code, data = transcribe_post(line, b"RIFFfakeaudio")
+    body = json.loads(data)
+    assert code == 200 and body["text"] == "Waggle what is the weather" and body["ok"] and body["confident"]
+    assert seen["bytes"] == b"RIFFfakeaudio" and not Path(seen["path"]).exists()
+    assert line.prompts == [] and outbox.list(limit=10) == []
+    assert "weather" not in caplog.text
+
+
+def test_transcribe_needs_the_voice_token_and_audio(line, monkeypatch):
+    monkeypatch.setattr(stt, "transcribe", lambda p, **k: pytest.fail("not reached"))
+    assert transcribe_post(line, b"x", token="")[0] == 401
+    assert transcribe_post(line, b"x", token="wrong")[0] == 401
+    assert transcribe_post(line, b'{"text": "hi"}', content_type="application/json")[0] == 415
+
+
+def test_a_failed_transcription_still_deletes_the_audio(line, monkeypatch):
+    seen = {}
+
+    def boom(path, **kw):
+        seen["path"] = path
+        raise RuntimeError("model gone")
+    monkeypatch.setattr(stt, "transcribe", boom)
+    code, _ = transcribe_post(line, b"RIFFx")
+    assert code == 500 and not Path(seen["path"]).exists()
