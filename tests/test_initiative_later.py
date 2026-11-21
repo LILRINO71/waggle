@@ -177,3 +177,15 @@ def test_followup_in_quiet_hours_goes_to_the_evening_note_not_nowhere(s):
                             activity={}, turns=[])
     assert out[0]["action"] == "evening"
     assert followups.get(item["id"])["status"] == "evening"
+
+
+def test_the_model_gets_the_finding_the_activity_the_time_and_instructions_that_follow_what_the_user_does(s):
+    initiative.record([sig("t1", kind="github_ci", title="robot-code: 'tests' failed on main")], at(14, 10))
+    model = Model({"action": "text", "message": "Tests failed on robot-code.", "reason": "they pushed there today"})
+    initiative.decide(s, at(14, 10), asker=model, activity={"robot-code": ["Add intake sensor driver"]})
+    prompt = model.prompts[0]
+    assert "'tests' failed on main" in prompt and "Commits today: robot-code" in prompt and "14:10" in prompt
+    for action in initiative.ACTIONS:
+        assert action in initiative.SYSTEM
+    low = initiative.SYSTEM.lower()
+    assert "worked on today" in low and "two hours" in low and "marketing" in low and "one sentence" in low
