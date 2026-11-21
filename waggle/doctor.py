@@ -246,6 +246,11 @@ def check_context():
     return context_alive.as_doctor()
 
 
+def check_google(s):
+    from . import google
+    return google.doctor_check(s)
+
+
 def run_all(settings=None):
     s = settings or Settings.load()
     checks = [("Hermes config", check_hermes_config), ("Gateway + bridge", check_gateway),
@@ -253,7 +258,7 @@ def run_all(settings=None):
               ("Scheduled jobs", check_cron), ("Vault + memory", lambda: check_vault(s)), ("Skills", check_skills),
               ("Builds", check_jobs), ("Startup", check_startup), ("Disk", check_disk), ("Phone calls", check_phone),
               ("Background work", lambda: check_background(s)), ("Chat context", check_context),
-              ("Backups", lambda: check_backup(s))]
+              ("Backups", lambda: check_backup(s)), ("Google", lambda: check_google(s))]
     out = []
     for name, fn in checks:
         try:

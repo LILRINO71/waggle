@@ -144,6 +144,10 @@ class Settings:
                                                       "WebFetch"])
     # Wolfram's free cloud MCP (no key): checked maths and science for the chat brain. false = not offered.
     wolfram_mcp: bool = True
+    # Google through gogcli (waggle/google.py, docs/GOOGLE.md): Docs, Drive, Calendar, Tasks, Classroom for the core and
+    # the chat brain. Inert until the owner signs in once. google_account only matters if two accounts are signed in.
+    google_gog: bool = True
+    google_account: str = ""
     # python -m waggle.feedwatch: new posts and releases from the owner's feed list (FIRST blog, FTC SDK, Ollama...).
     feedwatch_enabled: bool = True
     # Drop folder: scans, .xlsx and pictures read by markitdown-ocr with the local vision model (waggle/dropbox_markitdown.py).
