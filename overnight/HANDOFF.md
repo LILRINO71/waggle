@@ -69,13 +69,22 @@ recorded block (`quota._state()["blocked_until"]`) and the local model answers t
 4. Waggle's background work (outreach decisions, digest, quiz) is deferred whenever the 5-hour window reads
    above 60%, and every other Claude session on the account counts toward it. Decide whether cheap decision
    calls get their own small allowance.
-5. `python -m waggle.core stop` does not pause the watchdog (it restarts the core within 10 s). There is no
-   single "Waggle off" command; uninstall with `tools/install-core-task.ps1 -Uninstall`.
+5. `python -m waggle.core stop` still does not pause the watchdog (it restarts the core within 10 s); that is by
+   design. The one off switch is `python -m waggle.core off [--for 2h] [--all]` / `on` (also `python -m waggle
+   off|on|status`): it writes `~/.waggle/OFF`, which the watchdog, the logon tasks, `control.start()` and the
+   gateway plug-in obey (branch rebuild/offswitch; live proof steps in its commit message). A damaged OFF file
+   counts as ON, on purpose.
 6. Four guard holes are kept as expected-failure tests in `tests/test_guard.py`.
 7. Not built: end-to-end test client (plan step 5; needs the owner's one-time Telegram login), the closed
    learning loop (step 7), cron jobs moved to core timers (step 10), evaluation suites (11), autonomous work
    (12), Waggle changing its own code (13). The README is out of date.
-8. The stray second gateway task "Hermes_Gateway" re-enables itself.
+8. The stray second gateway task "Hermes_Gateway" re-enables itself. It belongs to a second Hermes home,
+   `%LOCALAPPDATA%\hermes` (the default home, so Hermes gives it the bare name; `~/.hermes` gets
+   `Hermes_Gateway_<suffix>`). Hermes registers it (`hermes_cli/gateway_windows.py`: `install()` -> `_install_scheduled_task`,
+   and `reconcile_scheduled_task()` from `start()` re-registers it when its definition drifts). Its launcher
+   `gateway-service\Hermes_Gateway.vbs` is currently renamed `.vbs.disabled`, so the task is registered but starts
+   nothing. `off --all` does not stop that second gateway (cron jobs of that home); stop it with `hermes gateway
+   stop` under HERMES_HOME=%LOCALAPPDATA%\hermes.
 
 ## Deploy procedure
 

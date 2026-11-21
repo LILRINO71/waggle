@@ -30,12 +30,13 @@ import threading
 import time
 from pathlib import Path
 
-from waggle.core import (events, health, inbound, jobs, ledger, metrics, outbox, plugins, procs, sender, settings,
-                         store, timers, voiceline)
+from waggle.core import (events, health, inbound, jobs, ledger, metrics, offswitch, outbox, plugins, procs, sender,
+                         settings, store, timers, voiceline)
 
 REPO = settings.REPO
 RETENTION_S = 30 * 86400
 EXIT_ALREADY_RUNNING = 3
+EXIT_SWITCHED_OFF = 0  # a core started at logon while Waggle is off leaves at once; 0 so Task Scheduler does not retry
 LOCK_WAIT_S = 2.0  # a watchdog probing the lock holds it for an instant; do not refuse because of that
 
 log = logging.getLogger("waggle.core")
@@ -300,6 +301,10 @@ class Core:
 
     def run(self):
         setup_logging()
+        if offswitch.refuse_if_off("core"):  # the off switch (file OFF in the Waggle home): do not even take the lock
+            if sys.stderr:
+                print("waggle core: not started, Waggle is switched off (python -m waggle.core on)", file=sys.stderr)
+            return EXIT_SWITCHED_OFF
         if not self.startup():
             log.warning("another core holds the lock; exiting")
             if sys.stderr:
@@ -315,6 +320,9 @@ class Core:
                     except Exception as e:
                         self._error("heartbeat", e)
                     next_beat = time.time() + self.cad.heartbeat
+                    if offswitch.is_off():  # switched off by hand or by another tool while this core runs
+                        log.warning("the off switch is set; stopping")
+                        break
                 time.sleep(self.cad.stop_check)
         except KeyboardInterrupt:
             pass

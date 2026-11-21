@@ -3,6 +3,19 @@
 Set sh = CreateObject("WScript.Shell")
 local = sh.ExpandEnvironmentStrings("%LOCALAPPDATA%")
 
+' The off switch (python -m waggle.core off --all): the file OFF in the Waggle home with "all": true means nothing
+' of this launcher starts at logon. A plain `off` leaves the gateway running so it can answer "Waggle is switched
+' off". A file that cannot be read counts as not off (the owner's reminders and mail must keep working).
+On Error Resume Next
+offFile = sh.ExpandEnvironmentStrings("%USERPROFILE%") & "\.waggle\OFF"
+If CreateObject("Scripting.FileSystemObject").FileExists(offFile) Then
+  Set offIn = CreateObject("Scripting.FileSystemObject").OpenTextFile(offFile, 1)
+  offText = offIn.ReadAll
+  offIn.Close
+  If InStr(offText, """all"": true") > 0 Then WScript.Quit
+End If
+On Error GoTo 0
+
 Function OllamaUp()
   On Error Resume Next
   Set http = CreateObject("MSXML2.XMLHTTP")

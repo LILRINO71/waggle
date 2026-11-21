@@ -702,6 +702,11 @@ def cmd_run(args):
         print("the PC voice is already running")
         return 1
     _setup_logging()
+    from waggle.core import offswitch
+    if offswitch.refuse_if_off("PC voice", logger=log):  # started at logon while Waggle is switched off: leave at once, exit 0
+        lock.release()
+        print("the PC voice is not started: Waggle is switched off (python -m waggle.core on)")
+        return 0
     for old in folder("tmp").glob("*.wav"):  # left by a speech request that timed out before the server wrote it
         old.unlink(missing_ok=True)
     spk = speaker.Speaker().start()
