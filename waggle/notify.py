@@ -289,7 +289,8 @@ def _view(row):
     if row is None:
         return None
     meta = row.get("meta") or {}
-    return {**row, "status": row["state"], "text": row.get("body", ""), "held": bool(meta.get("held")),
+    return {**row, "status": row["state"], "text": row.get("body", ""),
+            "held": bool(meta.get("held")) or row["state"] == "held", "hold": meta.get("hold"),
             "topic": meta.get("topic", ""), "title": meta.get("title", ""), "urgent": bool(meta.get("urgent")),
             "asked": bool(meta.get("asked")), "decision_id": meta.get("decision_id")}
 
@@ -298,6 +299,8 @@ def deliver(kind, text="", *, path="", title="", urgent=False, asked=False, orig
             decision_id=None, expires=None, settings=None, now=None, chat="", ref=None, meta=None):
     """Decide whether and when a message may go out, then write exactly one outbox row. Returns that row (see
     _view), or a row with status 'suppressed' (and id None) when developer/test activity caused it.
+    An unprompted, non-urgent text or voice message (origins in holdq.HOLD_ORIGINS) is written in the `held` state
+    and released at the owner's next natural break or after hold_max_wait_min (waggle/holdq.py).
 
     Nothing is sent here: the core's sender loop sends due rows and retries failures. Non-urgent messages wait
     out quiet hours (not_before); urgent ones, things the user asked for and pushes do not. A row expires after
@@ -321,6 +324,11 @@ def deliver(kind, text="", *, path="", title="", urgent=False, asked=False, orig
                 "text": text or "", "origin": origin, "held": False, "meta": {}}
     held = not urgent and not asked and kind != "push" and in_quiet_hours(s, now)
     not_before = quiet_ends(s, now) if held else None
+    hold = None   # an unprompted message waits for the owner's next natural break (waggle/holdq.py)
+    if not held:
+        from . import holdq
+        if holdq.should_hold(kind, origin, urgent=urgent, asked=asked, settings=s):
+            hold = holdq.new_hold(s, now)
     exp = expires if expires is not None else (not_before or now) + s.outbox_max_age_h * 3600
     if ref is None:
         ref = f"{decision_id}:{kind}" if decision_id else uuid.uuid4().hex[:12]
@@ -332,9 +340,9 @@ def deliver(kind, text="", *, path="", title="", urgent=False, asked=False, orig
         meta.setdefault(k, v)
     oid = outbox.enqueue(kind, text or "", chat=chat or "", file=str(path) if path else None,
                          idem_key=f"{origin}:{ref}", priority=_priority(urgent, asked), origin=origin,
-                         not_before=not_before, expires=exp, meta=meta, now=now)
-    events.log("outbox", id=oid, msg_kind=kind, origin=origin, status="queued", urgent=bool(urgent), held=held,
-               text=(text or "")[:120])
+                         not_before=not_before, expires=exp, meta=meta, now=now, hold=hold)
+    events.log("outbox", id=oid, msg_kind=kind, origin=origin, status="held" if hold else "queued",
+               urgent=bool(urgent), held=held or bool(hold), text=(text or "")[:120])
     return get(oid)
 
 
@@ -414,13 +422,13 @@ def send(text, urgent=False, settings=None, phone=True, push=None, source=None, 
     quiet = in_quiet_hours(s)
     dev = is_dev_source(source, s)
     row = {"time": time.time(), "text": text, "urgent": urgent, "seen": False}
-    if urgent or not quiet:
-        _toast(text)
     if phone:
         r = deliver("text", f"🐝 {text}", urgent=urgent, origin=origin, source=source, settings=s)
-        row["queued"] = r["status"] == "queued"
+        row["queued"] = r["status"] in ("queued", "held")
         row["outbox"] = r["id"]
         row["held"] = bool(r["held"])
+    if urgent or (not quiet and not row.get("held")):  # a message waiting for a break does not pop up on the PC either
+        _toast(text)
     if (urgent if push is None else push) and not dev:
         r = deliver("push", text, title="🚨 Waggle needs you", urgent=True, origin=origin, settings=s)
         row["push_outbox"] = r["id"]

@@ -875,9 +875,7 @@ LOCAL_SCHEMA = {"type": "object", "required": ["importance", "want", "deadline"]
 def ollama_triage(messages, model, timeout, settings=None):
     """The default local triage call: Ollama's chat with a strict JSON schema; returns the parsed dict."""
     from . import ollama
-    out = ollama._post("/api/chat", {"model": model, "messages": messages, "stream": False, "think": False,
-                                     "format": LOCAL_SCHEMA, "options": {"temperature": 0}}, timeout, settings)
-    return json.loads(out["message"]["content"])
+    return ollama.chat_json(messages, schema=LOCAL_SCHEMA, model=model, timeout=timeout, settings=settings)
 
 
 def _local_prompt(m, f):

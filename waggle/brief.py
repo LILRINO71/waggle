@@ -164,6 +164,13 @@ def evening_note(settings=None, now=None, activity=None):
         gate_line = ""
     if gate_line:
         lines.append(gate_line)
+    try:  # suggestions held back because the owner usually ignores that kind (waggle/outreach_ev.py)
+        from . import outreach_ev
+        held_line = outreach_ev.evening_line(now, s)
+    except Exception:  # noqa: BLE001
+        held_line = ""
+    if held_line:
+        lines.append(held_line)
     learned = _learned(now)
     lines.append("Learned: " + ("; ".join(learned) if learned else "nothing new recorded today") + ".")
     try:  # the learning loop's changes, one line each with its undo code (waggle/learnloop.py)

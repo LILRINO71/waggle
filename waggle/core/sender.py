@@ -13,12 +13,20 @@ from waggle.core import events, outbox, store
 log = logging.getLogger("waggle.core.sender")
 _transports = {}
 _noticed = set()
+_before_send = []   # functions run before each claim, e.g. the one that releases held rows (waggle/holdq.py)
 
 
 def register(kind, fn):
     if kind not in outbox.KINDS:
         raise ValueError(f"outbox kind must be one of {outbox.KINDS}, not {kind!r}")
     _transports[kind] = fn
+
+
+def before_send(fn):
+    """Run fn(now) before the sender claims its next row (idempotent: the same function is kept once). A hook that
+    raises is logged and skipped: it can never stop sending."""
+    if fn not in _before_send:
+        _before_send.append(fn)
 
 
 def kinds():
@@ -28,6 +36,11 @@ def kinds():
 def send_one(now=None):
     """Claim the next due row that has a transport and send it. Returns the row's final state, or None when
     nothing was due."""
+    for hook in list(_before_send):
+        try:
+            hook(now)
+        except Exception as e:  # noqa: BLE001 - a hold-release bug must not stop the sender
+            log.warning("before-send hook %s failed: %s", getattr(hook, "__name__", hook), e)
     rows = outbox.claim_due(now=now, limit=1, kinds=kinds())
     if not rows:
         return None

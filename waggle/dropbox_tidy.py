@@ -51,6 +51,18 @@ STALE_SYSTEM = (f"You tidy a personal knowledge vault. {DATA_RULE} Today's date 
                 "return an empty list.")
 
 
+_S = {"type": "string"}
+GROUP_SCHEMA = {"type": "object", "required": ["groups"], "properties": {"groups": {"type": "array", "items": {
+    "type": "object", "required": ["theme", "notes"], "properties": {
+        "theme": _S, "notes": {"type": "array", "items": {"type": "integer"}}, "why": _S}}}}}
+LINK_SCHEMA = {"type": "object", "required": ["links"], "properties": {"links": {"type": "array", "items": {
+    "type": "object", "required": ["note", "target"], "properties": {
+        "note": {"type": "integer"}, "target": _S, "why": _S}}}}}
+STALE_SCHEMA = {"type": "object", "required": ["stale"], "properties": {"stale": {"type": "array", "items": {
+    "type": "object", "required": ["line"], "properties": {"line": _S, "why": _S}}}}}
+SCHEMA_FOR = {GROUP_SYSTEM: GROUP_SCHEMA, LINK_SYSTEM: LINK_SCHEMA, STALE_SYSTEM: STALE_SCHEMA}
+
+
 @dataclass
 class Note:
     rel: str
@@ -168,7 +180,7 @@ class Model:
             else:
                 model = getattr(self.s, "drop_local_model", "") or self.s.local_model
                 out = ollama.chat_json([{"role": "system", "content": system}, {"role": "user", "content": user}],
-                                       model=model, settings=self.s, timeout=300)
+                                       schema=SCHEMA_FOR.get(system), model=model, settings=self.s, timeout=300)
         except ollama.OllamaError as e:
             self.down, self.error = True, str(e)[:160]
             return None

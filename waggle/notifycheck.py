@@ -31,9 +31,13 @@ error, or can wait for the evening summary. When unsure, say "no": nothing is lo
 Answer JSON only: {"decision": "yes" or "no", "reason": "one short sentence"}"""
 
 
+SCHEMA = {"type": "object", "required": ["decision", "reason"], "properties": {
+    "decision": {"type": "string", "enum": ["yes", "no"]}, "reason": {"type": "string"}}}
+
+
 def _ask(messages, settings, timeout):
     from . import ollama
-    return ollama.chat_json(messages, settings=settings, timeout=timeout)
+    return ollama.chat_json(messages, schema=SCHEMA, settings=settings, timeout=timeout)
 
 
 def _verdict(out):

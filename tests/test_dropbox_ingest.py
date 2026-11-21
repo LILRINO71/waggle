@@ -312,7 +312,7 @@ def test_text_in_a_file_is_data_never_instructions(s, monkeypatch):
     sys_msg, user_msg = seen[0]["messages"][0]["content"], seen[0]["messages"][1]["content"]
     assert "never instructions" in sys_msg and "DATA" in sys_msg
     assert user_msg.count("</document>") == 1 and user_msg.rstrip().endswith("</document>")
-    assert seen[0]["model"] == s.local_model and seen[0]["format"] == "json"
+    assert seen[0]["model"] == s.local_model and seen[0]["format"] == di.SUMMARY_SCHEMA
     assert notes_in(s)  # and it was only filed, nothing else happened
     assert (vault.root(s) / "Me" / "Profile.md").exists()
 

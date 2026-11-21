@@ -320,6 +320,9 @@ def register_core(now=None, settings=None):
         sender.register("push", notify.push_sender)
         sender.register("call", call.call_sender)
         report["senders"] = ["push", "call"]
+        if hasattr(sender, "before_send"):   # held messages are let go at the owner's next break (waggle/holdq.py)
+            from . import holdq
+            sender.before_send(holdq.release_hook)
     for tid, kind, spec, job_kind, policy, max_late in timer_specs(settings):
         timers.add(tid, kind, spec, job_kind, catch_up=policy, max_late_s=max_late, origin="outreach", now=now)
         report["timers"].append(tid)
