@@ -96,9 +96,16 @@ def parse_stream(log_text):
     return session_id, result, is_error, usage
 
 
+def _tell(job, text, urgent=False):
+    """Tell the owner about a build, unless the job is quiet (waggle.proposals sends its own single message)."""
+    if not job.get("quiet"):
+        notify.send(text, urgent=urgent)
+
+
 def run(job_id, resume=False):
     s = Settings.load()
     job = load()[job_id]
+    model = job.get("model") or s.builder_model  # a job may carry its own model (waggle.proposals: Sonnet unless hard)
     log = Path(job["workdir"]) / f".waggle-{job_id}.log"
     prompt = job["prompt"] if not resume else "Continue where you left off and finish the task."
     update(job_id, status="running", started=time.time(), log=str(log), runner_pid=os.getpid(),
@@ -106,7 +113,7 @@ def run(job_id, resume=False):
     try:
         if resume and job.get("session_id"):
             claude = claude_cli.find_claude()
-            cmd = [claude, "-p", "--resume", job["session_id"], "--model", claude_cli.MODEL_IDS[s.builder_model],
+            cmd = [claude, "-p", "--resume", job["session_id"], "--model", claude_cli.MODEL_IDS.get(model, model),
                    "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions"]
             with open(log, "a", encoding="utf-8") as fh:
                 proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=fh, stderr=subprocess.STDOUT, text=True,
@@ -116,16 +123,16 @@ def run(job_id, resume=False):
                 proc.stdin.close()
                 proc.wait()
         else:
-            proc = claude_cli.start_session(prompt, s.builder_model, job["workdir"], log,
+            proc = claude_cli.start_session(prompt, model, job["workdir"], log,
                                             system_append=security.JOB_GUARDRAILS)
             proc.wait()
     except Exception as e:
         update(job_id, status="failed", error=str(e), finished=time.time())
-        notify.send(f"Build '{job['title']}' could not start: {e}", urgent=True)
+        _tell(job, f"Build '{job['title']}' could not start: {e}", urgent=True)
         return
     session_id, result, is_error, usage = parse_stream(log.read_text(encoding="utf-8", errors="replace"))
     # The session transcript already counts toward the Pro window; this row counts it toward Waggle's share.
-    quota.record(claude_cli.MODEL_IDS.get(s.builder_model, s.builder_model), usage, f"build:{job_id}",
+    quota.record(claude_cli.MODEL_IDS.get(model, model), usage, f"build:{job_id}",
                  headless=False, ok=not is_error)
     if session_id:
         update(job_id, session_id=session_id)
@@ -133,7 +140,7 @@ def run(job_id, resume=False):
         quota.note_limit_hit(s, claude_cli.parse_reset_hours(result))
         update(job_id, status="paused_limit", note=result[:300])
         events.log("job", job=job_id, status="paused_limit", project=job.get("project"))
-        notify.send(f"Build '{job['title']}' paused: Claude limit hit. It resumes automatically after the reset.")
+        _tell(job, f"Build '{job['title']}' paused: Claude limit hit. It resumes automatically after the reset.")
         return
     status = "failed" if is_error else "done"
     update(job_id, status=status, result=result[:4000], finished=time.time())
@@ -142,6 +149,8 @@ def run(job_id, resume=False):
     if job.get("project"):
         first = (result.strip().splitlines() or [""])[0][:200]
         _project_log(job["project"], f"Build **{job['title']}** {status}: {first} [[Jobs/{job_id}]]", s)
+    if job.get("quiet"):  # the caller reads the result from the job record and reports it itself
+        return
     note = vault.write(f"Jobs/{job_id}", f"# {job['title']}\n\n- Status: **{status}**\n- Folder: `{job['workdir']}`\n"
                        f"- Asked: {job['request']}\n\n## Result\n\n{result}\n\n## Prompt Opus got\n\n{job['prompt']}\n")
     vault.journal(f"Build job [[Jobs/{job_id}|{job['title']}]] finished: {status}")

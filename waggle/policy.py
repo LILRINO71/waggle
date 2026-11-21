@@ -243,6 +243,7 @@ WAGGLE_TOOLS = {
     "skill_install": (ASK, "installs community code"),
     "hermes_tool": (ASK, "runs a Hermes tool"),  # decided as the Hermes tool it names (decide() below)
     "settings": (ASK, "changes Waggle's comfort settings (voice, speed, quiet hours...)"),  # owner turn only (owner_acts)
+    "file_proposal": (ASK, "files a proposal to change Waggle's own code"),  # owner turn only (owner_acts); the owner still approves every merge
 }
 WAGGLE_SAFE = {name for name, (action, _why) in WAGGLE_TOOLS.items() if action == ALLOW}
 
@@ -1060,6 +1061,8 @@ def owner_acts(tool_name, args, base, settings=None, cwd=None):
             return [_Act("destroy", ("delete",), _arg_targets(args), "deleting a routine")]
         if b == "settings":  # comfort settings only (waggle/comfort.py allowlist); the tool refuses the rest itself
             return [_Act("free", free="your own comfort settings (voice, speed, quiet hours)")]
+        if b == "file_proposal":  # only queues a proposal (waggle/proposals.py); nothing merges without the owner's reply
+            return [_Act("free", free="your request to fix Waggle's own code")]
         if b == "skill_install":
             return [_Act("system", ("run",), _arg_targets(args), "installing a community skill", verbs=("install",))]
         return [_Act("never")]

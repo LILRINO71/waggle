@@ -767,6 +767,15 @@ def handle_inbound(chat, text, *, kind="text", media=None, platform="telegram", 
             return direct(voice_turn.FAILED_REPLY, "empty", failure_notice=True)
         what = " (the voice note could not be transcribed)" if voice else ""
         return direct(NO_TEXT.format(what=what), "empty", failure_notice=True)
+    if kind == "text" and not media:  # "merge CODE" / "drop CODE" on a proposal (waggle/proposals.py): typed words only
+        try:
+            from . import proposals
+            answer = proposals.preflight(chat, body, origin=origin, kind=kind, settings=s)
+        except Exception as e:
+            events.log("engine_error", stage="proposals", error=str(e)[:200])
+            answer = None
+        if answer:
+            return direct(answer, "proposal")
     try:
         pre = approval_preflight(chat, body, prev) if owner_text != "" else None  # a caption can answer an approval
     except Exception as e:
