@@ -17,7 +17,12 @@ def main(argv=None):
     p = argparse.ArgumentParser(prog="waggle", description="Waggle personal agent tools")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("init", help="create config + Obsidian vault")
-    sub.add_parser("status", help="quota, jobs, models")
+    sub.add_parser("status", help="the off switch, quota, jobs, models")
+    o = sub.add_parser("off", help="switch Waggle off until `on` (the same as python -m waggle.core off)")
+    o.add_argument("--for", dest="for_", metavar="TIME", default=None,
+                   help="switch back on by itself after this long, e.g. 2h, 30m, 1h30m")
+    o.add_argument("--all", action="store_true", help="also stop the Telegram gateway, Kokoro and the dashboard")
+    sub.add_parser("on", help="switch Waggle back on (the same as python -m waggle.core on)")
     sub.add_parser("reindex", help="re-embed changed vault notes")
     s = sub.add_parser("search", help="search the vault")
     s.add_argument("query")
@@ -40,11 +45,25 @@ def main(argv=None):
     a = p.parse_args(argv)
     st = Settings.load()
 
+    if a.cmd in ("off", "on"):
+        from .core import control, offswitch
+        if a.cmd == "on":
+            result = control.on()
+            print(control.on_text(result))
+        else:
+            try:
+                seconds = offswitch.parse_duration(a.for_) if a.for_ else None
+            except ValueError as e:
+                p.error(str(e))
+            result = control.off(until_s=seconds, all=a.all)
+            print(control.off_text(result))
+        sys.exit(0 if result["ok"] else 1)
     if a.cmd == "init":
         st.save()
         print(f"vault: {vault.init(st)}\nconfig: saved")
     elif a.cmd == "status":
-        print(json.dumps({"ollama_up": ollama.is_up(st), "local_model": st.local_model, "quota": quota.status(st),
+        from .core import offswitch
+        print(json.dumps({"switch": offswitch.describe(offswitch.read()), "ollama_up": ollama.is_up(st), "local_model": st.local_model, "quota": quota.status(st),
                           "jobs": {k: v.get("status") for k, v in jobs.load().items()}}, indent=2))
     elif a.cmd == "reindex":
         print(f"updated {memory.reindex(st)} notes")

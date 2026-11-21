@@ -73,10 +73,46 @@ SILENT = "[SILENT]"  # Hermes delivers nothing for this block message when the p
 LATE_ACK = "This one is taking a little longer. I'll post the answer here as soon as it's ready."
 
 
+# ---- the off switch: while it is set the gateway answers one line and starts no turn ---------------------------
+
+ON_CMD = re.compile(r"^\s*(?:/on|/?waggle\s+on)\s*[.!]?\s*$", re.I)
+
+
+def _switch_on():
+    try:
+        from waggle.core import control
+        control.on(by="telegram")
+    except Exception:
+        log.exception("waggle switch-on from the gateway failed")
+
+
+def _off_reply(text, platform=""):
+    """The reply to give while Waggle is switched off (waggle/core/offswitch.py), or None when it is on. "/on" (or
+    "waggle on") switches it back on. Only called for messages Hermes already admitted, so only the owner reaches
+    it. Any failure here returns None: a broken switch check must never silence the old path."""
+    if platform in SKIP_ROUTING_PLATFORMS:
+        return None
+    try:
+        from waggle.core import offswitch
+        state = offswitch.read()
+        if not state.active():
+            return None
+        if ON_CMD.match(text or ""):
+            threading.Thread(target=_switch_on, daemon=True, name="waggle-switch-on").start()
+            return "Switching Waggle back on now."
+        return offswitch.gateway_line(state)
+    except Exception as e:
+        log.warning("waggle off-switch check failed: %s", e)
+        return None
+
+
 def on_pre_llm_call(session_id=None, user_message="", platform="", **kwargs):
     """Entry point for every turn. Never raises: a crash is traced and Hermes's model answers (labelled)."""
     t0 = time.time()
     try:
+        off_line = _off_reply(user_message, platform)
+        if off_line:
+            return {"action": "block", "message": off_line}
         if not Settings.load().engine_enabled:
             return _legacy_pre_llm_call(session_id, user_message, platform, **kwargs)
         return _engine_pre_llm(session_id, user_message, platform, t0)
@@ -1252,6 +1288,9 @@ def on_gateway_admission(session_key="", platform="", source=None, message_id=No
     """post_gateway_admission: hand typed text in an engine chat to the core; anything else stays on the old path."""
     t0 = time.time()
     try:
+        off_line = _off_reply(text, platform)
+        if off_line:  # Waggle is switched off: one line, no turn, nothing for the core to do
+            return {"action": "handled", "reply": off_line}
         route, why = engine_route(platform, source, message_id, text)
         if route != "engine":
             if why not in ("not telegram", "engine off for this chat"):

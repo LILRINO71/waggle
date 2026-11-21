@@ -12,7 +12,12 @@ pass, as before.
 The core is identified by core.pid (pid plus process creation time) and its single-instance lock; it is asked
 to stop by creating core.stop in the Waggle home, which works for a windowless pythonw process. Starting
 goes through the "Waggle Core" scheduled task when it is installed and the default home is in use, so Task
-Scheduler keeps supervising it; otherwise the core is started as a detached process."""
+Scheduler keeps supervising it; otherwise the core is started as a detached process.
+
+The one off switch (waggle/core/offswitch.py, the file OFF in the Waggle home): `off` writes it and stops the core
+and the PC voice (`--all`: also the gateway, Kokoro and the dashboard); while it is set start() refuses and the
+watchdog neither restarts nor alerts; `on` removes it and starts what `off` stopped; a switch with an end time
+(`off --for 2h`) is removed by the watchdog itself when the time has passed."""
 import json
 import logging
 import logging.handlers
@@ -22,10 +27,13 @@ import threading
 import time
 from pathlib import Path
 
-from waggle.core import events, procs, settings, store
+from waggle.core import events, offswitch, procs, settings, store
 from waggle.core.settings import REPO
 
 TASK_NAME = "Waggle Core"
+PCVOICE_TASK = "Waggle PC Voice"
+GATEWAY_TASK = "Waggle Gateway"
+KOKORO_PORT, DASHBOARD_PORT = 8899, 8897  # what Waggle Gateway.vbs starts besides Ollama and the Hermes gateway
 STOP_TIMEOUT_S = 20.0
 START_TIMEOUT_S = 20.0
 WATCH_STALE_S = 50.0  # three missed 15 s heartbeats; with a 1-minute watchdog a hang is replaced within 2 min
@@ -64,23 +72,33 @@ def heartbeat():
         return None
 
 
-def _use_task():
-    if os.name != "nt" or os.environ.get("WAGGLE_HOME") or os.environ.get("WAGGLE_CORE_NO_TASK"):
+def _real_home():
+    """True only for the owner's real Waggle home (~/.waggle, WAGGLE_HOME unset): machine-wide things (scheduled
+    tasks, the Hermes gateway, Kokoro and the dashboard on their ports) are touched from there and nowhere else."""
+    if os.name != "nt" or os.environ.get("WAGGLE_HOME"):
         return False
-    if settings.home().resolve() != (Path.home() / ".waggle").resolve():
+    return settings.home().resolve() == (Path.home() / ".waggle").resolve()
+
+
+def _use_task(task=TASK_NAME):
+    if not _real_home() or os.environ.get("WAGGLE_CORE_NO_TASK"):
         return False
     try:
-        return subprocess.run(["schtasks", "/Query", "/TN", TASK_NAME], capture_output=True, timeout=15,
+        return subprocess.run(["schtasks", "/Query", "/TN", task], capture_output=True, timeout=15,
                               creationflags=procs.NO_WINDOW).returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
 
 
 def start(wait_s=START_TIMEOUT_S):
-    """Start the core unless one runs; returns its pid (None if it did not come up within wait_s)."""
+    """Start the core unless one runs; returns its pid (None if it did not come up within wait_s, or when the
+    off switch is set: nothing starts the core while Waggle is off, whoever asks)."""
     pid = running_pid()
     if pid is not None:
         return pid
+    if offswitch.is_off():
+        log.info("start refused: Waggle is switched off")
+        return None
     begun = time.time()
     if _use_task():
         subprocess.run(["schtasks", "/Run", "/TN", TASK_NAME], capture_output=True, timeout=15,
@@ -143,6 +161,12 @@ def watch(stale_s=WATCH_STALE_S, now=None):
 
 def _watch_pass(stale_s, now):
     now = store.now_or(now)
+    switch = offswitch.read()
+    if switch.active(now):
+        return "off"  # no restart, no event, no alert: the owner switched Waggle off on purpose
+    if switch.expired(now):
+        on(by="timer", now=now)  # `off --for`: the time is up, Waggle switches itself back on
+        return "switched on"
     info = core_info() or {}
     pid = running_pid()
     if pid is None:
@@ -238,6 +262,7 @@ def watch_loop(interval_s=WATCH_EVERY_S, stale_s=WATCH_STALE_S, stall_s=WATCHDOG
     threading.Thread(target=stall_guard, name="watchdog-stall", daemon=True).start()
     log.info("watchdog started (pid %s), pass every %s s", os.getpid(), interval_s)
     passes = 0
+    last_result = None
     try:
         while not stop_file.exists():
             progress["at"] = time.monotonic()
@@ -246,8 +271,9 @@ def watch_loop(interval_s=WATCH_EVERY_S, stale_s=WATCH_STALE_S, stall_s=WATCHDOG
             except Exception as e:  # one bad pass must not end the watchdog
                 result = f"error: {type(e).__name__}: {e}"
                 log.exception("watch pass failed")
-            if result not in ("ok", "busy"):
-                log.info("pass: %s", result)
+            if result not in ("ok", "busy", "off") or (result == "off") != (last_result == "off"):
+                log.info("pass: %s", result)  # "off" is logged once when it starts, not every 10 s
+            last_result = result
             try:
                 _write_beat(started, result)
             except OSError:
@@ -294,6 +320,165 @@ def stop_watchdog(timeout_s=15.0):
     return not procs.lock_held(settings.path("watchdog.lock"))
 
 
+# ---- the off switch: off and on ---------------------------------------------------------------------------
+
+def _pcvoice_running():
+    # The lock file name is pcvoice.LOCK_FILE; not imported so that off/on never load the audio modules.
+    path = settings.path("pcvoice.lock")
+    return path.exists() and procs.lock_held(path)
+
+
+def _stop_pcvoice(timeout_s=5.0):
+    """Ask the PC voice to stop (pcvoice.stop, as `python -m waggle.pcvoice stop` does). True when none runs."""
+    if not _pcvoice_running():
+        return True
+    settings.path("pcvoice.stop").write_text("stop", encoding="ascii")
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if not _pcvoice_running():
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def _start_pcvoice():
+    if _pcvoice_running():
+        return True
+    if _use_task(PCVOICE_TASK):
+        subprocess.run(["schtasks", "/Run", "/TN", PCVOICE_TASK], capture_output=True, timeout=15,
+                       creationflags=procs.NO_WINDOW)
+    else:
+        procs.spawn_detached([procs.pythonw(), "-m", "waggle.pcvoice", "run"], cwd=REPO,
+                             log_path=settings.path("pcvoice.out"))
+    return True
+
+
+def _listening_pids(port):
+    """Pids that listen on 127.0.0.1:port (netstat; Windows only, [] elsewhere or on any error)."""
+    if os.name != "nt":
+        return []
+    try:
+        out = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True, timeout=20,
+                             creationflags=procs.NO_WINDOW).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    pids = set()
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 5 and parts[3].upper() == "LISTENING" and parts[1].endswith(f":{port}"):
+            try:
+                pids.add(int(parts[4]))
+            except ValueError:
+                pass
+    return sorted(pids)
+
+
+def _stop_gateway_stack():
+    """`off --all`: the Hermes gateway (`hermes gateway stop --yes`), then Kokoro and the dashboard by their ports.
+    Returns {name: True/False}. Ollama is left alone (other programs use it). Only from the real Waggle home: these
+    are machine-wide (a test or scratch home must never stop the owner's gateway)."""
+    if not _real_home():
+        return {"gateway stack (skipped: not the real Waggle home)": True}
+    done = {}
+    hermes_home = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
+    exe = hermes_home / "bin" / "hermes.exe"
+    if exe.exists():
+        try:
+            r = subprocess.run([str(exe), "gateway", "stop", "--yes"], capture_output=True, timeout=60,
+                               creationflags=procs.NO_WINDOW, env=dict(os.environ, HERMES_HOME=str(hermes_home)))
+            done["gateway"] = r.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            done["gateway"] = False
+    for name, port in (("kokoro", KOKORO_PORT), ("dashboard", DASHBOARD_PORT)):
+        pids = _listening_pids(port)
+        done[name] = all(procs.kill_tree(pid) or not procs.alive(pid) for pid in pids)
+    return done
+
+
+def _start_gateway_stack():
+    """`on` after `off --all`: the "Waggle Gateway" task runs the launcher that starts Ollama (if down), Kokoro, the
+    dashboard and the Hermes gateway, each only when it is not already up."""
+    if not _use_task(GATEWAY_TASK):
+        return False
+    subprocess.run(["schtasks", "/Run", "/TN", GATEWAY_TASK], capture_output=True, timeout=15,
+                   creationflags=procs.NO_WINDOW)
+    return True
+
+
+def off(until_s=None, all=False, by="owner", now=None):
+    """Switch Waggle off: write the switch first (so the watchdog cannot restart anything), then stop the core
+    gracefully and the PC voice (`all`: and the gateway, Kokoro and the dashboard). `until_s`: seconds from now
+    after which the watchdog switches Waggle back on. Returns {"ok", "state", "stopped": {...}, "error"}; when
+    the switch cannot be written nothing is stopped."""
+    now = store.now_or(now)
+    prior = offswitch.read()
+    restart = set(prior.restart) if prior.present and prior.valid else set()
+    if _pcvoice_running():
+        restart.add("pcvoice")
+    try:
+        state = offswitch.write(by=by, until=(now + until_s) if until_s else 0.0,
+                                all=all or (prior.active(now) and prior.all), restart=restart, now=now)
+    except OSError as e:
+        return {"ok": False, "state": None, "stopped": {}, "error": f"the off switch did not take: {e}"}
+    try:
+        events.emit("waggle.off", source="control", data={"by": by, "until": state.until or None, "all": state.all})
+    except Exception:  # the event log must never keep Waggle from switching off
+        log.exception("could not record waggle.off")
+    stopped = {"core": stop(), "pcvoice": _stop_pcvoice()}
+    if state.all:
+        stopped.update(_stop_gateway_stack())
+    return {"ok": all_true(stopped), "state": state, "stopped": stopped, "error": ""}
+
+
+def all_true(mapping):
+    return all(mapping.values())
+
+
+def on(by="owner", now=None):
+    """Remove the off switch and start what `off` stopped: the core always, the PC voice when it was running,
+    the gateway stack after `off --all`. Returns {"ok", "was": State, "started": {...}, "error"}; when the switch
+    cannot be removed nothing is started."""
+    was = offswitch.read()
+    try:
+        offswitch.clear()
+    except OSError as e:
+        return {"ok": False, "was": was, "started": {}, "error": f"the off switch cannot be removed: {e}"}
+    try:
+        events.emit("waggle.on", source="control", data={"by": by, "was_off": was.present})
+    except Exception:
+        log.exception("could not record waggle.on")
+    started = {}
+    if was.all:
+        started["gateway_task"] = _start_gateway_stack()
+    started["core"] = start() is not None
+    if "pcvoice" in was.restart:
+        started["pcvoice"] = _start_pcvoice()
+    return {"ok": started["core"], "was": was, "started": started, "error": ""}
+
+
+def off_text(result):
+    if not result["ok"] and result["state"] is None:
+        return result["error"]
+    text = [offswitch.describe(result["state"])]
+    bad = [k for k, v in result["stopped"].items() if not v]
+    text.append("stopped: " + (", ".join(k for k, v in result["stopped"].items() if v) or "nothing"))
+    if bad:
+        text.append("NOT stopped: " + ", ".join(bad) + " (the switch is set, so nothing restarts them)")
+    return "\n".join(text)
+
+
+def on_text(result):
+    if result["error"]:
+        return result["error"]
+    started = ", ".join(k for k, v in result["started"].items() if v)
+    failed = [k for k, v in result["started"].items() if not v]
+    text = f"Waggle is ON{' (the switch was set)' if result['was'].present else ' (it was not switched off)'}; "
+    text += f"started: {started or 'nothing'}"
+    if failed:
+        text += f"; did not start: {', '.join(failed)}"
+    return text
+
+
 def status_text(snap):
     lines = [f"Waggle core: {'healthy' if snap['healthy'] else 'UNHEALTHY'}"]
     lines += [f"  ! {r}" for r in snap["reasons"]]
@@ -327,10 +512,15 @@ def status_text(snap):
 
 
 def status():
-    """Print health; returns 0 healthy, 1 unhealthy, 2 not running."""
+    """Print the off switch and health; returns 0 healthy (or off on purpose with the core stopped), 1 unhealthy,
+    2 not running."""
+    switch = offswitch.read()
+    print(offswitch.describe(switch))
     pid = running_pid()
     if pid is None and not lock_held():
-        print("Waggle core: not running")
+        print("Waggle core: not running" + (" (switched off)" if switch.active() else ""))
+        if switch.active():
+            return 0
         hb = heartbeat()
         if hb and hb.get("ts"):
             print(f"last heartbeat {time.time() - hb['ts']:.0f} s ago (pid {hb.get('pid')})")
