@@ -31,6 +31,7 @@ class Decision:
     action: str
     reason: str = ""
     approval_id: str = ""
+    kind: str = ""  # why an ASK asks (guard, secret, money, outside, shell, destroy, outbound, system, ...): owner_rule
 
     @property
     def allowed(self):
@@ -329,8 +330,17 @@ def _guard_hit(name, base, args, cwd):
     return None
 
 
-def decide(tool_name, args=None, settings=None, cwd=None):
-    """Decision for one tool call (before approvals are consulted)."""
+def decide(tool_name, args=None, settings=None, cwd=None, turn=None):
+    """Decision for one tool call (before approvals are consulted). turn: the running turn's state
+    (guard.read_turn_state); in the owner's own turn an ASK the owner's message covers becomes ALLOW (owner_rule)."""
+    d = _base_decide(tool_name, args, settings, cwd)
+    if d.action == ASK and turn:
+        return owner_rule(tool_name, args if isinstance(args, dict) else {}, d, turn, settings, cwd) or d
+    return d
+
+
+def _base_decide(tool_name, args=None, settings=None, cwd=None):
+    """Today's rules for one tool call: allow, ask (with a kind saying why) or deny."""
     bad = guard.gate()  # fail closed like the hook when the safety files on disk no longer match the manifest
     if bad:
         return Decision(DENY, "integrity_violation: " + guard.denial_text(bad))
@@ -340,50 +350,53 @@ def decide(tool_name, args=None, settings=None, cwd=None):
     base = name.split("__")[-1]  # mcp__server__tool -> tool
     hit = _guard_hit(name, base, args, cwd) if isinstance(args, dict) else None
     if hit and not (name in SHELL_TOOLS and classify_shell(str(args.get("command") or args.get("cmd") or ""))[0] == DENY):
-        return Decision(ASK, hit)
+        return Decision(ASK, hit, kind="guard")
     if name in READ_TOOLS:
         path = args.get("file_path") or args.get("path") or args.get("notebook_path") or ""
         if path and is_secret_path(path):
-            return Decision(ASK, f"reading a secrets file ({Path(str(path)).name})")
+            return Decision(ASK, f"reading a secrets file ({Path(str(path)).name})", kind="secret")
         return Decision(ALLOW)
     if name in WRITE_TOOLS:
         path = args.get("file_path") or args.get("notebook_path") or ""
         if is_secret_path(path):
-            return Decision(ASK, f"changing a secrets file ({Path(str(path)).name})")
+            return Decision(ASK, f"changing a secrets file ({Path(str(path)).name})", kind="secret")
         content = str(args.get("content") or args.get("new_string") or "")
         if has_secret(content):
-            return Decision(ASK, "writing what looks like a password or key into a file")
+            return Decision(ASK, "writing what looks like a password or key into a file", kind="secret")
         if under(path, write_roots(settings)):
             return Decision(ALLOW)
-        return Decision(ASK, f"changing a file outside your project folders ({path})")
+        return Decision(ASK, f"changing a file outside your project folders ({path})", kind="outside")
     if name in SHELL_TOOLS:
         action, why = classify_shell(str(args.get("command") or args.get("cmd") or ""))
-        return Decision(action, why)
+        return Decision(action, why, kind="shell" if action == ASK else "")
     if name.startswith("mcp__waggle__"):
         if base == "hermes_tool":
-            return decide(str(args.get("name", "")), args.get("args") or {}, settings, cwd)
+            return _base_decide(str(args.get("name", "")), args.get("args") or {}, settings, cwd)
         action, why = WAGGLE_TOOLS.get(base, (ASK, "a Waggle tool the policy does not know"))
-        return Decision(action) if action == ALLOW else Decision(ASK, f"Waggle tool {base}: {why}")
+        return Decision(action) if action == ALLOW else Decision(ASK, f"Waggle tool {base}: {why}", kind="waggle")
     if name == "computer_use":
         from .security import screen_risk
         why = screen_risk(args)
-        return Decision(ASK, f"controlling your screen ({why})") if why else Decision(ALLOW)
+        return Decision(ASK, f"controlling your screen ({why})", kind="screen") if why else Decision(ALLOW)
     if name in {"send_message", "send_email", "telegram_send", "discord_send", "sms_send"} or OUTWARD.search(base):
         if base == "create_draft":
             return Decision(ALLOW)
         if base in ("send_message", "send_email") and _only_to_self(args, settings):
             return Decision(ALLOW, "to the user's own inbox")
-        return Decision(ASK, f"{base.replace('_', ' ')}: this reaches other people or the outside world")
+        money = MONEY.search(base) or re.search(r"(^|_)(transfer|payment|purchase|buy|checkout|pay)(_|$)", base)
+        return Decision(ASK, f"{base.replace('_', ' ')}: this reaches other people or the outside world",
+                        kind="money" if money else "outbound")
     if DESTROY.search(base):
-        return Decision(ASK, f"{base.replace('_', ' ')}: deletes or removes your data")
+        return Decision(ASK, f"{base.replace('_', ' ')}: deletes or removes your data",
+                        kind="money" if MONEY.search(base) else "destroy")
     if MONEY.search(base):
-        return Decision(ASK, f"{base}: involves money")
+        return Decision(ASK, f"{base}: involves money", kind="money")
     if name.startswith("mcp__claude_ai_") or name.startswith("mcp__"):
         attendees = args.get("attendees") or args.get("guests")
         if attendees:
-            return Decision(ASK, "this would invite other people")
+            return Decision(ASK, "this would invite other people", kind="invite")
         if re.search(r"permission|sharing|acl", base):
-            return Decision(ASK, "changes who can see your files")
+            return Decision(ASK, "changes who can see your files", kind="share")
         return Decision(ALLOW)
     if name in {"task", "agent"}:
         return Decision(ALLOW)
@@ -399,22 +412,619 @@ def decide(tool_name, args=None, settings=None, cwd=None):
         return Decision(ALLOW)
     if name.startswith("browser_") and name != "browser_vault":
         if SENSITIVE_WEB.search(blob):
-            return Decision(ASK, "browser action on a payment, account or messaging page")
+            return Decision(ASK, "browser action on a payment, account or messaging page", kind="web")
         return Decision(ALLOW)
     if name == "browser_vault":
-        return Decision(ASK, "using saved passwords / autofill")
+        return Decision(ASK, "using saved passwords / autofill", kind="secret")
     if name in HERMES_ALLOW_UNLESS_DELETE:
         if re.search(r"\b(delete|remove|kill|terminate|uninstall|purge)\b", blob):
-            return Decision(ASK, f"{name}: removes or stops something")
+            return Decision(ASK, f"{name}: removes or stops something", kind="destroy")
         return Decision(ALLOW)
     if name in HERMES_CONFIG:
-        return Decision(ASK, f"{name}: changes Hermes settings")
+        return Decision(ASK, f"{name}: changes Hermes settings", kind="system")
     if name in {"write_file", "patch"}:
-        return decide("write", {"file_path": args.get("path") or args.get("file_path") or "",
-                                "content": args.get("content", "")}, settings)
+        return _base_decide("write", {"file_path": args.get("path") or args.get("file_path") or "",
+                                      "content": args.get("content", "")}, settings)
     if name in {"cronjob", "cronjob_manage"}:
         return Decision(ALLOW)
-    return Decision(ASK, f"an unfamiliar tool ({raw})")
+    return Decision(ASK, f"an unfamiliar tool ({raw})", kind="unknown")
+
+
+# ---- the owner's instruction -------------------------------------------------------------------
+# The owner's decision (2026-11-20): "any task I tell it to do, it should do the first time". In a turn whose origin
+# is "user" (the owner's own message, guard.read_turn_state), an action that today ASKs is allowed when the owner's
+# message covers it (covers(): one fixed rule, no model call). What still asks in such a turn: speech recognition
+# unsure of the words and the action destroys or reaches others (worded as a question about what was heard); a
+# destructive or outbound action on something the owner did not name; money; Waggle's protected safety files,
+# approval and budget databases (the guard); secrets; screen control and payment/login pages; unknown tools. Every
+# DENY stays a DENY, and every turn that is not the owner's keeps today's rules. Only the turn state's text counts as
+# the owner's words: what a tool fetched (web pages, mail, files) never reaches it. Off switch: config.json
+# "owner_instructions": false (a protected key).
+
+# Instruction verbs by family. Only the plain (imperative) form counts: "deleted" or "deleting" is a report, not an
+# instruction. Multi-word verbs are matched first.
+VERB_FAMILIES = {
+    "delete": ("delete", "remove", "trash", "wipe", "get rid of", "erase", "drop", "discard", "purge", "destroy",
+               "nuke", "forget", "reset", "revert", "throw away"),
+    "clean": ("clean up", "clean out", "clean", "clear out", "clear", "empty", "tidy up", "tidy"),  # contents only
+    "move": ("archive", "move", "rename", "merge", "combine", "consolidate"),
+    "edit": ("add", "create", "make", "write", "edit", "update", "fix", "change", "modify", "replace", "append",
+             "set", "turn on", "turn off", "enable", "disable", "switch", "correct"),
+    "run": ("install", "uninstall", "upgrade", "run", "build", "start", "stop", "restart", "reboot", "shut down",
+            "shutdown", "kill", "launch", "close", "log off", "schedule"),
+    "send": ("send", "email", "message", "text", "post", "reply", "forward", "share", "invite", "publish", "tweet",
+             "dm"),
+    "git": ("commit", "push", "pull request", "pr", "release"),
+}
+_PHRASES = sorted(((tuple(v.split()), fam) for fam, vs in VERB_FAMILIES.items() for v in vs), key=lambda x: -len(x[0]))
+_NOUN_OK = {("pr",), ("pull", "request")}  # "open a PR": a determiner does not make these nouns
+_DETERMINERS = {"the", "a", "an", "my", "your", "this", "that", "these", "those", "his", "her", "their", "our", "its",
+                "some", "any", "every", "each"}
+_NEG = {"not", "dont", "never", "no", "nothing", "without", "cant", "cannot", "shouldnt", "wont", "mustnt", "avoid",
+        "nor", "neither"}
+_REPORT = {"says", "said", "say", "saying", "wrote", "writes", "asks", "asked", "wants", "wanted", "told", "tells",
+           "mentions", "mentioned", "suggests", "suggested", "claims", "claimed", "reads", "according", "instructs",
+           "instructed", "recommends", "recommended", "is", "was", "has", "from"}
+_QUESTION = {"what", "why", "how", "when", "where", "who", "whom", "whose", "which", "does", "did", "do", "is", "are",
+             "was", "were", "has", "have", "had", "should", "shall", "am", "isnt", "arent", "doesnt", "didnt"}
+_HYPOTHETICAL = {("should", "i"), ("should", "we"), ("shall", "i"), ("shall", "we"), ("do", "i"), ("how", "do"),
+                 ("what", "if"), ("is", "it"), ("would", "it")}
+_EXCEPT = {"except", "besides", "excluding", "but", "unless"}
+_EXCEPT2 = {("other", "than"), ("apart", "from"), ("aside", "from"), ("but", "not")}
+_PROTECT = {"keep", "leave", "preserve", "spare", "skip", "ignore", "exclude"}
+_LOC = {"in", "inside", "from", "under", "within", "at", "on", "into", "onto", "to", "of"}
+_ALLISH = {"everything", "all", "anything", "contents", "content", "every", "whatever"}
+_TYPE = {"file", "files", "folder", "folders", "directory", "directories", "dir", "repo", "repos", "repository",
+         "repositories", "note", "notes", "project", "projects", "document", "documents", "thing", "things", "stuff",
+         "copy", "copies", "version", "versions", "branch", "branches", "page", "one", "ones"}
+_FILE_WORDS, _DIR_WORDS = {"file", "document", "doc", "note"}, {"folder", "directory", "dir", "repo", "repository"}
+_FUNCTION = {"the", "a", "an", "my", "your", "our", "their", "his", "her", "its", "this", "that", "these", "those",
+             "it", "them", "they", "me", "i", "you", "we", "us", "he", "she", "and", "or", "also", "too", "please",
+             "now", "then", "just", "entirely", "completely", "fully", "for", "with", "so", "yes", "ok", "okay", "can",
+             "could", "would", "will", "should", "may", "might", "must", "go", "ahead", "both", "two", "three",
+             "other", "another", "rest", "same", "is", "are", "was", "were", "be", "been", "as", "well", "pls", "do",
+             "if", "there", "here", "out", "up", "away", "off", "over", "again", "right", "want", "need", "like",
+             "let", "lets", "feel", "free", "sure", "go", "already", "anyway", "actually", "kindly", "able", "by"}
+# Words too common to name something on their own: a name made only of these must appear exactly as written.
+_GENERIC = _TYPE | {"test", "tests", "temp", "tmp", "data", "doc", "docs", "new", "old", "backup", "backups", "misc",
+                    "output", "out", "log", "logs", "cache", "script", "scripts", "src", "lib", "build", "dist",
+                    "config", "asset", "assets", "image", "images", "img", "readme", "main", "master", "index", "app",
+                    "final", "draft", "untitled", "desktop", "download", "downloads", "user", "users", "home",
+                    "inbox", "archive", "archives", "md", "txt", "json", "py", "js", "bin", "obj", "report",
+                    "reports", "work", "general", "default", "local", "shared", "public", "private", "common",
+                    "utils", "util", "tools", "tool", "music", "videos", "pictures", "photos", "result", "results",
+                    "www", "com", "org", "net", "io", "api", "gmail", "outlook", "mail"}
+OWNER_NEVER = {"guard", "secret", "money", "screen", "web", ""}
+
+
+@dataclass
+class _Act:
+    """One thing a tool call does that the owner's words must cover."""
+    kind: str  # destroy | outbound | system | free | never
+    families: tuple = ()
+    targets: list = None  # [{"name", "parents", "dir", "wild", "owner", "person", "label"}]
+    what: str = ""
+    verbs: tuple = ()  # only these verbs of the families count (restart the PC)
+    words: tuple = ()  # the message must also contain these words (force push: "force")
+    implicit: bool = False  # nothing to name (restart the PC)
+    free: str = ""  # covered without the naming test, with this explanation
+
+
+def _fold(t):
+    """Simple plurals: notes -> note, repositories -> repository, boxes -> box (both sides fold the same way)."""
+    if len(t) > 4 and t.endswith("ies"):
+        return t[:-3] + "y"
+    if len(t) > 4 and t.endswith(("xes", "ches", "shes", "sses")):
+        return t[:-2]
+    if len(t) > 3 and t.endswith("s") and not t.endswith("ss"):
+        return t[:-1]
+    return t
+
+
+def _lev1(a, b):
+    """Edit distance of at most one (one letter changed, added or dropped)."""
+    if a == b:
+        return True
+    if abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) == len(b):
+        return sum(x != y for x, y in zip(a, b)) == 1
+    if len(a) > len(b):
+        a, b = b, a
+    i = 0
+    while i < len(a) and a[i] == b[i]:
+        i += 1
+    return a[i:] == b[i + 1:]
+
+
+def _words(text):
+    """Lower-case word tokens of a name or a message: CamelCase split, apostrophes dropped (don't -> dont),
+    hyphens, underscores, dots and slashes separate words."""
+    text = re.sub(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", " ", str(text or ""))
+    text = re.sub(r"(\w)['\u2019](\w)", r"\1\2", text.lower())
+    return re.findall(r"[a-z0-9]+", text)
+
+
+def _tok_eq(t, m):
+    ft, fm = _fold(t), _fold(m)
+    return ft == fm or (len(t) >= 5 and len(m) >= 5 and _lev1(ft, fm))
+
+
+def _match(name, span, person=False, is_dir=None):
+    """Words of `span` (a list of message words) that name `name` (a file or folder name without its extension, a
+    repository, a recipient), or None. The threshold: every distinctive word of the name when it has one or two,
+    otherwise 60% of them (rounded up); a person needs one. Words are equal after folding simple plurals, or one
+    letter apart when both have five letters or more (speech recognition slips: Marlin / Marlen); words written
+    together or apart count the same (SimBench / sim bench). A name made only of common words (tests, notes,
+    Downloads) must appear exactly as written, and a "file" / "folder" next to it must fit what it is."""
+    nw = [w for w in _words(name) if w not in _FUNCTION or w in _GENERIC]
+    if not nw or not span:
+        return None
+    words = [w for w in span if w != ","]
+    distinct = [w for w in nw if w not in _GENERIC and not w.isdigit() and len(w) >= 2]
+    if not distinct:
+        n = len(nw)
+        for i in range(len(words) - n + 1):
+            if words[i:i + n] == nw:
+                near = set(words[max(0, i - 1):i] + words[i + n:i + n + 1])
+                if is_dir is True and near & _FILE_WORDS or is_dir is False and near & _DIR_WORDS:
+                    continue
+                return " ".join(nw)
+        return None
+    windows = {}
+    for size in (1, 2, 3):
+        for i in range(len(words) - size + 1):
+            windows.setdefault("".join(_fold(w) for w in words[i:i + size]), " ".join(words[i:i + size]))
+    whole = "".join(_fold(w) for w in nw if not w.isdigit())
+    if whole in windows and len(whole) >= 4:
+        return windows[whole]
+    hit = []
+    for t in distinct:
+        m = next((w for w in words if _tok_eq(t, w)), None) or windows.get(_fold(t))
+        if m:
+            hit.append(m)
+    need = 1 if person else (len(distinct) if len(distinct) <= 2 else -(-len(distinct) * 3 // 5))
+    return " ".join(dict.fromkeys(hit)) if len(hit) >= need else None
+
+
+@dataclass
+class _Occ:
+    family: str
+    verb: str
+    objects: list
+    locations: list
+    allish: bool
+
+
+def _sentences(text):
+    """[(words, is_question)] per sentence; words keep "," and carry a quoted marker as '"'."""
+    text = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", str(text or ""))
+    out = []
+    for part in re.split(r"(?<=[.!?;])\s+|\n+", text):
+        part = part.strip()
+        if not part:
+            continue
+        low = re.sub(r"(\w)['\u2019](\w)", r"\1\2", part.lower())
+        low = re.sub(r"(\w)'s\b", r"\1s", low)
+        toks = re.findall(r"[a-z0-9]+|,|[\"\u201c\u201d]", low)
+        out.append((toks, part.rstrip().endswith("?")))
+    return out
+
+
+def _content(ws):
+    return [w for w in ws if w not in (",", '"') and w not in _FUNCTION | _TYPE | _LOC | _ALLISH | _NEG]
+
+
+def _instructions(message):
+    """Parse the owner's message: live instruction verbs with what each names, and what was excluded."""
+    live, excluded, every = [], {}, []
+    prev_words = []
+    for toks, question in _sentences(message):
+        quoted, words, qflags = False, [], []
+        for t in toks:
+            if t in ('"', "\u201c", "\u201d"):
+                quoted = not quoted
+                continue
+            words.append(t)
+            qflags.append(quoted)
+        every += words
+        plain = [w for w in words if w != ","]
+        hypothetical = (question and plain[:1] and plain[0] in _QUESTION) or tuple(plain[:2]) in _HYPOTHETICAL
+        occs, i = [], 0  # (start, end, family, verb)
+        while i < len(words):
+            for phrase, fam in _PHRASES:
+                if tuple(words[i:i + len(phrase)]) == phrase:
+                    occs.append((i, i + len(phrase), fam, " ".join(phrase)))
+                    i += len(phrase) - 1
+                    break
+            i += 1
+        stops = {s for s, _e, _f, _v in occs}
+        stops |= {j for j, w in enumerate(words) if w in _PROTECT or w in _EXCEPT}
+        negated_at = {}
+        for j, w in enumerate(words):
+            if w in _NEG:
+                nxt = next((o for o in occs if j < o[0] <= j + 3 and "," not in words[j:o[0]]), None)
+                if nxt:
+                    negated_at[nxt[0]] = True
+        for j, w in enumerate(words):  # keep X / leave X / except X: excluded for every family
+            if w in _PROTECT or w in _EXCEPT or tuple(words[j:j + 2]) in _EXCEPT2:
+                end = min([s for s in stops if s > j] + [len(words)])
+                span = [x for x in words[j + 1:end] if x not in _EXCEPT | {"not"}]
+                if span:
+                    excluded.setdefault("*", []).append(span)
+        for s, e, fam, verb in occs:
+            before = words[s - 1] if s else ""
+            after = words[e] if e < len(words) else ""
+            noun = (before in _DETERMINERS and tuple(verb.split()) not in _NOUN_OK) or after in _REPORT
+            reported = any(w in _REPORT - {"is", "was", "has", "from"} and (k == 0 or words[k - 1] != "i")
+                           for k, w in enumerate(words[:s]))
+            end = min([x for x in stops if x > s] + [len(words)])
+            span = words[e:end]
+            if negated_at.get(s):
+                excluded.setdefault(fam, []).append(span)
+                if fam == "delete":
+                    excluded.setdefault("clean", []).append(span)
+                continue
+            if noun or reported or hypothetical or qflags[s]:
+                continue
+            objects, locations, in_loc = [], [], False
+            for w in span:
+                if w in _LOC:
+                    in_loc = True
+                elif w != ",":
+                    (locations if in_loc else objects).append(w)
+            allish = bool(set(span) & _ALLISH)
+            if not _content(objects) and not allish:  # "delete that repo", "combine the two": what was said before
+                ante = words[:s]
+                if not _content(ante):
+                    ante = prev_words + [","] + ante
+                in_loc = False
+                for w in ante:
+                    if w in _LOC:
+                        in_loc = True
+                    elif w == ",":
+                        in_loc = False
+                    elif w not in _NEG:
+                        (locations if in_loc else objects).append(w)
+            live.append(_Occ(fam, verb, objects, locations, allish))
+        prev_words = words
+    return live, excluded, every
+
+
+def _own_github(settings):
+    s = settings or Settings.load()
+    out = {str(r).split("/")[0].lower() for r in (getattr(s, "github_repos", None) or []) if "/" in str(r)}
+    try:
+        raw = json.loads((Path(data_path(".")) / "config.json").read_text(encoding="utf-8")).get("github_login")
+        out |= {str(x).lower() for x in ([raw] if isinstance(raw, str) else raw or [])}
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    return out
+
+
+def covers(message, act, settings=None):
+    """THE covering rule (no model call): (covered, the words that matched or why not).
+
+    1. The message holds a live instruction of the act's kind: a verb of one of act.families in its plain form,
+       not after "don't / never / no / not" (within three words), not reported ("the email says delete ..."), not
+       inside quotes, not in a question ("should I delete ...?"), not used as a noun ("the delete button").
+    2. Each target was named in what that verb applies to: the words after it up to the next verb (or, for "it /
+       that repo / the two", the words before it), by _match. Or it lies inside a folder named as the object
+       ("delete the build folder"), or inside a named place when everything there was meant ("delete everything in
+       Downloads", "clean up my downloads"). "clean up X" reaches what is inside X, never X itself.
+    3. Nothing named after "except / but / keep / leave", or after a negated verb of the same kind, is covered.
+    4. A repository of another GitHub account is covered only when that account was named too."""
+    if act.free:
+        return (bool(str(message or "").strip()), act.free)
+    live, excluded, every = _instructions(message)
+    occ = [o for o in live if o.family in act.families and (not act.verbs or o.verb in act.verbs)]
+    if not occ:
+        return False, f"you did not ask to {(act.verbs or act.families or ('do',))[0]} anything"
+    if act.words and not all(any(_tok_eq(w, x) for x in every) for w in act.words):
+        return False, "you did not say " + " ".join(act.words)
+    if not act.targets:
+        return (True, occ[0].verb) if act.implicit else (False, "it names nothing Waggle can match to your words")
+    out = []
+    for t in act.targets:
+        hit = None
+        for o in occ:
+            hit = _named(t, o, excluded, every, settings)
+            if hit:
+                out.append(f"{o.verb} {hit}")
+                break
+        if not hit:
+            return False, f"you did not name {t.get('label') or t.get('name')}"
+    return True, "; ".join(dict.fromkeys(out))
+
+
+def _named(t, o, excluded, every, settings):
+    """What in occurrence `o` names target `t` (see covers), or None."""
+    ex = excluded.get(o.family, []) + excluded.get("*", [])
+    names = [t.get("name") or ""] + list(t.get("parents") or [])
+    if any(_match(n, span, t.get("person")) for n in names if n for span in ex):
+        return None
+    owner = (t.get("owner") or "").lower()
+    if owner and owner not in _own_github(settings) and not _match(owner, every):
+        return None
+    if o.family != "clean" and not t.get("wild"):
+        span = o.objects + o.locations if t.get("place") else o.objects  # "open a PR on X", "post it to X"
+        m = _match(t.get("name"), span, t.get("person"), t.get("dir"))
+        if m:
+            return m
+    for p in t.get("parents") or []:
+        m = _match(p, o.objects, is_dir=True)
+        if not m and (o.allish or o.family == "clean"):
+            m = _match(p, o.locations, is_dir=True)
+        if m:
+            return f"inside {m}"
+    return None
+
+
+# ---- what a tool call acts on
+
+def _path_target(raw, cwd, is_dir=None):
+    raw = str(raw or "").strip()
+    full = guard._lex(guard.expand(raw), cwd or os.getcwd(), lower=False)
+    parts = [x for x in full.split("/") if x]
+    leaf = parts[-1] if parts else full
+    wild = any(c in leaf for c in "*?[")
+    if is_dir is None:
+        is_dir = raw.endswith(("/", "\\")) or (not wild and os.path.isdir(full))
+    home = [x for x in guard._lex(guard.USER_HOME, "/", lower=False).split("/") if x]
+    if [x.lower() for x in parts[:len(home)]] == [x.lower() for x in home]:
+        parents = parts[len(home):-1]
+    else:
+        parents = [x for x in parts[1:-1] if x.lower() not in ("users", "windows", "program files",
+                                                              "program files (x86)", "programdata")]
+    stem = leaf if is_dir or "." not in leaf.strip(".") else leaf.rsplit(".", 1)[0]
+    return {"name": "" if wild else stem, "parents": list(reversed(parents)), "dir": is_dir, "wild": wild,
+            "label": leaf, "path": full}
+
+
+def _name_target(name, person=False, owner=""):
+    name = str(name or "").strip()
+    return {"name": name, "parents": [], "dir": None, "wild": False, "person": person, "owner": owner,
+            "label": name}
+
+
+def _person_target(addr):
+    a = str(addr or "").strip()
+    local = a.split("@")[0] if "@" in a else a
+    return _name_target(re.sub(r"[\d+]+", " ", local), person=True) | {"label": a}
+
+
+def _operands(rest, valued=(), slash_flags=False):
+    """Arguments that are not options. slash_flags: cmd's /s /q /a:h style options too (del, rd)."""
+    out, i, ends = [], 0, False
+    while i < len(rest):
+        t = rest[i]
+        if not ends and t == "--":
+            ends = True
+        elif not ends and t.lower() in valued:
+            i += 1
+        elif ends or not (t.startswith("-") or (slash_flags and re.match(r"^/[a-z](:\S*)?$", t, re.I))):
+            out.append(t)
+        i += 1
+    return out
+
+
+def _flag_value(rest, *names):
+    low = [t.lower() for t in rest]
+    for n in names:
+        if n in low and low.index(n) + 1 < len(rest):
+            return rest[low.index(n) + 1]
+        for t in rest:
+            if t.lower().startswith(n + "="):
+                return t.split("=", 1)[1]
+    return None
+
+
+_DELETE_VERBS = {"rm", "del", "erase", "rmdir", "rd", "ri", "remove-item", "unlink", "trash", "rimraf"}
+
+
+def _shell_act(verb, rest, why, cwd, stmt):
+    if why == "deleting files":
+        if verb not in _DELETE_VERBS:
+            return _Act("destroy", ("delete", "clean"), [], "deleting files")
+        ops = _operands(rest, ("-filter", "-include", "-exclude"), slash_flags=verb in ("del", "erase", "rd", "rmdir"))
+        return _Act("destroy", ("delete", "clean"), [_path_target(o, cwd) for o in ops], "deleting files")
+    if why == "a git command that throws away work":
+        sub = guard._git_sub(rest)
+        repo = _path_target((guard._git_dirs(rest) or [cwd])[0], cwd, is_dir=True)
+        repo["parents"] = []
+        if sub == "push":
+            return _Act("destroy", ("git",), [repo], "force-pushing over the remote's history", words=("force",))
+        if sub == "branch":
+            ops = [o for o in _operands(rest) if o.lower() != "branch"]
+            return _Act("destroy", ("delete",), [_name_target(o) for o in ops[:1]], "deleting a git branch")
+        return _Act("destroy", ("delete",), [repo], "throwing away uncommitted work")
+    if why == "restarting or shutting down the PC":
+        return _Act("system", ("run",), [], "restarting or shutting down the PC", implicit=True,
+                    verbs=("restart", "reboot", "shut down", "shutdown", "log off"))
+    if why == "changing the registry":
+        key = _flag_value(rest, "-path", "-literalpath") or next(iter(_operands(rest)[1:2]), "")
+        bits = [b for b in re.split(r"[\\/]+", key) if b]
+        t = _name_target(bits[-1] if bits else "") | {"parents": list(reversed(bits[1:-1]))}
+        return _Act("system", ("edit", "delete"), [t] if bits else [], "changing the registry")
+    if why == "changing system settings":
+        name = _flag_value(rest, "/tn", "-taskname") or ("execution policy" if verb == "set-executionpolicy" else "")
+        return _Act("system", ("edit", "run", "delete"), [_name_target(name)] if name else [],
+                    "changing a system setting")
+    if why == "a system-wide install":
+        ops = [o for o in _operands(rest, ("--source", "-s", "--scope")) if o.lower() not in
+               ("install", "uninstall", "upgrade", "i")]
+        return _Act("system", ("run",), [_name_target(o) for o in ops], "a system-wide install",
+                    verbs=("install", "uninstall", "upgrade"))
+    if why == "posting to GitHub as you":
+        ops = _operands(rest, ("-r", "--repo", "-t", "--title", "-b", "--body", "-x", "--method", "-f", "-F",
+                               "--field", "--raw-field", "-l", "--label", "-a", "--assignee", "--base", "--head"))
+        noun, action = (ops + ["", ""])[:2]
+        repo = _flag_value(rest, "-r", "--repo") or (ops[2] if noun == "repo" and len(ops) > 2 else "")
+        if verb != "gh" or noun == "api":
+            return _Act("outbound", ("send",), [], "posting to GitHub as you")
+        if repo:
+            owner, _, name = repo.rpartition("/")
+            target = _name_target(name, owner=owner)
+        else:
+            target = _name_target(Path(str(cwd or os.getcwd())).name)
+        if noun == "repo" and action == "delete":
+            return _Act("destroy", ("delete",), [target], "deleting a GitHub repository")
+        return _Act("outbound", ("send", "git", "edit", "run"), [target | {"place": True}], "posting to GitHub as you")
+    if why == "sending data to a website":
+        m = re.search(r"https?://([^/\s\"']+)", stmt)
+        host = [b for b in (m.group(1).split(":")[0].split(".") if m else []) if b not in _GENERIC]
+        return _Act("outbound", ("send",), [_name_target(host[-1]) | {"place": True}] if host else [],
+                    "sending data to a website")
+    if why == "sending a message as you":
+        return _Act("outbound", ("send",), [], "sending a message as you")
+    if why == "changing file permissions":
+        ops = [o for o in _operands(rest) if not o.startswith("/")]
+        path = _flag_value(rest, "/f") or (ops[0] if ops else "")
+        return _Act("system", ("edit",), [_path_target(path, cwd)] if path else [], "changing file permissions")
+    return _Act("never")
+
+
+_SECRETISH = re.compile(next(p for p, why in ASK_SHELL if why == "touching a secrets file"), re.I)
+
+
+def _shell_acts(tool, command, cwd):
+    """One _Act per statement that asks; None when a statement is refused outright."""
+    name = (tool or "").lower().split("__")[-1]
+    acts = []
+    for stmts, _dialect in guard._parse(command, guard.SHELL_DIALECTS.get(name, guard.ALL_DIALECTS)):
+        here = cwd or os.getcwd()
+        for st in stmts:
+            st = st.strip()  # the ask patterns anchor at the start of a statement
+            action, why = classify_shell(st)
+            ctoks, _read = guard._command_tokens(guard._tokens(st))
+            verb, rest = guard._verb_info(ctoks)
+            if verb in guard.NAV_VERBS and rest and not rest[0].startswith("-"):
+                here = guard._lex(guard.expand(rest[0]), here, lower=False)
+            if action == DENY:
+                return None
+            if action == ASK and (_SECRETISH.search(st) or has_secret(st)
+                                  or any(is_secret_path(o) for o in _operands(rest))):
+                acts.append(_Act("never"))  # secrets always need the user, whatever else the statement does
+            elif action == ASK:
+                acts.append(_shell_act(verb, rest, why, here, st))
+    if not acts and classify_shell(command)[0] == ASK:
+        acts.append(_Act("never"))  # it asks as a whole, but no single statement does: no telling what it names
+    return acts
+
+
+_NAME_KEYS = ("name", "title", "path", "file", "file_path", "filepath", "folder", "repo", "repository", "project",
+              "routine", "routine_id", "skill", "entity", "target", "label", "subject", "id", "query")
+
+
+def _arg_targets(args):
+    out = []
+    for k in _NAME_KEYS:
+        v = (args or {}).get(k)
+        if isinstance(v, str) and v.strip():
+            out.append(_path_target(v, None) if re.search(r"[\\/]", v) and k in ("path", "file", "file_path",
+                                                                                  "filepath", "folder")
+                       else _name_target(v))
+    return out[:1]  # the first identifying argument is what the call acts on
+
+
+def _emails(args):
+    return re.findall(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", json.dumps(args or {}, default=str))
+
+
+def owner_acts(tool_name, args, base, settings=None, cwd=None):
+    """What a tool call that asked (base) acts on, as _Acts for covers(); [] or None when nothing can be covered."""
+    name = (tool_name or "").lower()
+    b = name.split("__")[-1]
+    kind = base.kind
+    if kind == "shell" or (kind == "unknown" and b in _OTHER_SHELL):  # Hermes's terminal: the same shell rules
+        command = str(args.get("command") or args.get("cmd") or "")
+        acts = _shell_acts(name, command, args.get("cwd") or args.get("workdir") or cwd)
+        if acts == [] and kind == "unknown":
+            return [_Act("free", free="the same shell rules as Claude's own shell")]
+        return acts
+    if kind == "outside":
+        path = str(args.get("file_path") or args.get("notebook_path") or args.get("path") or "")
+        t = _path_target(path, cwd)
+        if _system_location(t["path"]):
+            return [_Act("system", ("edit", "move"), [t], "changing a system file")]
+        return [_Act("free", free="your own files (full access under your profile)")]
+    if name.startswith("mcp__waggle__"):
+        if b == "background_task":
+            return [_Act("free", free="your request (the job itself runs under the usual rules)")]
+        if b == "graph_correct":
+            return [_Act("destroy", ("delete", "edit"), _arg_targets(args), "changing what Waggle knows about you")]
+        if b == "routine_remove":
+            return [_Act("destroy", ("delete",), _arg_targets(args), "deleting a routine")]
+        if b == "skill_install":
+            return [_Act("system", ("run",), _arg_targets(args), "installing a community skill", verbs=("install",))]
+        return [_Act("never")]
+    if kind == "outbound":
+        who = _recipients(args) + [str(args.get(k)) for k in ("chat", "channel", "user", "username", "chat_id")
+                                   if isinstance(args.get(k), str)]
+        return [_Act("outbound", ("send",), [_person_target(w) for w in who], f"{b.replace('_', ' ')} to "
+                     + (", ".join(who) or "someone"))]
+    if kind in ("invite", "share"):
+        who = _emails(args)
+        return [_Act("outbound", ("send", "edit"), [_person_target(w) for w in who],
+                     "inviting " if kind == "invite" else "sharing with " + (", ".join(who) or "someone"))]
+    if kind == "destroy":
+        return [_Act("destroy", ("delete", "clean"), _arg_targets(args), f"{b.replace('_', ' ')}")]
+    if kind == "system":
+        what = re.sub(r"^(set|manage|setup|close|desktop)_", "", b).replace("_", " ")
+        return [_Act("system", ("edit", "run"), [_name_target(what)], f"{b.replace('_', ' ')}")]
+    return [_Act("never")]
+
+
+# Inside the profile but run at start-up or by every shell, git or Hermes start: treated like system locations.
+_STARTUP = re.compile(r"^/(ntuser\.|appdata/roaming/microsoft/windows/start menu/|"
+                      r"\.(bashrc|bash_profile|bash_login|profile|zshrc|zprofile|gitconfig)$|\.config/git/|"
+                      r"documents/(windows)?powershell/[^/]*profile[^/]*\.ps1$|\.hermes/(plugins/|config\.ya?ml$))")
+
+
+def _system_location(path):
+    """Outside the user's profile (Windows, Program Files, other users' folders), or a start-up entry inside it."""
+    p = guard._lex(path, "/")
+    home = guard._lex(guard.USER_HOME, "/")
+    if not (p == home or p.startswith(home + "/")):
+        return True
+    return bool(_STARTUP.search(p[len(home):]))
+
+
+def _said(text, limit=160):
+    t = " ".join(str(text or "").split())
+    return t if len(t) <= limit else t[:limit - 1] + "\u2026"
+
+
+def owner_rule(tool_name, args, base, turn, settings=None, cwd=None):
+    """In the owner's own turn: ALLOW ("owner instruction: <matched words>") when their message covers every part of
+    an action that asked; an ASK reworded for the owner (a question about what was heard, or "beyond what you
+    asked") when it does not; None when the rule does not apply (not the owner's turn, rule switched off, or an ask
+    that always stays: the guard, secrets, money, screen, payment/login pages, unknown tools)."""
+    if not (isinstance(turn, dict) and turn.get("owner")) or base.kind in OWNER_NEVER:
+        return None
+    if not guard.owner_rule_enabled():
+        return None
+    if (tool_name or "").lower() == "mcp__waggle__hermes_tool":
+        tool_name, args = str(args.get("name", "")), args.get("args") or {}
+    try:
+        acts = owner_acts(tool_name, args if isinstance(args, dict) else {}, base, settings, cwd)
+        if not acts or any(a.kind == "never" for a in acts):
+            return None
+        text = str(turn.get("text") or "")
+        out = []
+        for a in acts:
+            if a.kind in ("destroy", "outbound") and not turn.get("confident", True):
+                return Decision(ASK, f'Did you say: "{_said(text)}"? Speech recognition was not sure, and this is '
+                                     f"{a.what}", kind="hearing")
+            ok, why = covers(text, a, settings)
+            if not ok:
+                if a.kind in ("destroy", "outbound"):
+                    return Decision(ASK, f"{a.what}: this goes beyond what you asked ({why})", kind="beyond")
+                return Decision(ASK, f"{base.reason} ({why})", kind=base.kind)
+            out.append(why)
+    except Exception:  # a bug here must never allow: today's ask stands
+        return None
+    return Decision(ALLOW, "owner instruction: " + "; ".join(dict.fromkeys(out)), kind="owner")
 
 
 # ---- approvals + audit -------------------------------------------------------------------------
@@ -596,9 +1206,16 @@ def audit(tool, args, decision, source="agent"):
         f.write(json.dumps(row) + "\n")
 
 
-def check(tool, args=None, session="", source="agent", settings=None, cwd=None):
-    """Full check: policy, then one-time approvals; logs to the audit trail. Returns a Decision."""
-    d = decide(tool, args, settings, cwd)
+_FROM_ENV = object()
+
+
+def check(tool, args=None, session="", source="agent", settings=None, cwd=None, turn=_FROM_ENV):
+    """Full check: policy, then one-time approvals; logs to the audit trail. Returns a Decision. turn: the running
+    turn's state, read from this process's environment by default (guard.read_turn_state: None outside a chat
+    turn, so background agents, objectives and every other caller keep today's rules)."""
+    if turn is _FROM_ENV:
+        turn = guard.read_turn_state()
+    d = decide(tool, args, settings, cwd, turn=turn)
     if d.action == ASK:
         if _consume(tool, args, session):
             d = Decision(ALLOW, "approved by the user")

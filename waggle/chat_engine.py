@@ -31,6 +31,7 @@ import uuid
 from dataclasses import dataclass, field
 
 from . import chat_store, claude_cli, events, quota, stt, traces, voice_reply, voice_turn
+from . import guard  # turn state for the owner-instruction rule
 from .chat_session import VOICE_STYLE, ChatSession, SessionPool
 from .config import Settings, data_path
 from .delivery import StreamWriter, Typing, plain_text
@@ -364,9 +365,12 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
         try:
             sess = session or pool(s).get(chat)
             t_model = time.time()
+            guard.write_turn_state(chat, rec.turn_id, rec.origin, text, voice=voice, confident=rec.voice.get(
+                "stt_confident", True), max_age_s=(s.chat_turn_timeout_s or 600) + 60)  # what the owner said (policy)
             res = sess.turn(message, on_text=vr.feed if vr else _after_heard(writer.update, rec.voice.get("heard_line")),
                             on_tool=None if vr else writer.tool,
                             origin=rec.origin)
+            guard.end_turn_state(chat, rec.turn_id)
             rec.voice["model_s"] = round(time.time() - t_model, 2) if vr else None
         except Exception as e:  # a bug in the session layer is a failed turn, never a silent one
             res = None

@@ -95,11 +95,37 @@ def guard_directive(tool_name, args):
     return None
 
 
-def check_tool_call(tool_name, args):
-    """None = allowed. Otherwise a Hermes pre_tool_call directive."""
+def check_tool_call(tool_name, args, turn=None):
+    """None = allowed. Otherwise a Hermes pre_tool_call directive. turn: the running turn's state (default: read
+    from this process's environment, guard.read_turn_state). The tamper guard always comes first; an approval this
+    module would ask for is waived only in the owner's own turn when policy.decide, with the same owner-instruction
+    rule as the Claude hook, allows the call."""
     directive = guard_directive(tool_name, args)
     if directive:
         return directive
+    directive = _check(tool_name, args)
+    if directive and directive.get("action") == "approve" and _owner_allows(tool_name, args, turn):
+        return None
+    return directive
+
+
+def _owner_allows(tool_name, args, turn):
+    try:
+        from . import guard, policy
+        turn = turn if turn is not None else guard.read_turn_state()
+        if not (isinstance(turn, dict) and turn.get("owner")):
+            return False
+        d = policy.decide(tool_name, args if isinstance(args, dict) else {}, turn=turn)
+        if d.action != policy.ALLOW:
+            return False
+        policy.audit(tool_name, args, policy.Decision(policy.ALLOW, d.reason or "owner turn: allowed by the policy"),
+                     source="hermes")
+        return True
+    except Exception:
+        return False
+
+
+def _check(tool_name, args):
     name = (tool_name or "").lower()
     if name in APPROVAL_TOOLS or any(k in name for k in ("payment", "purchase", "checkout")):
         return {"action": "approve", "message": f"Waggle wants to use {tool_name}. This affects other "

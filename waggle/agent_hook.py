@@ -295,6 +295,11 @@ def handle(event):
         why = d.reason[len("integrity_violation: "):]  # already says what changed and what the user runs
     elif d.action == policy.DENY:
         why = f"Blocked by Waggle's safety policy: {d.reason}. Do not retry or work around this; tell the user."
+    elif getattr(d, "kind", "") == "hearing":  # the owner's words were not heard clearly: a question, not a permission
+        code = (policy.get(d.approval_id) or {}).get("code", "")
+        why = (f"NEEDS_APPROVAL [{code}]: {d.reason}. Speech recognition was unsure of the owner's words. Do not ask "
+               f"for permission: ask them exactly the question above about what you heard, in one sentence. If they "
+               f"answer yes, do the step. Never show internal ids or hook details.")
     else:
         code = (policy.get(d.approval_id) or {}).get("code", "")
         why = (f"NEEDS_APPROVAL [{code}]: {d.reason}. You cannot do this without the user's OK. Stop trying "
