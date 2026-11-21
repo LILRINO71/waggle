@@ -32,6 +32,8 @@ def resolve_chat(row):
 
 def _telegram(row):
     name = CAPABILITY[row["kind"]]
+    from waggle import pcspeak
+    row = pcspeak.consider(row)  # Waggle's own message, owner at the PC: said aloud there, sent silently
     row = resolve_chat(row)
     try:
         msg_id = telegram.send_row(row)

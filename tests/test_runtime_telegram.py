@@ -604,3 +604,15 @@ def test_importing_the_module_reads_no_token(monkeypatch):
     monkeypatch.setattr(telegram, "load_token", lambda env_file=None: pytest.fail("read at import"))
     import importlib
     importlib.reload(telegram)
+
+
+def test_a_silent_row_goes_out_without_a_notification_sound(api, fake, tmp_path):
+    telegram.send_row(row(meta={"silent": True}), api)
+    assert fake.requests[0]["json"]["disable_notification"] is True
+    telegram.send_row(row(), api)
+    assert "disable_notification" not in fake.requests[1]["json"]
+    voice = tmp_path / "v.ogg"
+    voice.write_bytes(b"OggS")
+    telegram.send_row(row(kind="voice", file=str(voice), body="", meta={"silent": True}), api)
+    _, fields = parse_multipart(fake.requests[2])
+    assert fields["disable_notification"][0] == b"true"

@@ -202,11 +202,19 @@ def sniff(data):
     return ""
 
 
+def keep_wav(wav, out, timeout, ffmpeg=None):
+    """No conversion: the speech server's WAV as it is (the PC voice plays WAV directly)."""
+    shutil.copyfile(wav, out)
+
+
 def pipeline(fmt):
     """(file extension, converter, makes audio) for a delivery's voice format: "ogg" (Telegram voice messages,
-    the default), "m4a" (the hands-free line) or "none" (only the spoken text is wanted, no audio)."""
+    the default), "m4a" (the hands-free line), "wav" (the PC voice: no conversion) or "none" (only the spoken
+    text is wanted, no audio)."""
     if fmt == "m4a":
         return "m4a", to_m4a, True
+    if fmt == "wav":
+        return "out.wav", keep_wav, True  # not "wav": the speech server's own file is <stem>.wav
     if fmt == "none":
         return "m4a", to_m4a, False
     return "ogg", to_ogg, True

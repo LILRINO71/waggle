@@ -135,7 +135,26 @@ def decode(path, timeout=60):
                        capture_output=True, timeout=timeout, creationflags=flags)
     if r.returncode != 0 or not r.stdout:
         raise RuntimeError(("ffmpeg could not decode the note: " + r.stderr.decode("utf-8", "replace").strip())[:200])
-    return np.frombuffer(r.stdout, dtype=np.float32)
+    return normalise(np.frombuffer(r.stdout, dtype=np.float32))
+
+
+# Level normalisation: the PC's webcam microphone records speech far below full scale, and the recogniser's
+# voice-activity filter and its features both do worse on very quiet audio. A recording whose loud parts (the
+# 99.9th percentile of the magnitude, so a single click does not count) are under QUIET_BELOW of full scale is
+# raised to TARGET, at most MAX_GAIN times. Louder recordings (Telegram voice notes) are left exactly as they are.
+QUIET_BELOW, TARGET, MAX_GAIN = 0.1, 0.5, 30.0
+
+
+def normalise(samples):
+    """The samples (float, -1..1) raised to a usable level when they are quiet; returned unchanged otherwise."""
+    import numpy as np
+    if samples is None or not len(samples):
+        return samples
+    loud = float(np.percentile(np.abs(samples), 99.9))
+    if loud <= 0.0 or loud >= QUIET_BELOW:
+        return samples
+    gain = min(TARGET / loud, MAX_GAIN)
+    return np.clip(samples * gain, -1.0, 1.0).astype(np.float32)
 
 
 def audio_file_problem(path):
