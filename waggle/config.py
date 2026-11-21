@@ -48,6 +48,9 @@ class Settings:
     # writes it: what it learns from real limit hits lives in budget.db, kept within quota.ESTIMATE_BOUNDS of this.
     window_units_estimate: float = 6.0
     window_hours: float = 5.0
+    # Background work (autonomy, routines, proposals...) waits while the real seven-day usage (the CLI's
+    # unifiedWindows.seven_day) is at or above this fraction, so it never eats the owner's week. 0 = no check.
+    seven_day_stop_at: float = 0.85
     # Background budget (waggle/budget.py): objectives, routines, proactive checks, brief, learning.
     # Units are weighted tokens (an estimate of plan-limit use; ~0.06 per Haiku agent step, ~0.2 per Sonnet step).
     # Change with `python -m waggle.cli budget set 6` or by editing ~/.waggle/config.json.
@@ -116,6 +119,12 @@ class Settings:
     audio_transcribe_max_s: float = 600  # an audio file (not a voice note) up to this long is transcribed
     chat_tools: list = field(default_factory=lambda: ["Read", "Glob", "Grep", "Bash", "PowerShell", "WebSearch", "Write", "Edit", "NotebookEdit",
                                                       "WebFetch"])
+    # Wolfram's free cloud MCP (no key): checked maths and science for the chat brain. false = not offered.
+    wolfram_mcp: bool = True
+    # Nightly local backup of the data home (waggle/backup.py): dated zips here, the newest backup_keep kept. Not a
+    # cloud folder, because the data includes tokens. Empty = %USERPROFILE%\WaggleBackups.
+    backup_dir: str = ""
+    backup_keep: int = 14
     chat_effort: str = "low"
     chat_idle_s: int = 1800  # an idle chat process is stopped; the next message resumes the same session
     chat_turn_timeout_s: int = 600

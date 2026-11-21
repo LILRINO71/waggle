@@ -75,6 +75,7 @@ TARGETED_TIMEOUT_S = 15 * 60
 FULL_SUITE_TIMEOUT_S = 75 * 60
 DEPLOY_TIMEOUT_S = 30 * 60
 MAX_TRIES = 3
+MAX_RERUN = 150  # more failing tests than this is a real break, not a flake: no re-run
 DEFAULT_MODEL = "sonnet"
 HARD_MODEL = "opus"
 ADVANCE_EVERY = "10m"
@@ -362,6 +363,20 @@ def parse_pytest(text):
     return out
 
 
+_FAILED_RE = re.compile(r"^(?:FAILED|ERROR) (\S+?(?:\[.*?\])?)(?: - .*)?\s*$")
+
+
+def parse_failed_ids(text):
+    """The test ids from pytest's short summary ("FAILED tests/test_a.py::test_x[1] - AssertionError"), in order and
+    without repeats. Also ERROR lines (a fixture or collection error)."""
+    out = []
+    for line in (text or "").splitlines():
+        m = _FAILED_RE.match(line.strip())
+        if m and m.group(1) not in out:
+            out.append(m.group(1))
+    return out
+
+
 def parse_deploy_log(text):
     """What deploy.ps1's log says: {"done", "code", "ok", "main_moved"}. ok needs the exit code 0 AND the closing
     "deployed <sha>" line (the script prints it after its live canary passed)."""
@@ -450,7 +465,8 @@ class Env:
             p.kill()
             out, rc = (p.communicate()[0] or "") + "\n[killed: timed out]", 124
         shutil.rmtree(scratch, ignore_errors=True)
-        return {"rc": rc, **parse_pytest(out), "tail": "\n".join((out or "").splitlines()[-25:])}
+        return {"rc": rc, **parse_pytest(out), "tail": "\n".join((out or "").splitlines()[-25:]),
+                "failed_ids": parse_failed_ids(out)}
 
     def suite_lock(self):
         """The machine-wide lock for a FULL test run (this PC runs one at a time). The same file serves
@@ -721,6 +737,56 @@ def fails_before_fix(env, p, files, support=()):
             shutil.rmtree(scratch, ignore_errors=True)
 
 
+def failing_on_base(env, p, ids):
+    """The subset of `ids` that fail on the base commit (a scratch worktree of base_sha, nothing copied in, so a test
+    that only exists in the change does not fail there; it is just not found), or None when that cannot be checked."""
+    wt = Path(p["worktree"])
+    scratch = wt.parent / f"{wt.name}-base"
+    if not _inside(scratch, env.write_root):
+        return None
+    _g(env, ["worktree", "remove", "--force", str(scratch)], env.repo)
+    rc, _out = _g(env, ["worktree", "add", "--detach", str(scratch), p["base_sha"]], env.repo)
+    if rc:
+        return None
+    try:
+        res = env.run_tests(scratch, list(ids), TARGETED_TIMEOUT_S)
+    finally:
+        _g(env, ["worktree", "remove", "--force", str(scratch)], env.repo)
+        if scratch.exists():
+            shutil.rmtree(scratch, ignore_errors=True)
+    if res["rc"] == 124:
+        return None
+    return set(res.get("failed_ids") or [])
+
+
+def flake_guard(env, p, wt, full):
+    """The full suite failed. Is it the change's fault? Re-run just the failed tests once in the worktree: tests that
+    then pass were flaky (the 2026-11-20 failure of proposal 33HN was 30 load-related failures that all passed on a
+    quiet re-run). Tests that still fail are run on the base commit: those that fail there too are pre-existing.
+    Returns {"verdict": "flaky"|"pre-existing"|"flaky and pre-existing", "flaky": [...], "pre_existing": [...],
+    "count": n} when EVERY failure is explained, else None (the change broke something, or it cannot be told)."""
+    ids = list(full.get("failed_ids") or [])
+    bad = full.get("failed", 0) + full.get("errors", 0)
+    if full.get("rc") != 1 or not ids or len(ids) > bad or len(ids) > MAX_RERUN:
+        return None
+    again = env.run_tests(wt, ids, TARGETED_TIMEOUT_S)
+    if again["rc"] == 0 and not again["failed"] and not again["errors"] and again["passed"] >= 1:
+        remaining = []
+    else:
+        remaining = list(again.get("failed_ids") or [])
+        if again["rc"] == 124 or not remaining:
+            return None  # a crash or a timeout is not an answer
+    pre = []
+    if remaining:
+        base = failing_on_base(env, p, remaining)
+        if base is None or not set(remaining) <= base:
+            return None
+        pre = remaining
+    flaky = [i for i in ids if i not in pre]
+    verdict = "flaky" if not pre else "pre-existing" if not flaky else "flaky and pre-existing"
+    return {"verdict": verdict, "flaky": flaky, "pre_existing": pre, "count": len(ids)}
+
+
 def _commit(env, p, wt):
     rc, dirty = _porcelain(env, wt)
     if rc:
@@ -774,11 +840,17 @@ def _verify(env, p, now):
     lock = env.suite_lock()
     if not lock.acquire():
         return _wait(pid, "another full test run holds the machine-wide suite lock; trying again later", 10, now)
+    flaky = None
     try:
         full = env.run_tests(wt, None, FULL_SUITE_TIMEOUT_S)
+        if full["rc"] != 0 and (full["failed"] or full["errors"]):
+            flaky = flake_guard(env, p, wt, full)  # not the change's fault when they re-run clean or fail on base too
     finally:
         lock.release()
-    if full["rc"] != 0 or full["failed"] or full["errors"] or full["passed"] < 1:
+    if flaky:
+        _log(pid, f"full suite: {flaky['count']} failing tests are not caused by the change ({flaky['verdict']}): "
+                  + ", ".join((flaky["flaky"] + flaky["pre_existing"])[:6]), now)
+    elif full["rc"] != 0 or full["failed"] or full["errors"] or full["passed"] < 1:
         return _fail(env, p, f"the full suite fails ({full['failed']} failed, {full['errors']} errors, "
                              f"{full['passed']} passed)", now, detail=full.get("tail", ""))
     rc, out = _g(env, ["push", "origin", f"{p['branch']}:{p['branch']}"], wt)
@@ -788,6 +860,9 @@ def _verify(env, p, now):
         return _wait(pid, f"the branch could not be pushed: {out.strip()[:160]}", 10, now, tries=True)
     tests_info = {"targeted": {"files": tests, "passed": res["passed"]}, "before_fix": why,
                   "full": {"passed": full["passed"], "failed": 0}}
+    if flaky:
+        tests_info["full"]["failed"] = flaky["count"]
+        tests_info["flaky"] = flaky
     ahead = _unreleased(env)
     _set(pid, "awaiting", f"verified and pushed {head[:10]}; the owner was told", now, head_sha=head, diff=diff,
          tests=tests_info, safety=safety, note="", notified_at=now)
@@ -811,6 +886,16 @@ def ready_text(p, ahead=None):
              f"+{d['added']} -{d['deleted']}, on branch proposals/{p['id']}.",
              f"Tests: the new test fails without the fix and passes with it; {t['targeted']['passed']} targeted passed; "
              f"full suite {t['full']['passed']} passed, 0 failed."]
+    fl = t.get("flaky")
+    if fl:
+        names = fl["flaky"] + fl["pre_existing"]
+        shown = ", ".join(n.split("::")[-1] for n in names[:6]) + (f" and {len(names) - 6} more" if len(names) > 6 else "")
+        how = {"flaky": "they passed on a quiet re-run",
+               "pre-existing": "they fail the same way without this change",
+               "flaky and pre-existing": "some passed on a quiet re-run and the rest fail the same way without this change"}
+        lines[-1] = (f"Tests: the new test fails without the fix and passes with it; {t['targeted']['passed']} targeted "
+                     f"passed; full suite {t['full']['passed']} passed, {fl['count']} failed but flaky/pre-existing, not "
+                     f"caused by this change ({how.get(fl['verdict'], 'checked')}): {shown}.")
     if p["safety"]:
         lines.append("It TOUCHES THE SAFETY CORE: " + ", ".join(p["safety"][:6]) + ". These files protect you; "
                      "read the diff on GitHub before you merge.")

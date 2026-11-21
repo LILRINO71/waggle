@@ -48,8 +48,11 @@ def test_top_level_fallback_only_for_five_hour(settings):
     quota.note_real_usage({"rateLimitType": "five_hour", "utilization": 0.4, "resetsAt": 1795116000}, now=1795100000)
     assert reading()["utilization"] == 0.4
     data_path("real_usage.json").unlink()
-    assert quota.note_real_usage({"rateLimitType": "seven_day", "utilization": 0.4, "resetsAt": 1795116000}) is None
-    assert not data_path("real_usage.json").exists()
+    # a seven_day event is not a five-hour reading (None, no five-hour fields); it is kept as the seven-day one
+    assert quota.note_real_usage({"rateLimitType": "seven_day", "utilization": 0.4, "resetsAt": 1795116000},
+                                 now=1795100000) is None
+    assert quota._real_reading() is None
+    assert reading()["seven_day"]["utilization"] == 0.4 and "utilization" not in reading()
 
 
 @pytest.mark.parametrize("bad", [None, [], "x", 5, {}, {"unifiedWindows": 5}, {"unifiedWindows": {"five_hour": 3}},

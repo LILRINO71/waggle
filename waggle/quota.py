@@ -271,6 +271,24 @@ def _parse_info(info):
     return u, r
 
 
+def _parse_window(info, name):
+    """(utilization, resets_at) of one named window ("seven_day") out of a rate_limit_info dict, or None. The
+    top-level fields only count when the event itself is of that rateLimitType."""
+    if not isinstance(info, dict):
+        return None
+    uw = info.get("unifiedWindows")
+    win = uw.get(name) if isinstance(uw, dict) else None
+    if not isinstance(win, dict):
+        if info.get("rateLimitType") != name:
+            return None
+        win = info
+    u = _number(win.get("utilization"))
+    r = _epoch(win.get("resetsAt", info.get("resetsAt")))
+    if u is None or r is None or u < 0 or u > 1.5:
+        return None
+    return u, r
+
+
 def _real_reading():
     """The stored reading {utilization, resets_at, seen_at, units_at_seen, caps}, or None."""
     try:
@@ -285,17 +303,59 @@ def _real_reading():
         return None
 
 
-def note_real_usage(info, now=None, settings=None, roots=None):
-    """Store the real five-hour reading from a rate_limit_event (rate_limit_info). Never raises; bad input is ignored.
-    Returns the stored reading, or None."""
+def _stored_seven(d):
+    """The stored seven-day reading {utilization, resets_at, seen_at} out of the real_usage.json dict, or None."""
+    sd = d.get("seven_day") if isinstance(d, dict) else None
+    if not isinstance(sd, dict):
+        return None
+    u, r = _number(sd.get("utilization")), _number(sd.get("resets_at"))
+    if u is None or r is None:
+        return None
+    return {"utilization": u, "resets_at": r, "seen_at": _number(sd.get("seen_at")) or 0.0}
+
+
+def _raw_real():
     try:
+        d = json.loads(data_path("real_usage.json").read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_real(row):
+    p = data_path("real_usage.json")
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(row, indent=2), encoding="utf-8")
+    os.replace(tmp, p)
+
+
+def _seven_row(info, now, old):
+    """The seven-day entry to store: the one in `info`, else the one already stored (never lost by a later event
+    that only carries the five-hour window)."""
+    parsed = _parse_window(info, "seven_day")
+    if parsed:
+        return {"utilization": parsed[0], "resets_at": parsed[1], "seen_at": now}
+    return _stored_seven(old)
+
+
+def note_real_usage(info, now=None, settings=None, roots=None):
+    """Store the real five-hour reading from a rate_limit_event (rate_limit_info), and the seven-day one when the
+    event carries it (unifiedWindows.seven_day). Never raises; bad input is ignored.
+    Returns the stored five-hour reading, or None (an event with only a seven-day window stores that and returns None)."""
+    try:
+        now = now or time.time()
         parsed = _parse_info(info)
         if not parsed:
+            sd = _parse_window(info, "seven_day")
+            if sd:
+                row = dict(_raw_real())
+                row["seven_day"] = {"utilization": sd[0], "resets_at": sd[1], "seen_at": now}
+                _write_real(row)
             return None
         util, resets_at = parsed
-        now = now or time.time()
         s = settings or Settings.load()
         units = _usage_from(resets_at - s.window_hours * 3600, roots, until=now)  # counted in this fixed window right now
+        raw = _raw_real()
         old = _real_reading()
         caps = (old or {}).get("caps", [])
         if util >= CALIBRATE_MIN and units > 0:
@@ -307,13 +367,45 @@ def note_real_usage(info, now=None, settings=None, roots=None):
                 pass
         row = {"utilization": util, "resets_at": resets_at, "seen_at": now, "units_at_seen": round(units, 6),
                "caps": [round(c, 4) for c in caps]}
-        p = data_path("real_usage.json")
-        tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(row, indent=2), encoding="utf-8")
-        os.replace(tmp, p)
+        seven = _seven_row(info, now, raw)
+        if seven:
+            row["seven_day"] = seven
+        _write_real(row)
         return row
     except Exception:
         return None
+
+
+# ---- the seven-day window ------------------------------------------------------------------------------------------
+
+def seven_day_reading(now=None):
+    """{utilization, resets_at, seen_at} of the newest seven-day reading whose window has not reset yet, else None.
+    A reading from hours ago understates the use (it only grows until the reset), never overstates it."""
+    now = now or time.time()
+    r = _stored_seven(_raw_real())
+    return r if r and r["resets_at"] > now else None
+
+
+def seven_day_limit(s):
+    """The fraction of the owner's week background work may reach (setting seven_day_stop_at); 0 or off = no check."""
+    v = _number(getattr(s, "seven_day_stop_at", 0.85))
+    return v if v is not None and v > 0 else None
+
+
+def seven_day_block(s, now=None):
+    """(blocked, reason, retry_at): background work waits while the week is at or past seven_day_stop_at, so
+    autonomy never eats the owner's week. Never raises: an unreadable reading blocks nothing."""
+    try:
+        now = now or time.time()
+        limit = seven_day_limit(s)
+        r = seven_day_reading(now) if limit else None
+        if r and r["utilization"] >= limit:
+            return (True, f"the 7-day Claude limit is at {r['utilization']:.0%}; background work waits "
+                          f"(it pauses at {limit:.0%} so the rest of the week is yours)",
+                    min(r["resets_at"], now + 6 * 3600))
+    except Exception:
+        pass
+    return False, "", 0.0
 
 
 def _fresh_reading(now):
@@ -417,7 +509,11 @@ def can_escalate(model, settings=None, now=None, used=None):
 def status(settings=None):
     s = settings or Settings.load()
     v = window_view(s)
+    sd = seven_day_reading()
     return {"window_used_units": round(v["used"], 3), "window_estimate_units": v["cap"],
             "window_pct": round(100 * v["pct"], 1), "source": v["source"], "resets_at": v["resets_at"],
             "waggle_units": round(waggle_usage(s.window_hours), 3),
-            "blocked_until": _state().get("blocked_until")}
+            "blocked_until": _state().get("blocked_until"),
+            "seven_day_pct": round(100 * sd["utilization"], 1) if sd else None,
+            "seven_day_resets_at": sd["resets_at"] if sd else None,
+            "seven_day_stop_at": seven_day_limit(s)}

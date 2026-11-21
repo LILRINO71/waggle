@@ -230,6 +230,7 @@ WAGGLE_TOOLS = {
     "memory_status": (ALLOW, _READS), "memory_review": (ALLOW, _READS), "objective_status": (ALLOW, _READS),
     "graph_query": (ALLOW, _READS), "background_status": (ALLOW, _READS), "waggle_doctor": (ALLOW, _READS),
     "note_read": (ALLOW, _READS), "related_to": (ALLOW, _READS), "memory_core": (ALLOW, _READS),
+    "ftc_team": (ALLOW, "reads one FTC team's public FTCScout page (read-only)"),
     # Waggle's own memory, skills, routines and agents (agent work goes through this policy again)
     "remember": (ALLOW, _OWN), "project_update": (ALLOW, _OWN), "rate_finding": (ALLOW, _OWN),
     "skill_create": (ALLOW, _OWN), "skill_update": (ALLOW, _OWN), "agent_note": (ALLOW, _OWN),
