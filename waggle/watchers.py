@@ -286,9 +286,9 @@ def unpushed_watch(settings, now=None):
     now = now or time.time()
     out = []
     for repo in proactive.find_repos(settings):
-        ahead = proactive._git(repo, "rev-list", "--count", "@{u}..HEAD")
-        last = proactive._git(repo, "log", "-1", "--format=%ct")
-        if ahead and ahead.isdigit() and int(ahead) > 0 and last and last.isdigit() and now - int(last) > 7200:
+        ahead = proactive.unpushed_count(repo)
+        last = proactive._git_refs(repo, "log", "-1", "--format=%ct") if ahead else None
+        if ahead and last and last.isdigit() and now - int(last) > 7200:
             out.append(signal(f"unpushed:{repo.name}:{last}", "unpushed", f"{repo.name}: {ahead} commit(s) not pushed",
                               f"Last commit {int((now - int(last)) / 3600)} h ago.", f"unpushed:{repo.name}"))
     return out
@@ -389,7 +389,7 @@ def repo_activity(settings, since=None, now=None):
     since = since or dt.datetime.fromtimestamp(now).replace(hour=0, minute=0, second=0).timestamp()
     out = {}
     for repo in proactive.find_repos(settings):
-        log = proactive._git(repo, "log", f"--since=@{int(since)}", "--no-merges", "--format=%s", "-n", "30")
+        log = proactive._git_refs(repo, "log", f"--since=@{int(since)}", "--no-merges", "--format=%s", "-n", "30")
         if log:
             out[repo.name] = [line[:100] for line in log.splitlines() if line.strip()]
     return out

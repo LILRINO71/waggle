@@ -8,6 +8,7 @@ objective_watch (objectives that are blocked, waiting for a yes, or stalled).
 import datetime as dt
 import hashlib
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -40,6 +41,93 @@ def _git(repo, *args):
     return r.stdout.strip() if r.returncode == 0 else None
 
 
+def _git_dirs(repo):
+    """(git dir, common dir) of a checkout. In a worktree `.git` is a file that points at its own git dir, and the
+    branches and the config live in the main repository's (its `commondir`)."""
+    g = Path(repo) / ".git"
+    try:
+        if g.is_file():
+            text = g.read_text(encoding="utf-8", errors="replace").strip()
+            if text.startswith("gitdir:"):
+                gd = Path(text[len("gitdir:"):].strip())
+                if not gd.is_absolute():
+                    gd = (Path(repo) / gd).resolve()
+                common = gd
+                c = gd / "commondir"
+                if c.is_file():
+                    rel = Path(c.read_text(encoding="utf-8", errors="replace").strip())
+                    common = rel if rel.is_absolute() else (gd / rel).resolve()
+                return gd, common
+    except OSError:
+        pass
+    return g, g
+
+
+def git_signature(repo):
+    """A value that changes whenever a commit, a checkout, a reset, a fetch, a push or a change of upstream would
+    change what git answers about the repository's refs. Read from a few file stats: no process is started.
+    None when the repository can't be read (the caller then asks git as before)."""
+    gd, common = _git_dirs(repo)
+    parts = []
+    try:
+        for p in (gd / "HEAD", gd / "logs" / "HEAD", common / "packed-refs", common / "config", common / "FETCH_HEAD"):
+            try:
+                st = p.stat()
+                parts.append((p.name, st.st_mtime_ns, st.st_size))
+            except OSError:
+                parts.append((p.name, 0, -1))
+        if parts[0][2] < 0:                      # no HEAD: not a repository we can read
+            return None
+        for sub in ("heads", "remotes"):         # the branch tips and what was last seen of the remotes
+            base = common / "refs" / sub
+            for dirpath, _dirs, files in os.walk(base):
+                for name in sorted(files):
+                    try:
+                        st = os.stat(os.path.join(dirpath, name))
+                        parts.append((os.path.relpath(os.path.join(dirpath, name), common), st.st_mtime_ns, st.st_size))
+                    except OSError:
+                        pass
+    except OSError:
+        return None
+    return hashlib.sha1(repr(parts).encode("utf-8")).hexdigest()
+
+
+_GIT_REFS = {}            # (repo, args) -> (signature, answer)
+_GIT_REFS_MAX = 2000
+
+
+def _git_refs(repo, *args):
+    """`_git` for a question whose answer depends only on the refs and the config (how many commits are not pushed,
+    when the last commit was, the log since a fixed moment), never on the working tree. The look around asks these
+    of every repository under the watch roots every five minutes: two processes a repository a pass, some sixty
+    processes a pass on a machine with thirty checkouts. The answer is kept until the refs change, so a
+    repository nobody touched costs a few file stats."""
+    sig = git_signature(repo)
+    key = (str(repo), args)
+    hit = _GIT_REFS.get(key)
+    if sig is not None and hit is not None and hit[0] == sig:
+        return hit[1]
+    out = _git(repo, *args)
+    # keep it only if nothing moved while git was answering (a commit landing mid-call must not be remembered)
+    if sig is not None and git_signature(repo) == sig:
+        if len(_GIT_REFS) >= _GIT_REFS_MAX:
+            _GIT_REFS.clear()
+        _GIT_REFS[key] = (sig, out)
+    return out
+
+
+def unpushed_count(repo):
+    """How many commits of the checked-out branch are on no remote at all, or None when that can't be said.
+    Not `@{u}..HEAD`: a branch cut from origin/main has origin/main as its upstream, so every commit of it counted
+    as "not pushed" even after it was pushed under its own name (four pushed branches were reported with 5 to 19
+    commits each), while a branch with no upstream, the one that really is nowhere else, was never reported.
+    A repository with no remote has nowhere to push to: None."""
+    if not _git_refs(repo, "remote"):
+        return None
+    n = _git_refs(repo, "rev-list", "--count", "HEAD", "--not", "--remotes")
+    return int(n) if n and n.isdigit() else None
+
+
 def find_repos(settings):
     repos = []
     for root in settings.watch_roots:
@@ -63,8 +151,8 @@ def git_watch(settings, now=None):
         status = _git(repo, "status", "--porcelain")
         if status is None:
             continue
-        ahead = _git(repo, "rev-list", "--count", "@{u}..HEAD")
-        if ahead and ahead.isdigit() and int(ahead) > 0:
+        ahead = unpushed_count(repo)
+        if ahead:
             out.append({"source": "git", "project": repo_project(repo, settings), "tier": "important",
                         "confidence": 1.0, "verified": True,
                         "title": f"{repo.name}: {ahead} commit(s) not pushed",
