@@ -149,6 +149,22 @@ def pick_bot(members, typed=""):
     return "", False
 
 
+CODE_ROUTES = {"SentCodeTypeApp": "as a message in your Telegram app (the chat named Telegram, blue check)",
+               "SentCodeTypeSms": "by SMS text message", "SentCodeTypeCall": "by a phone call",
+               "SentCodeTypeFlashCall": "by a missed call (the code is the last digits of the number)",
+               "SentCodeTypeMissedCall": "by a missed call (the code is the last digits of the number)",
+               "SentCodeTypeEmailCode": "to your Telegram login email",
+               "SentCodeTypeFragmentSms": "through Fragment (fragment.com)",
+               "SentCodeTypeFirebaseSms": "by SMS text message",
+               "SentCodeTypeSetUpEmailRequired": "nowhere yet: Telegram wants a login email set up in the app first"}
+
+
+def code_route(sent):
+    """Where Telegram says it sent the login code (no secret in it)."""
+    kind = type(getattr(sent, "type", None)).__name__
+    return CODE_ROUTES.get(kind, f"by an unknown route ({kind})")
+
+
 async def run_login(client, ask, ask_secret, out, password_needed_exc, d=None):
     """Interactive login on an already built client. Returns 0 on success.
     ask / ask_secret / out are injected so a test can drive it with a fake client."""
@@ -161,8 +177,13 @@ async def run_login(client, ask, ask_secret, out, password_needed_exc, d=None):
     await client.connect()
     try:
         if not await client.is_user_authorized():
-            await client.send_code_request(phone)
-            code = ask_secret("Login code Telegram sent you: ").strip()
+            sent = await client.send_code_request(phone)
+            out(f"Telegram sent the code {code_route(sent)}.")
+            code = ask_secret("Login code (press Enter alone if nothing came, to have it sent another way): ").strip()
+            if not code:
+                sent = await client.send_code_request(phone, force_sms=True)
+                out(f"Sent again, {code_route(sent)}.")
+                code = ask_secret("Login code: ").strip()
             secrets.append(code)
             try:
                 await client.sign_in(phone, code)
