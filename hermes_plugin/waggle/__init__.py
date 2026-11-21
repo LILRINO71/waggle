@@ -1013,22 +1013,23 @@ def _start_bridge():
 # {"action": "handled"} only when the core answers 202, so the gateway never starts its own turn. A voice note
 # of the owner's direct chat goes the same way (kind "voice", the downloaded audio file as media): Hermes
 # transcribes AFTER this hook, so the engine transcribes the file itself (waggle/stt.py, the same local model).
-# Photos, documents (images included), audio files and stickers go too (kind "photo" / "document" / "audio" /
-# "sticker", settings.engine_media): the media items carry Hermes's cached local file when there is one and
+# Photos, videos, documents (images included), audio files, stickers and location pins go too (kind "photo" /
+# "video" / "document" / "audio" / "sticker" / "location", settings.engine_media): a location's one item carries
+# lat, lon and the venue's title and address (no file); the other items carry Hermes's cached local file when there is one and
 # Telegram's file_id, name, mime type and size, so the core saves the file into its own per-chat media folder
 # (waggle/media_intake.py: copied, or downloaded through the Bot API's getFile when the local copy is missing).
 # The caption (the event's text without any file content Hermes inlined) is the message text: the owner's own words.
 # Slash commands never reach this hook (Hermes dispatches them first), so pre_gateway_dispatch sends the ones
 # Waggle serves itself (waggle/engine_commands.py: /waggle ...) to the core as kind "command" and drops the
-# event (action "skip"). Everything else (other chats and platforms, groups, topics, videos, other /commands,
+# event (action "skip"). Everything else (other chats and platforms, groups, topics, other /commands,
 # approval replies, feedback and objective commands), and any failure to reach the core, returns None: the old
 # path answers as before. The admission payload has no message type, so pre_gateway_dispatch records each
 # event's type and media first; a message without that record is never routed.
 
 _seen_types = {}  # message id -> (message type, has media), from pre_gateway_dispatch
 _seen_audio = {}  # message id -> the audio file paths of that event (voice notes)
-_seen_meta = {}  # message id -> {"caption", "items", "emoji"} of a photo / document / audio / sticker event
-MEDIA_TYPES = ("photo", "document", "audio", "sticker")
+_seen_meta = {}  # message id -> {"caption", "items", "emoji", "location"} of a media / sticker / location event
+MEDIA_TYPES = ("photo", "document", "audio", "sticker", "video", "location")
 MEDIA_ITEMS_MAX = 10
 CAPTION_TEXT_ATTR = "_telegram_caption_text"  # Hermes's name for an event's text without inlined file content
 _seen_lock = threading.Lock()
@@ -1065,22 +1066,45 @@ def _raw_media(raw):
         sticker = getattr(raw, "sticker", None)
         if sticker:
             return {"emoji": getattr(sticker, "emoji", "") or ""}
-        for attr in ("document", "audio"):
+        for attr in ("document", "audio", "video", "video_note"):
             f = getattr(raw, attr, None)
             if f:
+                video = attr.startswith("video")  # a video note has no file name or type of its own
                 return {"file_id": getattr(f, "file_id", None), "size": getattr(f, "file_size", None),
-                        "name": getattr(f, "file_name", None) or getattr(f, "title", None) or "",
-                        "mime": getattr(f, "mime_type", None) or "", "duration": getattr(f, "duration", None)}
+                        "name": getattr(f, "file_name", None) or getattr(f, "title", None) or ("video.mp4" if video else ""),
+                        "mime": getattr(f, "mime_type", None) or ("video/mp4" if video else ""),
+                        "duration": getattr(f, "duration", None)}
     except Exception:
         pass
     return {}
 
 
+def _raw_location(raw):
+    """{"lat", "lon", "title", "address"} of a location pin or a venue, read from Telegram's own message; {} when
+    it has no coordinates. "title" is the venue's name."""
+    try:
+        venue = getattr(raw, "venue", None)
+        loc = getattr(venue, "location", None) if venue else getattr(raw, "location", None)
+        lat, lon = getattr(loc, "latitude", None), getattr(loc, "longitude", None)
+        if lat is None or lon is None:
+            return {}
+        out = {"lat": float(lat), "lon": float(lon)}
+        if venue:
+            out["title"] = str(getattr(venue, "title", "") or "")
+            out["address"] = str(getattr(venue, "address", "") or "")
+        return out
+    except Exception:
+        return {}
+
+
 def _media_meta(event, mtype):
-    """The record the admission hook needs for a photo / document / audio / sticker event, else None."""
+    """The record the admission hook needs for a photo / video / document / audio / sticker / location event, else None."""
     if mtype not in MEDIA_TYPES:
         return None
     raw = getattr(event, "raw_message", None)
+    if mtype == "location":  # coordinates come from Telegram's message, never from the text Hermes wrote about them
+        loc = _raw_location(raw)
+        return {"caption": "", "items": [], "emoji": "", "location": loc} if loc else None
     rm = _raw_media(raw)
     if mtype == "sticker":
         return {"caption": "", "items": [], "emoji": rm.get("emoji", "")}
@@ -1190,7 +1214,10 @@ def engine_route(platform, source, message_id, text, settings=None):
             return "old", "media off"
         if meta is None:
             return "old", "media details unknown"
-        if seen[0] != "sticker":
+        if seen[0] == "location":
+            if not meta.get("location"):
+                return "old", "media details unknown"
+        elif seen[0] != "sticker":
             if not meta["items"]:
                 return "old", "no usable file"
             if len(meta["items"]) > MEDIA_ITEMS_MAX:
@@ -1251,7 +1278,8 @@ def _engine_owns_approval(chat_key, text):
 def post_turn(chat_id, text, message_id, timeout=CORE_POST_TIMEOUT_S, audio=None, kind=None, media=None):
     """POST the message to the core's /turn. (accepted, detail): accepted only on HTTP 202. `audio`: the file
     of a voice note (sent as kind "voice" with an empty text; the engine transcribes it). `kind` and `media`:
-    "photo" / "document" / "audio" / "sticker" with the media items, "command" with the command as text."""
+    "photo" / "video" / "document" / "audio" / "sticker" / "location" with the media items, "command" with the
+    command as text."""
     import urllib.error
     import urllib.request
     from waggle.core import settings as core_settings
@@ -1311,6 +1339,9 @@ def on_gateway_admission(session_key="", platform="", source=None, message_id=No
             if why == "sticker":
                 ok, detail = post_turn(chat_id, "", message_id, kind="sticker",
                                        media=[{"kind": "sticker", "emoji": meta.get("emoji", "")}])
+            elif why == "location":
+                ok, detail = post_turn(chat_id, "", message_id, kind="location",
+                                       media=[{"kind": "location", **meta["location"]}])
             else:
                 ok, detail = post_turn(chat_id, meta["caption"], message_id, kind=why, media=meta["items"])
             events.log("engine_admission", routed="engine" if ok else "old", reason=detail, platform=platform,
