@@ -125,7 +125,9 @@ at the word boundary found by Whisper's word times and checked by re-transcribin
 | ... of door thumps | 80 | 0 | 0 | 0 |
 
 Recogniser check of what was captured (Whisper small on the CPU; 32 sentences x 4 backgrounds): A kept the whole
-sentence in 92 of 96 runs (3 first words lost, 32 runs never ended because of the music), B in 127 of 128.
+sentence in 92 of 96 runs (32 runs never ended because of the music), B in 127 of 128; every difference was Whisper
+spelling a word differently ("Waggle" as "wagle", "add" as "and"), and in each of them the capture began before the
+first word, so no word was lost by either gate.
 Smart Turn on its own published test data (25 English clips from the dataset it was trained with): 24 right, so the
 feature extraction is correct (it matches the reference extractor to 1e-7); on the synthesised pauses it calls most
 mid-sentence stops "finished". Synthesised speech has no hesitation in its voice, so this says Smart Turn is not safe to
