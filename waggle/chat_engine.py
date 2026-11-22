@@ -958,6 +958,14 @@ def handle_inbound(chat, text, *, kind="text", media=None, platform="telegram", 
             answer = None
         if answer:
             return direct(answer, "proposal")
+        try:  # "yes CODE" / "no" on an automation suggestion (waggle/recipes.py)
+            from . import recipes
+            answer = recipes.preflight(chat, body, origin=origin, kind=kind, settings=s)
+        except Exception as e:
+            events.log("engine_error", stage="recipes", error=str(e)[:200])
+            answer = None
+        if answer:
+            return direct(answer, "recipe")
     try:
         pre = approval_preflight(chat, body, prev) if owner_text != "" else None  # a caption can answer an approval
     except Exception as e:

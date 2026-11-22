@@ -16,7 +16,7 @@ MODULES = ["waggle.core.transports", "waggle.chat_jobs", "waggle.tick", "waggle.
            "waggle.dropbox_ingest", "waggle.canary", "waggle.calendar_watch", "waggle.proposals", "waggle.learnloop",
            "waggle.backup", "waggle.duties_core", "waggle.evals", "waggle.deadman"]
 
-MODULES += ["waggle.aw_sensor", "waggle.focus"]  # ActivityWatch sensing (10-min poll) and focus-block nudges
+MODULES += ["waggle.aw_sensor", "waggle.focus", "waggle.recipes"]  # ActivityWatch sensing (10-min poll) and focus-block nudges
 
 log = logging.getLogger("waggle.core.plugins")
 
