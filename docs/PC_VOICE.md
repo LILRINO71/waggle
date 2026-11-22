@@ -256,7 +256,7 @@ All settings go in `config.json` in the Waggle home. They are read when the PC v
 | Follow-up window after a question | `"pc_voice_question_s": 20` | 20 s |
 | Which local model judges | `"pc_voice_judge_model": "qwen3:8b"` (empty: `gemma4:latest`) | empty |
 | How long the judge may take, and how sure it must be | `"pc_voice_judge_timeout_s": 1.5`, `"pc_voice_judge_min": 0.5` | 1.5 s, 0.5 |
-| Silence that ends what you say | `"pc_voice_end_silence_s": 1.2` | 1.2 s |
+| Silence that ends what you say | `"pc_voice_end_silence_s": 0.8` | 0.8 s |
 | What counts as "away" | `"pc_presence_idle_s": 300` | 5 minutes without input |
 | How loud sound must be to count as speech | `"pc_voice_min_level": 120` | 120 (frame RMS of 16-bit samples) |
 | Which gate finds speech | `"pc_voice_vad": "energy"` (loudness only) or `"silero"` (a small neural model) | silero (energy when the model file is missing) |

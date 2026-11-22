@@ -114,7 +114,7 @@ DEFAULTS = {
     "pc_voice_kws_head_s": 1.0,  # the name must begin within this long after the speech starts ("hey Waggle" fits)
     "pc_voice_kws_trust": True,  # a spotter hit counts even when the recogniser wrote the name as another word
     "pc_voice_followup_s": 12.0,  # after an answer, keep listening this long: no "Waggle" needed
-    "pc_voice_end_silence_s": 1.2,
+    "pc_voice_end_silence_s": 0.8,  # owner 2026-11-21: 1.2 s felt slow after they stopped talking
     "pc_voice_max_s": 30.0,
     "pc_voice_start_timeout_s": 6.0,
     "pc_voice_min_level": 120.0,

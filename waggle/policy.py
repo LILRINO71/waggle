@@ -279,7 +279,7 @@ WAGGLE_TOOLS = {
     "graph_correct": (ASK, "retracts or merges what Waggle knows about you"),
     "routine_remove": (ASK, "deletes a routine"),
     "skill_install": (ASK, "installs community code"),
-    "install_tool": (ASK, "installs third-party software (waggle/toolfinder.py)"),  # never covered by the owner's words (owner_acts: never)
+    "install_tool": (ASK, "installs third-party software (waggle/toolfinder.py)"),  # the owner saying "install it" covers it (owner_acts)
     "uninstall_tool": (ASK, "removes software Waggle installed (waggle/toolfinder.py)"),
     "hermes_tool": (ASK, "runs a Hermes tool"),  # decided as the Hermes tool it names (decide() below)
     "google_doc_new": (ASK, "creates a Google Doc in your Drive"),  # owner turn only (owner_acts); the tool refuses the rest
@@ -1121,6 +1121,9 @@ def owner_acts(tool_name, args, base, settings=None, cwd=None):
             return [_Act("free", free="your request to fix Waggle's own code")]
         if b == "skill_install":
             return [_Act("system", ("run",), _arg_targets(args), "installing a community skill", verbs=("install",))]
+        if b in ("install_tool", "uninstall_tool"):  # owner 2026-11-21: their own "install it" is the yes
+            return [_Act("system", ("run",), _arg_targets(args), "installing or removing a tool",
+                         verbs=("install", "uninstall", "remove", "set up", "add"))]
         return [_Act("never")]
     if kind == "outbound":
         who = _recipients(args) + [str(args.get(k)) for k in ("chat", "channel", "user", "username", "chat_id")
