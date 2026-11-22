@@ -200,6 +200,10 @@ class Endpointer:
                 return True
         return False
 
+    def frames_held(self):
+        """How many frames the utterance holds so far (pre-roll included)."""
+        return len(self._frames)
+
     @property
     def silence_s(self):
         """The silence at the end of what was heard so far: how long the endpointer waited to be sure."""

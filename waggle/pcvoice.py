@@ -32,6 +32,15 @@ too) the rest is the request, or Waggle answers "Sir?" and listens when it was o
 begin with a wake name is dropped at once: it is never written to disk here, and the core deletes its copy as
 soon as the words are known; the words are not logged.
 
+Wake modes (pc_voice_wake_mode, waggle/kws.py): "stt" is the paragraph above, every utterance transcribed. "kws" (the
+default, from the measurement in docs/PC_VOICE.md) puts a small keyword spotter (sherpa-onnx, Apache-2.0, 5 MB, on the CPU) in front: it reads the first seconds of each
+utterance for "Waggle" ("hey Waggle" too) and room speech without the name is never transcribed; on a hit the
+utterance with 1.5 s of sound before it goes to the recogniser as before, and a hit the recogniser wrote as another
+word ("bagel") still counts (pc_voice_kws_trust, the request is then the audio after the name). "both" transcribes
+everything as "stt" does and also trusts the spotter. pc_voice_kws_threshold, pc_voice_kws_head_s (how soon after
+speech starts the name must begin, 1.0 s) tune it. Without the model files or sherpa-onnx the mode is "stt" (logged
+once). Follow-up windows after an answer never need the name, in any mode. Measurements: docs/PC_VOICE.md.
+
 Waggle's own messages (reminders, outreach, finished background jobs) are spoken here when the owner is at the
 PC: the core's sender drops a small JSON file into <home>/pcvoice/say/ (waggle/pcspeak.py) and this process says
 it between conversations.
@@ -68,6 +77,8 @@ Hearing (waggle/vad.py, two small ONNX models in <home>/models, fetched with `py
   A missing model file, a file that is not the pinned one, or a missing onnxruntime means the old behaviour.
 A change is read when the process starts."""
 import argparse
+import collections
+import difflib
 import hashlib
 import http.client
 import json
@@ -82,7 +93,7 @@ import urllib.parse
 import uuid
 from pathlib import Path
 
-from waggle import mic, speaker, voice_intent
+from waggle import kws, mic, speaker, voice_intent
 
 log = logging.getLogger("waggle.pcvoice")
 
@@ -97,6 +108,11 @@ DEFAULTS = {
     "pc_voice_hotkey": "ctrl+alt+backquote",
     "pc_voice_wake": True,
     "pc_voice_wake_names": ["Waggle"],
+    "pc_voice_wake_mode": "kws",  # "kws": transcribe only after the spotter heard the name | "stt": every utterance | "both"
+    "pc_voice_kws_threshold": kws.DEFAULT_THRESHOLD,  # lower: more hits (and more false ones)
+    "pc_voice_kws_score": kws.DEFAULT_SCORE,
+    "pc_voice_kws_head_s": 1.0,  # the name must begin within this long after the speech starts ("hey Waggle" fits)
+    "pc_voice_kws_trust": True,  # a spotter hit counts even when the recogniser wrote the name as another word
     "pc_voice_followup_s": 12.0,  # after an answer, keep listening this long: no "Waggle" needed
     "pc_voice_end_silence_s": 1.2,
     "pc_voice_max_s": 30.0,
@@ -123,6 +139,10 @@ SPOOL_MAX_AGE_S = 180.0
 REQUEST_TIMEOUT_S = 120.0
 TRANSCRIBE_BUSY_WAIT_S = 20.0  # a cold recogniser load (the warm-up) holds the core's transcription lock 3-12 s
 MISS_LOG_S = 30.0  # "heard speech, no wake name" is logged at most this often (a count, never the words)
+KWS_PREROLL_S = 1.5  # sound kept from before the utterance starts, sent to the recogniser with it
+KWS_LAG_S = 0.2  # the spotter's token times run this late
+KWS_SCAN_TAIL_S = 1.2  # the spotter is given the first seconds of the utterance up to this long after the head window
+KWS_NAME_ONLY_S = 0.5  # less speech than this after the name: it was only the name
 STT_WARM_S = 120.0  # the core unloads its recogniser after 180 idle seconds: ask for it again after this long
 
 LINES = {
@@ -132,6 +152,11 @@ LINES = {
     "sir": "Sir?",
 }
 GREETINGS = {"hey", "hi", "ok", "okay", "yo", "hello", "oh"}
+# Words that, before a word like the wake name, mean it was said inside a sentence ("the waggle dance"), never to Waggle.
+SENTENCE_WORDS = {"the", "a", "an", "my", "your", "his", "her", "our", "their", "this", "that", "these", "those", "i", "you",
+                  "we", "he", "she", "it", "they", "do", "did", "and", "or", "but", "so", "to", "of", "in", "on", "at",
+                  "is", "was", "with", "about", "for", "from", "by", "as"}
+NAME_LIKE = 0.75  # how alike (difflib ratio) a written word must be to the name's last word to count as the name
 
 
 # ---- settings and files ------------------------------------------------------------------------------------
@@ -597,7 +622,7 @@ class PcVoice:
     """The brain: one thread that owns the microphone and runs conversations; the hotkey thread only signals."""
 
     def __init__(self, *, mic_factory=None, spk=None, client=None, sounds=None, wake=None, names=None,
-                 dry_wake=False, on_event=None, smart=None, decide=None):
+                 dry_wake=False, on_event=None, smart=None, decide=None, wake_mode=None, spotter=None):
         self.mic_factory = mic_factory or mic.WaveInSource
         self.spk = spk
         self.client = client or CoreClient()
@@ -605,6 +630,12 @@ class PcVoice:
         self.wake = setting("pc_voice_wake") if wake is None else bool(wake)
         self.names = names or setting("pc_voice_wake_names")
         self.dry_wake = dry_wake  # measurement: a wake match is counted, nothing is sent
+        self.configured_mode = self._mode_of(wake_mode if wake_mode is not None else setting("pc_voice_wake_mode"))
+        self.wake_mode = self.configured_mode  # "stt" from the moment the spotter cannot be used
+        self._spotter = spotter  # tests hand one in; otherwise kws.load() on first use
+        self._kws_down = False
+        self._lead = []  # the frames before the endpointer's own pre-roll, taken when the utterance started
+        self._ring = collections.deque(maxlen=int(KWS_PREROLL_S * 1000 / mic.FRAME_MS))
         self.on_event = on_event  # (name, **info) for timings in checks
         self.events = queue.Queue()
         self.stopping = threading.Event()
@@ -612,6 +643,7 @@ class PcVoice:
         self.stats = {"started": time.time(), "conversations": 0, "turns": 0, "utterances": 0, "transcribed": 0,
                       "transcribe_s": 0.0, "wake_triggers": 0, "spoken_messages": 0, "errors": 0, "last_error": ""}
         self.trigger_texts = []  # dry-run measurement only: what a (false) trigger heard
+        self.trigger_rests = []  # ... and the request that followed the name
         self._mic = None
         self.smart = setting("pc_voice_smart") if smart is None else bool(smart)  # judge + echo + stream, see the docstring
         self.decide = decide or self._decide  # (text, asked_question=) -> voice_intent.Decision; replaced in tests
@@ -624,7 +656,8 @@ class PcVoice:
         self._miss_logged = None  # when "no wake name" was last logged
         self._turn = {}  # this turn's stage times, logged once the answer has started (see _log_turn)
         self._gate_notes = set()
-        self.stats.update(ignored=0, echoes=0, stops=0, judged=0, judge_fallbacks=0, streamed_turns=0)
+        self.stats.update(ignored=0, echoes=0, stops=0, judged=0, judge_fallbacks=0, streamed_turns=0,
+                          kws_hits=0, kws_skipped=0, kws_rescued=0)
 
     # -- signals
     def hotkey_pressed(self):
@@ -763,6 +796,7 @@ class PcVoice:
             self.new_endpointer(setting("pc_voice_end_silence_s"), setting("pc_voice_max_s"))
         except Exception as e:  # noqa: BLE001
             log.warning("hearing: warm-up failed (%s: %s)", type(e).__name__, e)
+        self._kws()
 
     def listen(self, src, start_timeout_s, *, end_silence_s=None, max_s=None):
         """One utterance from `src`: (pcm, info) or (None, info) when nobody spoke in time. A hotkey press while
@@ -983,15 +1017,122 @@ class PcVoice:
             log.debug("turn timing not logged: %s", e)
 
     # -- the wake word
+    @staticmethod
+    def _mode_of(text):
+        mode = str(text or "stt").strip().lower()
+        if mode not in ("stt", "kws", "both"):
+            log.warning("wake: pc_voice_wake_mode %r is not stt, kws or both: using stt", text)
+            return "stt"
+        return mode
+
+    def _kws(self):
+        """The keyword spotter when the mode asks for one and it loads; None otherwise. When it cannot be used the
+        mode becomes "stt" (every utterance is transcribed, as before), said once in the log."""
+        if self.configured_mode == "stt" or self._kws_down:
+            return None
+        if self._spotter is None:
+            self._spotter = kws.load(self.names, setting("pc_voice_kws_threshold"), setting("pc_voice_kws_score"))
+        if self._spotter is None:
+            self._kws_fell_back("the model or sherpa-onnx is not available")
+        return self._spotter
+
+    def _kws_fell_back(self, why):
+        if not self._kws_down:
+            self._kws_down = True
+            self.wake_mode = "stt"
+            log.warning("wake: keyword spotter unusable (%s): pc_voice_wake_mode falls back to stt", why)
+
+    def wake_frame(self, src, ep, f):
+        """One microphone frame while idle with the wake word on: the gate, and at the end of an utterance `heard`.
+        Returns the endpointer to keep using, or None after an utterance was heard."""
+        self._ring.append(f)
+        ep = ep or self.new_endpointer(WAKE_END_SILENCE_S, WAKE_MAX_S)
+        r = ep.feed(f)
+        if r == "start":
+            ring = list(self._ring)  # the last 1.5 s; the endpointer keeps its own shorter pre-roll
+            self._lead = ring[:max(0, len(ring) - ep.frames_held())]
+        if ep.in_speech and ep.speech_ms >= WAKE_MIN_SPEECH_MS:
+            self._warm_stt()  # real speech is coming: have the recogniser loaded when it ends
+        if r == "end":
+            self.heard(src, ep)
+            return None
+        return ep
+
+    def _kws_hit(self, ep, pcm):
+        """(spotter used, the first hit in the head of the utterance or None). The spotter reads the first seconds of
+        what was said (the name must come soon after speech starts), never the rest of it."""
+        sp = self._kws()
+        if sp is None:
+            return False, None
+        head_s = setting("pc_voice_kws_head_s")
+        onset = getattr(ep, "PREROLL_S", 0.3)  # the endpointer's pre-roll comes before the first word
+        keep = int((onset + head_s + KWS_SCAN_TAIL_S) * mic.RATE) * 2
+        try:
+            hits = sp.scan(pcm[:keep])
+        except Exception as e:  # noqa: BLE001 (the spotter failing must never stop the microphone)
+            self._kws_fell_back(f"{type(e).__name__}: {e}")
+            return False, None
+        for h in hits:
+            if h.start_s - KWS_LAG_S <= onset + head_s:
+                return True, h
+        return True, None
+
+    def _rescue(self, words, pcm, hit, lead_s):
+        """The spotter heard the name but the recogniser's words do not begin with it. Returns the request, "" for
+        only the name, or None for "not a wake". Three cases: (1) no word of the text is like the name (the
+        recogniser heard "bagel" or dropped it): the audio after the name is recognised alone; (2) a word like the
+        name comes first or second ("Tay Waggle, what time"): the words after it; (3) a name-like word later in the
+        sentence, or after a word such as "the" ("the waggle dance"): it was said inside a sentence, no wake."""
+        tokens = list(_WORD.finditer(words))
+        last = [p[-1] for p in ([x.lower() for x in _WORD.findall(name)] for name in self.names) if p]  # each name's last word
+        like = [i for i, t in enumerate(tokens)
+                if any(difflib.SequenceMatcher(None, t.group().lower(), w).ratio() >= NAME_LIKE for w in last)]
+        if not like:
+            return self._name_tail(pcm, hit, lead_s)
+        i = like[0]
+        if i > 1 or (i == 1 and tokens[0].group().lower() in SENTENCE_WORDS):
+            return None
+        return words[tokens[i].end():].lstrip(" ,.!?;:-—–").strip()
+
+    def _name_tail(self, pcm, hit, lead_s=0.0):
+        """The request after a name the recogniser did not write down as "Waggle": the audio after the spotter's name
+        goes to the recogniser alone. "" when almost nothing follows (it was only the name); None when unreadable."""
+        start = int(max(0.0, lead_s + hit.end_s - KWS_LAG_S / 2) * mic.RATE) * 2
+        tail = pcm[start:]
+        if len(tail) / (mic.RATE * 2) < KWS_NAME_ONLY_S:
+            return ""
+        r = self.client.transcribe(tail)
+        self.stats["transcribed"] += 1
+        if r.get("error"):
+            self._error(f"transcribe: {r['error']}")
+            return None
+        words = (r.get("text") or "").strip()
+        again = match_wake(words, self.names)  # the cut was early and left a piece of the name: drop it
+        return (words if again is None else again).strip()
+
     def heard(self, src, ep):
-        """An utterance ended while idle: transcribe it, act on a wake name, drop everything else."""
+        """An utterance ended while idle: transcribe it, act on a wake name, drop everything else. With the spotter
+        (pc_voice_wake_mode "kws") an utterance it heard no name in is not transcribed at all; "both" transcribes
+        everything and also counts a spotter hit; a hit the recogniser wrote as another word still counts
+        (pc_voice_kws_trust), the request then being the audio after the name."""
         pcm = ep.pcm(keep_tail_s=0.2)
+        lead, self._lead = self._lead, []
         self.stats["utterances"] += 1
         if ep.speech_ms < WAKE_MIN_SPEECH_MS:
             return
+        used, hit = self._kws_hit(ep, pcm) if self.wake_mode != "stt" else (False, None)
+        lead_s = 0.0
+        if used:
+            pcm = b"".join(lead) + pcm  # up to 1.5 s before the first word, in case the gate was late
+            lead_s = len(lead) * mic.FRAME_MS / 1000.0
+            if hit is not None:
+                self.stats["kws_hits"] += 1
+            elif self.wake_mode == "kws":
+                self.stats["kws_skipped"] += 1
+                self._note_miss()  # counted and logged like a transcribed miss (never the words: there are none)
+                return  # the name was not in it: never transcribed, never kept
         t0 = time.monotonic()
         r = self.client.transcribe(pcm)
-        del pcm
         self._stt_used = time.monotonic()
         self._turn = {"end_s": round(ep.silence_s, 2), "ended_at": t0,
                       "stt_s": time.monotonic() - t0, "speech_ms": ep.speech_ms, "rms": round(ep.speech_rms(), 1),
@@ -1006,6 +1147,11 @@ class PcVoice:
             self.stats["echoes"] += 1  # Waggle's own voice coming back through the speakers
             return
         rest = match_wake(words, self.names)
+        if rest is None and hit is not None and setting("pc_voice_kws_trust"):
+            rest = self._rescue(words, pcm, hit, lead_s)
+            if rest is not None:
+                self.stats["kws_rescued"] += 1
+        del pcm
         if rest is None:
             self._note_miss()
             return  # not for Waggle: the words go out of scope here, unread
@@ -1016,6 +1162,7 @@ class PcVoice:
         self.stats["wake_triggers"] += 1
         if self.dry_wake:
             self.trigger_texts.append(r.get("text") or "")
+            self.trigger_rests.append(rest)
             log.info("wake word matched (dry run: nothing sent)")
             return
         log.info("wake word")
@@ -1091,24 +1238,22 @@ class PcVoice:
                     if self._pressed():
                         self.conversation(src, "hotkey")
                         ep = None
+                        self._ring.clear()
                         continue
                     if self.spk.speaking:  # never listen to Waggle's own voice
                         src.flush()
                         ep = None
+                        self._ring.clear()
                         time.sleep(0.05)
                         continue
                     self._warm_stt()  # keep the recogniser loaded while listening (a quiet spell let it unload)
                     f = src.read(0.5)
                     if f is None:
                         continue
-                    ep = ep or self.new_endpointer(WAKE_END_SILENCE_S, WAKE_MAX_S)
-                    r = ep.feed(f)
-                    if ep.in_speech and ep.speech_ms >= WAKE_MIN_SPEECH_MS:
-                        self._warm_stt()  # real speech is coming: have the recogniser loaded when it ends
-                    if r == "end":
-                        done, ep = ep, None
-                        self.heard(src, done)
+                    ep = self.wake_frame(src, ep, f)
+                    if ep is None:  # an utterance was heard: drop what piled up meanwhile
                         src.flush()
+                        self._ring.clear()
                 else:
                     try:
                         ev = self.events.get(timeout=0.25)
@@ -1158,7 +1303,7 @@ def _setup_logging():
 
 
 def _write_status(pv, hotkey):
-    data = {"pid": os.getpid(), "updated": time.time(), "wake": pv.wake, "wake_names": pv.names,
+    data = {"pid": os.getpid(), "updated": time.time(), "wake": pv.wake, "wake_names": pv.names, "wake_mode": pv.wake_mode,
             "hotkey": hotkey.text if hotkey else "", "hotkey_ok": bool(hotkey and hotkey.ok),
             "hotkey_error": hotkey.error if hotkey else "", "microphone": pv._mic or "", **pv.stats}
     p = folder() / STATUS_FILE
@@ -1184,8 +1329,8 @@ def cmd_run(args):
         old.unlink(missing_ok=True)
     spk = speaker.Speaker().start()
     sounds = Sounds()
-    pv = PcVoice(spk=spk, sounds=sounds, wake=args.wake, dry_wake=args.dry_wake)
-    log.info("start: wake=%s hotkey=%s", pv.wake, setting("pc_voice_hotkey"))
+    pv = PcVoice(spk=spk, sounds=sounds, wake=args.wake, dry_wake=args.dry_wake, wake_mode=args.wake_mode)
+    log.info("start: wake=%s mode=%s hotkey=%s", pv.wake, pv.wake_mode, setting("pc_voice_hotkey"))
     hotkey = None
     if not args.no_hotkey:
         try:
@@ -1300,6 +1445,7 @@ def main(argv=None):
     r.add_argument("--no-wake", dest="wake", action="store_false")
     r.add_argument("--no-hotkey", action="store_true")
     r.add_argument("--dry-wake", action="store_true", help="measurement: count wake matches, send nothing")
+    r.add_argument("--wake-mode", choices=("stt", "kws", "both"), default=None, help="override pc_voice_wake_mode")
     r.add_argument("--seconds", type=float, default=0.0, help="stop after this long (checks)")
     o = sub.add_parser("once")
     o.add_argument("--inject", required=True, help="a WAV file in place of the microphone")
