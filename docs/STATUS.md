@@ -74,3 +74,4 @@ usage card.
 - Cleanup tier 1: 34 merged worktrees removed and 19 merged local-only branches deleted; git refused none.
 - Cleanup tier 2: disabling the stray `Hermes_Gateway` task needs administrator rights; left to the owner.
 - Vault: the implicit `~/WaggleVault` default is gone (config, two tools); regression tests added.
+- Full suite 3,910 passed; deployed eae8fe9 with `tools/deploy.ps1`; live canary answered in 11.0 s; guard clean.
