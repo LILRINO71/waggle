@@ -25,6 +25,9 @@ Life of a proposal (state in proposals.db under the Waggle data home; one step p
                 3. the new tests FAIL on the base commit (a test that passes without the fix proves nothing)
                 4. which guard-protected files the diff touches is recorded (the message says so plainly)
                 5. the whole suite passes, under a machine-wide lock so only one full run happens at a time
+                6. the replay (tools/replay, Inspect AI, local model, $0) of the owner's real recent turns and the fixed
+                   eval cases on the base and on the change: answers worse by the margin = not offered, and the owner is
+                   told why. Switch: `proposals_replay`. A missing venv, a failure or a timeout skips it with a note.
               then the branch proposals/<id> is pushed and the owner gets ONE text.
   awaiting    the text said: Reply 'merge CODE' to deploy it or 'drop CODE'. Only a typed message of the owner in their
               own engine chat counts (proposals.preflight, called by chat_engine before any model sees the message);
@@ -74,6 +77,8 @@ BUILD_TIMEOUT_S = 90 * 60
 TARGETED_TIMEOUT_S = 15 * 60
 FULL_SUITE_TIMEOUT_S = 75 * 60
 DEPLOY_TIMEOUT_S = 30 * 60
+REPLAY_MINUTES = 45  # the replay gate (tools/replay): longer than this and it is skipped, never waited on forever
+REPLAY_CASES = 30    # real recent turns replayed on base and on head
 MAX_TRIES = 3
 MAX_RERUN = 150  # more failing tests than this is a real break, not a flake: no re-run
 DEFAULT_MODEL = "sonnet"
@@ -92,8 +97,8 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 # own list, plus the approval path, the pipeline itself, the deploy scripts and the evaluators.
 EXTRA_PROTECTED = ("waggle/proposals.py", "tests/test_proposals.py", "tests/conftest.py", "waggle/chat_engine.py",
                    "waggle/goals.py", "waggle/core/offswitch.py", "tools/deploy.ps1", "tools/restart-gateway.ps1",
-                   "install.py")
-PROTECTED_PREFIXES = ("hermes_plugin/", "eval/", "tests/holdout")
+                   "install.py", "waggle/evals.py", "waggle/evals_golden.json")
+PROTECTED_PREFIXES = ("hermes_plugin/", "eval/", "tests/holdout", "tools/replay/")  # the replay gate's own yardstick
 
 
 # ---- the safety core ----------------------------------------------------------------------------------------
@@ -479,6 +484,34 @@ class Env:
             return pyright_check.summary(pyright_check.report(lambda a, c=None: self.git(a, cwd=c), wt, base, files, scratch))
         except Exception as e:  # noqa: BLE001
             return f"Type check (pyright) could not run: {type(e).__name__}."
+
+    def replay(self, base, head):
+        """The replay verdict for this change (tools/replay/run.py: the owner's real recent turns and the fixed eval
+        cases on base and on head, local model only, $0). A dict with "status" ok | skipped; "blocked" True when head is
+        worse. Skipped, with a reason, when the switch is off, the Inspect venv or the runner is missing, or it fails or
+        times out: it never blocks the pipeline for good. It always runs the runner of the live checkout, never the
+        change's own copy, so a change cannot move its own yardstick."""
+        if not getattr(self.settings, "proposals_replay", True):
+            return {"status": "skipped", "why": "switched off (config proposals_replay)"}
+        py = Path(os.environ.get("WAGGLE_INSPECT_PY") or Path.home() / ".waggle-tools" / "inspect" / "Scripts" / "python.exe")
+        runner = Path(self.repo) / "tools" / "replay" / "run.py"
+        if not py.exists():
+            return {"status": "skipped", "why": "the Inspect venv is missing (~/.waggle-tools/inspect)"}
+        if not runner.exists():
+            return {"status": "skipped", "why": "the live checkout has no tools/replay yet"}
+        out = data_path("replay-last.json")
+        try:
+            out.unlink()
+        except OSError:
+            pass
+        cmd = [_python(), str(runner), "--base", base, "--head", head, "--repo", str(self.repo),
+               "--cases", str(REPLAY_CASES), "--timeout-min", str(REPLAY_MINUTES), "--json", str(out)]
+        try:
+            subprocess.run(cmd, cwd=str(self.repo), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=(REPLAY_MINUTES + 10) * 60, creationflags=NO_WINDOW)
+            return json.loads(out.read_text(encoding="utf-8"))
+        except (OSError, ValueError, subprocess.SubprocessError) as e:
+            return {"status": "skipped", "why": f"the replay could not run ({type(e).__name__})"}
 
     def suite_lock(self):
         """The machine-wide lock for a FULL test run (this PC runs one at a time). The same file serves
@@ -888,6 +921,13 @@ def _verify(env, p, now):
     elif full["rc"] != 0 or full["failed"] or full["errors"] or full["passed"] < 1:
         return _fail(env, p, f"the full suite fails ({full['failed']} failed, {full['errors']} errors, "
                              f"{full['passed']} passed)", now, detail=full.get("tail", ""))
+    try:
+        replay = env.replay(base, head) or {}
+    except Exception as e:  # noqa: BLE001 - the replay must never take the pipeline down
+        replay = {"status": "skipped", "why": f"the replay crashed ({type(e).__name__})"}
+    if replay.get("status") == "ok" and replay.get("blocked"):  # answers got worse: not offered for merge
+        return _fail(env, p, "the replay of real answers shows it makes them worse: " + str(replay.get("why", "")), now,
+                     tell=replay_block_text(p, replay))
     rc, out = _g(env, ["push", "origin", f"{p['branch']}:{p['branch']}"], wt)
     if rc:
         if (get(pid) or {}).get("tries", 0) + 1 >= MAX_TRIES:
@@ -895,6 +935,7 @@ def _verify(env, p, now):
         return _wait(pid, f"the branch could not be pushed: {out.strip()[:160]}", 10, now, tries=True)
     tests_info = {"targeted": {"files": tests, "passed": res["passed"]}, "before_fix": why,
                   "pyright": env.pyright_report(wt, base, files),
+                  "replay": {k: replay.get(k) for k in ("status", "summary", "why", "report_path") if replay.get(k)},
                   "full": {"passed": full["passed"], "failed": 0}}
     if flaky:
         tests_info["full"]["failed"] = flaky["count"]
@@ -934,6 +975,11 @@ def ready_text(p, ahead=None):
                      f"caused by this change ({how.get(fl['verdict'], 'checked')}): {shown}.")
     if t.get("pyright"):
         lines.append(t["pyright"])
+    rp = t.get("replay") or {}
+    if rp.get("status") == "ok" and rp.get("summary"):
+        lines.append(rp["summary"])
+    elif rp.get("status") == "skipped":
+        lines.append(f"Replay of real answers: skipped ({rp.get('why') or 'not run'}); nothing shows whether answers got worse.")
     if p["safety"]:
         lines.append("It TOUCHES THE SAFETY CORE: " + ", ".join(p["safety"][:6]) + ". These files protect you; "
                      "read the diff on GitHub before you merge.")
@@ -946,7 +992,21 @@ def ready_text(p, ahead=None):
     return "\n".join(lines)
 
 
-def _fail(env, p, why, now, detail=""):
+def replay_block_text(p, replay):
+    """What the owner reads when the replay refuses a change: the numbers, the cases, where the full report is."""
+    lines = [f"Waggle proposal {p['code']}: {p['title']}", "",
+             "I did NOT offer this for merge. It passed its tests, but I replayed your real recent answers and the fixed "
+             "eval cases on the old code and on this change, and the answers got worse.",
+             str(replay.get("summary") or ""), "Why: " + str(replay.get("why") or "") + "."]
+    if replay.get("lost"):
+        lines.append("Cases that got worse: " + ", ".join(str(x) for x in replay["lost"][:8]) + ".")
+    if replay.get("report_path"):
+        lines.append("Full report: " + str(replay["report_path"]))
+    lines.append("The proposal is closed. File it again if you still want it.")
+    return "\n".join(lines)
+
+
+def _fail(env, p, why, now, detail="", tell=None):
     pid = p["id"]
     _set(pid, "failed", why, now, note=why[:300])
     if detail:
@@ -955,7 +1015,9 @@ def _fail(env, p, why, now, detail=""):
         cleanup(env, get(pid))
     except Exception as e:  # noqa: BLE001
         _log(pid, f"cleanup failed: {e}", now)
-    if p.get("by_owner"):  # the owner asked for this one, so they hear that it did not work out; automatic ones stay quiet
+    if tell:  # a refusal the owner must understand (the replay gate): told whoever filed it
+        env.notify(tell, ref=f"{pid}:failed", asked=bool(p.get("by_owner")))
+    elif p.get("by_owner"):  # the owner asked for this one, so they hear that it did not work out; automatic ones stay quiet
         env.notify(f"I tried to fix \"{p['title']}\" as you asked, but I could not make a verified change: {why}.",
                    ref=f"{pid}:failed", asked=True)
     return {"did": "failed", "id": pid, "why": why, "progress": True}
