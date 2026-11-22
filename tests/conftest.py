@@ -77,7 +77,8 @@ def isolated_home(tmp_path, monkeypatch):
     # quiet_hours off: otherwise tests that expect a phone message fail when run between 23:00 and 07:00.
     s = Settings(vault=str(tmp_path / "vault"), jobs_dir=str(tmp_path / "jobs"), quiet_hours=[0, 0],
               vault_git=False,  # tests/test_vault_git*.py turn the vault history on
-              hold_for_breaks=False, outreach_ev_enabled=False)  # test_holdq.py / test_outreach_ev.py turn them on
+              hold_for_breaks=False, outreach_ev_enabled=False,  # test_holdq.py / test_outreach_ev.py turn them on
+              windows_mcp=False)  # tests/test_winmcp.py turns it on: it is installed on the owner's PC only
     s.save()
     return s
 

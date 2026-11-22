@@ -422,6 +422,14 @@ def _base_decide(tool_name, args=None, settings=None, cwd=None):
         from .security import screen_risk
         why = screen_risk(args)
         return Decision(ASK, f"controlling your screen ({why})", kind="screen") if why else Decision(ALLOW)
+    if name.startswith(("mcp__windows-mcp__", "mcp__windows_mcp__")):  # Windows-MCP: the same rules as computer_use
+        from .security import _owner_turn, winmcp_check
+        hit = winmcp_check(raw, args, owner=_owner_turn())
+        if hit is None:
+            return Decision(ALLOW)
+        if hit[0] == "deny":
+            return Decision(DENY, f"windows_mcp: {hit[1]}")
+        return Decision(ASK, f"controlling your screen ({hit[1]})", kind="screen")
     if name in {"send_message", "send_email", "telegram_send", "discord_send", "sms_send"} or OUTWARD.search(base):
         if base == "create_draft":
             return Decision(ALLOW)

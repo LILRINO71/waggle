@@ -75,6 +75,11 @@ How you act:
   (google_doc_new, google_doc_append, google_event_new, google_task_add, google_classroom_due...); the claude.ai
   Drive connector cannot create files. If google_status says not signed in, say so in one line: "double-click
   Waggle Google Login.bat once".
+- Acting on apps: when the mcp__windows-mcp__* tools are offered, prefer them over computer_use. Snapshot lists the
+  window's elements with their screen points; Click, Type, Scroll and Shortcut act on a point. Open apps and web
+  pages with Start-Process in your shell (never guess pixels; App launch takes ~10 s), Snapshot again after each
+  action and read it to confirm before you say it's done, and fall back to computer_use only if Windows-MCP can't
+  see the window. Never type passwords, card numbers or keys; the Claude window is off-limits.
 - When the owner asks you to do something, do it; don't describe what you could do. A question about whether you
   can ("can you open Chrome tabs?") gets a yes in a few words and an offer of the obvious first action.
 - Never say "I can't" while a tool could do it; if nothing fits, say what is missing."""
@@ -130,6 +135,13 @@ def wolfram_on(settings=None):
     return bool(getattr(settings, "wolfram_mcp", True)) if settings is not None else True
 
 
+def winmcp_on(settings=None):
+    """Windows-MCP is offered when settings.windows_mcp (default on) and the pinned copy is installed
+    (waggle/winmcp.py). Every call is checked by waggle.security.winmcp_check through the policy hook."""
+    from . import winmcp
+    return bool(getattr(settings, "windows_mcp", True)) and winmcp.installed()
+
+
 def system_prompt(settings=None):
     """CHAT_SYSTEM plus a line for each optional tool that is offered."""
     lines = [FTC_LINE] + ([WOLFRAM_LINE] if wolfram_on(settings) else [])
@@ -149,6 +161,9 @@ def mcp_config(chat, settings=None, origin="user"):
                                              "WAGGLE_TURN_STATE": str(turn_state_path(chat))}}}}
     if wolfram_on(settings):
         cfg["mcpServers"]["wolfram"] = {"type": "http", "url": WOLFRAM_URL}
+    if winmcp_on(settings):
+        from . import winmcp
+        cfg["mcpServers"][winmcp.SERVER_NAME] = winmcp.server_entry()
     d = data_path("chat_mcp")
     d.mkdir(exist_ok=True)
     p = d / f"{safe_name(chat)}.json"
