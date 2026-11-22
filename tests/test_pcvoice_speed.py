@@ -486,3 +486,24 @@ def test_the_hotkey_right_after_the_start_tone_still_cancels(rig, tmp_path):
         def flush(self):
             pass
     assert pv._hear(Src(), "hotkey") is None
+
+
+# ---- the owner, 18:02 and 18:12: words after "Sir?" dropped by the judge; a hotkey press that seemed to do nothing ----
+
+def test_what_the_owner_says_after_sir_is_sent_even_if_the_judge_says_ignore(rig, tmp_path):
+    client = StreamClient(tmp_path, transcripts=["how is the build going"])
+    pv = smart(rig, client)
+    pv.decide = lambda words, asked_question=False: voice_intent.Decision("ignore", "model")
+    pv.listen = lambda src, t, **kw: (b"\x01\x00" * 1600, {"ended_by": "silence", "speech_ms": 900})
+
+    class Src:
+        def flush(self):
+            pass
+    assert pv._hear(Src(), "listen")[0] == "audio"
+
+
+def test_one_hotkey_press_reported_twice_counts_once(rig, tmp_path):
+    pv = smart(rig, StreamClient(tmp_path))
+    pv.hotkey_pressed()
+    pv.hotkey_pressed()
+    assert pv._pressed() is True and pv._pressed() is False

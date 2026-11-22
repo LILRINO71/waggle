@@ -138,6 +138,8 @@ MAX_TURNS = 12
 SPOOL_MAX_AGE_S = 180.0
 REQUEST_TIMEOUT_S = 120.0
 TRANSCRIBE_BUSY_WAIT_S = 20.0  # a cold recogniser load (the warm-up) holds the core's transcription lock 3-12 s
+HOTKEY_DEBOUNCE_S = 0.4  # two hotkey reports closer than this are one press
+HOTKEY_GRACE_S = 1.0  # a press this soon after a hotkey turn starts does not cancel it
 MISS_LOG_S = 30.0  # "heard speech, no wake name" is logged at most this often (a count, never the words)
 KWS_PREROLL_S = 1.5  # sound kept from before the utterance starts, sent to the recogniser with it
 KWS_LAG_S = 0.2  # the spotter's token times run this late
@@ -654,6 +656,7 @@ class PcVoice:
         self._judge_off = voice_intent.Backoff()  # a failed judgement: skip the judge for a minute, never wait twice
         self._stt_used = 0.0  # when the core's recogniser was last known to be loaded
         self._miss_logged = None  # when "no wake name" was last logged
+        self._last_press = -1e9  # when the hotkey was last pressed
         self._turn = {}  # this turn's stage times, logged once the answer has started (see _log_turn)
         self._gate_notes = set()
         self.stats.update(ignored=0, echoes=0, stops=0, judged=0, judge_fallbacks=0, streamed_turns=0,
@@ -661,6 +664,11 @@ class PcVoice:
 
     # -- signals
     def hotkey_pressed(self):
+        now = time.monotonic()
+        if now - self._last_press < HOTKEY_DEBOUNCE_S:
+            return  # one press reported twice
+        self._last_press = now
+        log.info("hotkey")
         sink = self._sink
         if sink is not None:
             sink.cancel()  # sentences still to be made are dropped too
@@ -847,6 +855,7 @@ class PcVoice:
         else:
             window = setting("pc_voice_start_timeout_s")
         deadline = time.monotonic() + window
+        started = time.monotonic()
         while True:
             pcm, info = self.listen(src, max(0.5, deadline - time.monotonic()))
             if pcm is None and info["ended_by"] == "hotkey" and mode in ("followup", "listen"):
@@ -857,6 +866,9 @@ class PcVoice:
                 mode, judged = "hotkey", False
                 deadline = time.monotonic() + setting("pc_voice_start_timeout_s")
                 continue
+            if (pcm is None and info["ended_by"] == "hotkey" and mode == "hotkey"
+                    and 0 <= self._last_press - started < HOTKEY_GRACE_S):
+                continue  # a stray press right at the start (the one that opened the turn): keep listening
             if pcm is None:
                 if mode != "followup":
                     self.tone("stop")
@@ -893,6 +905,9 @@ class PcVoice:
             # never the words; a fallback says why (a timeout, no such model, the judge skipped)
             log.info("heard in a conversation window: %s (%s%s)", d.action, d.source,
                      f": {d.reason}" if d.source == "fallback" and d.reason else "")
+            if d.action == "ignore" and mode == "listen":
+                log.info("after \"Sir?\": sent although the judge said ignore")
+                d.action = "send"  # Waggle just asked "Sir?": what the owner says next is for Waggle
             if d.action == "send":
                 self.tone("stop", wait=False)
                 return ("audio", pcm)
