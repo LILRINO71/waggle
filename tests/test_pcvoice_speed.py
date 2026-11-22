@@ -454,3 +454,35 @@ def test_a_spoken_clock_question_is_answered_on_the_stream_without_claude_and_sa
     assert final["timings"]["fast_s"] < 1.0 and "model_first_s" not in final["timings"]
     assert sline.prompts == []  # no message ever reached the Claude process
     assert pcvoice.core_timings(final["timings"])["tier"] == "code"
+
+
+# ---- the owner, 18:04: the hotkey during the "still listening" window ended the conversation, with no tone ----------
+
+def test_the_hotkey_while_waiting_for_a_follow_up_starts_a_new_turn_with_the_start_tone(rig, tmp_path):
+    client = StreamClient(tmp_path, transcripts=["read me the headline"])
+    pv = smart(rig, client)
+    calls = []
+
+    def fake_listen(src, start_timeout_s, **kw):
+        calls.append(start_timeout_s)
+        if len(calls) == 1:
+            return None, {"ended_by": "hotkey", "speech_ms": 0}
+        return b"\x01\x00" * 1600, {"ended_by": "silence", "speech_ms": 900}
+    pv.listen = fake_listen
+
+    class Src:
+        def flush(self):
+            pass
+    got = pv._hear(Src(), "followup")
+    assert got[0] == "audio" and len(calls) == 2
+    assert "start" in rig.played()
+
+
+def test_the_hotkey_right_after_the_start_tone_still_cancels(rig, tmp_path):
+    pv = smart(rig, StreamClient(tmp_path))
+    pv.listen = lambda src, t, **kw: (None, {"ended_by": "hotkey", "speech_ms": 0})
+
+    class Src:
+        def flush(self):
+            pass
+    assert pv._hear(Src(), "hotkey") is None

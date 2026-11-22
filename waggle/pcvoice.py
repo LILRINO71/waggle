@@ -849,6 +849,14 @@ class PcVoice:
         deadline = time.monotonic() + window
         while True:
             pcm, info = self.listen(src, max(0.5, deadline - time.monotonic()))
+            if pcm is None and info["ended_by"] == "hotkey" and mode in ("followup", "listen"):
+                # the hotkey while it waits for a follow-up means "I want to talk": a fresh hotkey turn, not an end
+                self._warm_stt()
+                self.tone("start")
+                src.flush()
+                mode, judged = "hotkey", False
+                deadline = time.monotonic() + setting("pc_voice_start_timeout_s")
+                continue
             if pcm is None:
                 if mode != "followup":
                     self.tone("stop")
