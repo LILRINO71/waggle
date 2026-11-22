@@ -329,8 +329,9 @@ def context(settings, now, activity=None):
              f"{settings.quiet_hours[1]}:00."]
     try:
         prof = vault.read("Me/Profile", settings)
-        if prof.strip():
-            parts.append("Profile:\n" + prof[:1200])
+        mine = vault.profile_digest(settings, 800)  # the owner's own profile notes, when configured
+        if prof.strip() or mine:
+            parts.append("Profile:\n" + prof[:1200] + (("\n" + mine) if mine else ""))
     except Exception:  # noqa: BLE001
         pass
     try:

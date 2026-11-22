@@ -183,6 +183,13 @@ python -m waggle.cli doctor                        # health check
 python -m pytest -q -p no:cacheprovider
 ```
 
+The vault: `vault` in `~/.waggle/config.json` is the whole Obsidian vault Waggle reads (search, graph, context);
+`vault_own` is the one folder inside it where Waggle keeps its own notes and writes nothing else (empty = the vault
+root, the old single-purpose layout; the owner's setup is `"12 - Waggle"`). `vault_profile_notes` lists the owner's
+own profile notes (paths or globs) that feed the context and the morning brief. The undo history (`/waggle memory`) is a
+git repository inside `vault_own`, so the owner's other notes are never committed or reverted, and Waggle never edits
+the vault's `.obsidian`. `python tools\move_vault.py` (dry run) then `--apply` moves a WaggleVault into place.
+
 Remove the core tasks with `tools\install-core-task.ps1 -Uninstall`. `overnight/HANDOFF.md` has the full deploy
 procedure. Merging to the checkout that runs is a deploy, so development happens in separate worktrees.
 

@@ -418,7 +418,8 @@ def growth_today(settings=None, now=None, quiz_result=None, signals=None):
     s = settings or Settings.load()
     since = _day_start(now)
     root = vault.root(s)
-    notes = [p for p in vault.notes(s) if memory.indexable(p.relative_to(root).as_posix())]
+    own = vault.own_rel(s)
+    notes = [p for p in vault.notes(s) if memory.indexable(p.relative_to(root).as_posix(), own=own)]
     learned = _today_events("learn", since)
     ingests = _today_events("ingest", since)
     mirrored = sum(((e.get("jobs") or {}).get("memory") or {}).get("added", 0)

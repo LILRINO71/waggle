@@ -263,7 +263,7 @@ def step_requirements(step):
 
 def _named_files(step, reqs, s):
     """Existing files the step's text or requirements name (vault-relative paths are looked up in the vault)."""
-    root = vault.root(s)
+    root = vault.own(s)
     text = f"{step['detail']}\n{step['done_when']}\n" + "\n".join(f"{r['text']} {r.get('path') or ''}" for r in reqs)
     out = []
     for rel in VAULT_PATH.findall(text) + ABS_PATH.findall(text):
@@ -277,7 +277,7 @@ def _judge_step(con, oid, step, reqs, s):
     """(complete, missing) for a step with a checklist: files by code, the rest by the evidence-only judge, which
     sees the files the step named and (for [content] requirements) its final output, never its report. (None, why)
     when the judge could not run: the step waits, as it does for any check that could not run."""
-    root = vault.root(s)
+    root = vault.own(s)
     for r in reqs:  # a requirement's vault-relative path means that file inside the vault
         if r.get("path") and not ABS_PATH.fullmatch(str(r["path"])):
             r["path"] = str(root / str(r["path"]))
@@ -308,11 +308,11 @@ def _step_prompt(con, obj, step):
     if reqs:
         retry += ("\nREQUIREMENTS, checked afterwards against the files you leave behind and your final output, never "
                   "against your own report:\n" + "\n".join(f"{r['id']}. {r['text']}" for r in reqs) + "\n")
-    root = vault.root()
+    root = vault.own()
     return (f"You are working on step {step['idx']} of a longer objective for the user.\n\nOBJECTIVE: {obj['goal']}\n"
             + (f"PROJECT: {obj['project']}\n" if obj["project"] else "")
-            + f"THE USER'S NOTES: the Obsidian vault at {root}. A path like Inbox/x.md, Projects/y.md or Research/z.md "
-              f"means that file inside the vault ({root}\\Inbox\\x.md), never your working folder.\n"
+            + f"THE USER'S NOTES: Waggle's folder in the Obsidian vault is {root}. A path like Inbox/x.md, Projects/y.md or "
+              f"Research/z.md means that file inside it ({root}\\Inbox\\x.md), never your working folder.\n"
             + "\nPLAN:\n" + "\n".join(plan_lines)
             + ("\n\nRESULTS YOU BUILD ON:\n" + "\n".join(dep_results) if dep_results else "")
             + f"\n\nYOUR STEP: {step['title']}\n{step['detail']}\nDONE WHEN: {step['done_when']}\n{retry}"
@@ -469,7 +469,7 @@ def artifact_facts(step, settings=None):
     are looked up in the vault. Returns (facts text, files a creating step promised but are missing)."""
     s = settings or Settings.load()
     text = f"{step['detail']}\n{step['done_when']}"
-    root = vault.root(s)
+    root = vault.own(s)
     facts, absent = [], []
     seen = set()
     for rel in VAULT_PATH.findall(text) + ABS_PATH.findall(text):
@@ -495,7 +495,7 @@ def _verify_and_record(oid, idx, s, verify_fn=None):
     report = (step["result"] or "") + (f"\n\n[Checked by Waggle on disk: {facts}]" if facts else "")
     if absent:  # the step promised a file that isn't there: no need to ask a model
         complete, missing = False, (f"{absent[0]} does not exist. Write it there (inside the vault "
-                                    f"{vault.root(s)}), not anywhere else.")
+                                    f"{vault.own(s)}), not anywhere else.")
     else:
         with budget.background("objective-verify", oid, idx):
             if verify_fn:

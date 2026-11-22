@@ -72,6 +72,12 @@ def facts(settings=None, now=None):
     m = re.search(r"\*\*Name:\*\*\s*(.+)", vault.read("Me/Profile", s))
     if m:
         out.insert(0, f"The user's name: {m.group(1).strip()} (greet them by name).")
+    try:  # the owner's own profile notes (their daily rhythm, goals, how they want to be talked to), when configured
+        mine = vault.profile_digest(s, 700)
+        if mine:
+            out.insert(1 if m else 0, "About the user, from their own profile notes (tone and priorities, not news):\n" + mine)
+    except Exception:  # noqa: BLE001
+        pass
     return out
 
 

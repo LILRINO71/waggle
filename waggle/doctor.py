@@ -131,6 +131,9 @@ def check_vault(s):
     from . import memory_care
     if not Path(s.vault).exists():
         return "fail", f"vault missing at {s.vault}", "Run: python -m waggle.cli init"
+    from . import vault
+    if not vault.own(s).is_dir():
+        return "warn", f"Waggle's folder is missing ({vault.own_rel(s)})", "Run: python -m waggle.cli init"
     st = memory_care.status(s)
     detail = f"{st['notes']} notes, {st['indexed_notes']} indexed"
     if st["indexed_notes"] < st["notes"] - 3:

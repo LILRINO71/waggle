@@ -132,7 +132,8 @@ def expand_roots(charter, goal_id="", settings=None):
     """The charter's write roots as absolute, resolved paths."""
     s = settings or Settings.load()
     from . import config
-    subs = {"home": str(Path.home()), "vault": s.vault, "jobs": s.jobs_dir, "waggle_home": str(config.HOME),
+    from . import vault as _vault
+    subs = {"home": str(Path.home()), "vault": str(_vault.own(s)), "jobs": s.jobs_dir, "waggle_home": str(config.HOME),
             "goal": goal_id}
     out = []
     for r in (charter or {}).get("write_roots") or []:

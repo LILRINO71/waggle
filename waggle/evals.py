@@ -92,6 +92,12 @@ def select(cases, categories=None, ids=None, quick=False, claude=False, code_onl
     return out
 
 
+def _own(settings):
+    """Waggle's own notes folder in the vault (what the cases call {{vault}}: Me/Profile.md, Projects/ ...)."""
+    from . import vault
+    return vault.own(settings)
+
+
 def _subst(value, ctx):
     """{{fake:NAME}}, {{home}}, {{vault}}, {{package}} inside any string of the case."""
     if isinstance(value, str):
@@ -99,7 +105,7 @@ def _subst(value, ctx):
             key = m.group(1)
             if key.startswith("fake:"):
                 return FAKES[key[5:]]
-            return {"home": Path.home().as_posix(), "vault": Path(ctx.settings.vault).as_posix(),
+            return {"home": Path.home().as_posix(), "vault": _own(ctx.settings).as_posix(),
                     "package": ctx.package}[key]
         return re.sub(r"\{\{([a-z:\-]+)\}\}", one, value)
     if isinstance(value, list):
@@ -247,7 +253,7 @@ class Ctx:
 
 def _note_text(ctx, rel):
     from . import memory
-    p = Path(ctx.settings.vault) / rel
+    p = _own(ctx.settings) / rel
     if not p.exists():
         raise Skip(f"note {rel} is not in the vault")
     return memory._strip_frontmatter(p.read_text(encoding="utf-8", errors="replace")).strip()[:NOTE_CHARS]

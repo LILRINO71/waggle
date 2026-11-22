@@ -135,9 +135,13 @@ def build_from_vault(settings=None):
     con.execute("DELETE FROM aliases WHERE source='vault'")
     n_notes = n_links = n_dec = 0
     seen_dec, scanned = set(), set()
+    own = vault.own(s).resolve()
     for p in vault.notes(s):
-        rel = p.relative_to(root)
+        mine = vault.in_own(p, s)
+        rel = p.resolve().relative_to(own if mine else root.resolve())  # Waggle's folders are named inside its own folder
         folder = rel.parts[0] if len(rel.parts) > 1 else ""
+        if not mine:
+            folder = "(vault) " + folder  # the owner's folders never count as Waggle's (Journal, Archive ...)
         if folder in SKIP_FOLDERS or p.stem.startswith("Waggle HQ"):
             continue
         text = p.read_text(encoding="utf-8", errors="replace")

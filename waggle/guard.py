@@ -99,7 +99,7 @@ CONFIG_KEYS = (
     "background_daily_units", "background_stop_at", "background_max_workers", "background_reset_hour",
     "background_downgrade_at", "interactive_yield_s", "max_verifications_per_day", "max_calls_per_day",
     "max_selfbuilds_per_day",
-    "extra_write_roots", "vault", "jobs_dir", "self_emails",
+    "extra_write_roots", "vault", "vault_own", "jobs_dir", "self_emails",
     "owner_instructions",  # false turns the owner-instruction rule off (policy.owner_rule)
     "seven_day_stop_at",  # background work defers above this share of the weekly limit (quota/budget)
 )

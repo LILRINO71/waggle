@@ -94,18 +94,18 @@ def _norm(text):
 
 def load_notes(s):
     """The notes worth tidying (indexable, not the journal or Waggle's mirrors), newest first, capped."""
-    r = vault.root(s)
+    o = vault.own(s)  # Waggle's own notes only: a tidy plan never second-guesses the owner's notes
     found = []
-    for p in vault.notes(s):
-        rel = p.relative_to(r).as_posix()
-        if not memory.indexable(rel) or rel.startswith(SKIP_PREFIXES):
+    for p in vault.own_notes(s):
+        rel = p.relative_to(o).as_posix()
+        if not memory.indexable(vault.vault_rel(p, s), s=s) or rel.startswith(SKIP_PREFIXES):
             continue
         try:
             text = p.read_text(encoding="utf-8", errors="replace")[:MAX_NOTE_CHARS]
             mtime = p.stat().st_mtime
         except OSError:
             continue
-        if not memory.indexable(rel, text):
+        if not memory.indexable(vault.vault_rel(p, s), text, s=s):
             continue
         found.append((mtime, Note(rel, p.stem, text, _strip(text))))
     found.sort(key=lambda x: (-x[0], x[1].rel))  # newest first; ties by path, so the order never wobbles
@@ -265,7 +265,7 @@ def find_missing_links(sources, targets, model):
 # ---- stale facts ---------------------------------------------------------------------------------
 
 def _read(s, rel):
-    p = vault.root(s) / rel
+    p = vault.own(s) / rel
     try:
         return p.read_text(encoding="utf-8", errors="replace")[:MAX_NOTE_CHARS]
     except OSError:
@@ -385,7 +385,7 @@ def run(payload=None, *, settings=None, now=None, ask=None):
     sched = float(payload.get("scheduled_ts") or now)
     day = dt.date.fromtimestamp(sched).isoformat()
     rel = f"{PLAN_DIR}/Weekly tidy {day}.md"
-    if (vault.root(s) / rel).exists():
+    if (vault.own(s) / rel).exists():
         return {"already": rel}
     plan = build_plan(s, sched, ask)
     vault.write(rel, render(plan), s)

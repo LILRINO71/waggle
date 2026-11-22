@@ -9,7 +9,8 @@
   under OneDrive on many PCs).
 
   The vault is found in this order: -Vault, the "vault" setting in ~/.waggle/config.json (WAGGLE_HOME if set),
-  then ~/WaggleVault. The Drop folder is created when it is missing. Running the script twice just refreshes the
+  then ~/WaggleVault. The Drop folder is inside Waggle's own folder of the vault (the "vault_own" setting, e.g.
+  "12 - Waggle"; the vault root when that is empty) and is created when it is missing. Running the script twice just refreshes the
   shortcut. -WhatIf prints what would be done and changes nothing. -DesktopDir puts the shortcut somewhere else
   (for testing).
 
@@ -25,6 +26,19 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+function Get-WaggleOwn {
+    # The folder inside the vault that holds Waggle's own notes ("" = the vault root).
+    $home_dir = if ($env:WAGGLE_HOME) { $env:WAGGLE_HOME } else { Join-Path $env:USERPROFILE ".waggle" }
+    $cfg = Join-Path $home_dir "config.json"
+    if (Test-Path -LiteralPath $cfg) {
+        try {
+            $json = Get-Content -LiteralPath $cfg -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($json.vault_own) { return ([string]$json.vault_own).Trim("/", "\") }
+        } catch { }
+    }
+    return ""
+}
 
 function Get-WaggleVault {
     param([string]$Explicit)
@@ -43,7 +57,8 @@ function Get-WaggleVault {
 }
 
 $vaultDir = Get-WaggleVault -Explicit $Vault
-$dropDir = Join-Path $vaultDir "Drop"
+$ownDir = Get-WaggleOwn
+$dropDir = if ($ownDir) { Join-Path (Join-Path $vaultDir $ownDir) "Drop" } else { Join-Path $vaultDir "Drop" }
 $desktop = if ($DesktopDir) { $DesktopDir } else { [Environment]::GetFolderPath("Desktop") }
 if (-not $desktop) { throw "Could not find the desktop folder." }
 $lnk = Join-Path $desktop "$Name.lnk"

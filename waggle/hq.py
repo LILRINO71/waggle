@@ -239,7 +239,7 @@ def render_md(snap, settings=None):
     return "\n".join(lines) + "\n"
 
 
-def render_canvas(snap):
+def render_canvas(snap, base=""):
     """Obsidian canvas JSON: Waggle in the centre, live work above, projects in a ring, you on the left."""
     nodes, edges = [], []
 
@@ -260,7 +260,7 @@ def render_canvas(snap):
     t = snap["today"]
     text("waggle", -170, -90, 340, 180,
          f"# 🐝 Waggle\n**{t['messages']}** messages today\n{t['local']} local · {t['claude']} Claude", "6")
-    nodes.append({"id": "me", "type": "file", "file": "Me/Profile.md", "x": -760, "y": -160, "width": 360, "height": 320,
+    nodes.append({"id": "me", "type": "file", "file": f"{base}/Me/Profile.md" if base else "Me/Profile.md", "x": -760, "y": -160, "width": 360, "height": 320,
                   "color": "5"})
     edge("waggle", "me", "5", "knows you")
     for i, j in enumerate(snap["active_jobs"][:4]):
@@ -287,8 +287,8 @@ def write(settings=None):
     s = settings or Settings.load()
     snap = snapshot(s)
     vault.write("Waggle HQ", render_md(snap, s), s)
-    canvas = vault.root(s) / "Waggle HQ.canvas"
-    canvas.write_text(json.dumps(render_canvas(snap), indent=1, ensure_ascii=False), encoding="utf-8")
+    canvas = vault.own(s) / "Waggle HQ.canvas"
+    canvas.write_text(json.dumps(render_canvas(snap, vault.own_rel(s)), indent=1, ensure_ascii=False), encoding="utf-8")
     return canvas
 
 
