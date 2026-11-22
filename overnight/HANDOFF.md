@@ -212,3 +212,15 @@ Owner's live voice test drove these, each proven live:
 - 13:50: owner finished the Google setup (published app, signed in). Live: Waggle created "Waggle test doc" by chat in
   6.5 s, Tasks read (3), Classroom "nothing due" (personal account). ActivityWatch Chrome extension connected
   (bucket aw-watcher-web-chrome). Cloudflare dead-man switch SKIPPED by the owner for now (code stays inert).
+
+## 2026-11-21 evening (live 3c13357, suite 3873 passed, canary passed)
+- Vault MOVED to C:\Users\hiheo\PersonalIntelligenceVault: Waggle reads all of it, writes only in `12 - Waggle`
+  (`vault_own`), vault_git inside `12 - Waggle` (35 commits kept), profile context from `vault_profile_notes`.
+  tools/move_vault.py did it (561 files, 0 conflicts; config backup config.json.bak-vaultmove-20261121-163705;
+  "Feed Waggle" shortcut repointed). WaggleVault left in place. Live: "what time do I prefer to wake up" answered
+  from 06 - Lifestyle/Daily Rhythm.md. Index: 55 owner notes + 103 Waggle notes.
+- Windows-MCP 0.8.8 (owner turns only; its overlay shows only during actions + 15 s), typed fast path, AW presence,
+  recipes (needs ~2 days of activity), replay gate on proposals (tools/replay, Inspect AI dev venv; weak signal
+  today: 18 replayable turns, local judge), tool finder (`find_tool` live: 3 candidates for "tables from PDFs",
+  nothing installed; `install_tool` always asks).
+- Next: rebuild/kws (sherpa-onnx wake word, default decided by its bench).
