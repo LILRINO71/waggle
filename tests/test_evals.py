@@ -1,3 +1,4 @@
+from pathlib import Path
 """The answer-quality eval: the scorer, the golden set, the history and regression detection, the claude gate, the
 weekly timer and the evening line. The model is always a fake; nothing real (Ollama, Claude, the vault) is reached."""
 import datetime as dt
@@ -8,6 +9,10 @@ import pytest
 from waggle import evals, voice_fast, voice_intent
 from waggle.config import Settings
 from waggle.core import cron, jobs, plugins, timers
+
+# The cases call {{vault}} a path; these tests used the old implicit default, now named explicitly (no default since
+# 2026-11-21). Only the path text is used here.
+VAULT = str(Path.home() / "WaggleVault")
 
 NOW = dt.datetime(2026, 11, 22, 20, 45).timestamp()  # a Sunday
 
@@ -84,7 +89,7 @@ def test_duplicate_ids_are_refused(tmp_path):
 
 def test_every_code_case_passes_on_the_real_code():
     """The pure-code golden cases run for real (no model): they hold today, so a failure here is a regression."""
-    out = evals.run(Settings(), now=NOW, code_only=True, save=False, ollama_up=False)
+    out = evals.run(Settings(vault=VAULT), now=NOW, code_only=True, save=False, ollama_up=False)
     bad = [(r["id"], r["detail"]) for r in out["results"] if r["status"] != "pass"]
     assert not bad and out["total"] >= 20
 
@@ -131,7 +136,7 @@ def test_memory_answer_reads_the_note_and_skips_when_it_is_missing(tmp_path):
 
 def test_infrastructure_errors_skip_but_code_crashes_fail():
     from waggle import ollama
-    ctx = evals.Ctx(Settings(), chat=fake_chat({"reply": ""}))
+    ctx = evals.Ctx(Settings(vault=VAULT), chat=fake_chat({"reply": ""}))
 
     def down(messages, schema, model=None):
         raise ollama.OllamaError("not reachable")
@@ -149,7 +154,7 @@ def test_mail_triage_uses_the_real_overrides_and_skips_when_the_model_is_down():
     answers = {"importance": "high", "want": "asks you to sign the form", "deadline": "2026-12-04"}
     case = evals.load_golden()["cases"][5]
     assert case["id"] == "mail-1"
-    ctx = evals.Ctx(Settings(), chat=fake_chat({}), mail_chat=lambda msgs, model, timeout: answers)
+    ctx = evals.Ctx(Settings(vault=VAULT), chat=fake_chat({}), mail_chat=lambda msgs, model, timeout: answers)
     r = evals.run_case(case, ctx)
     assert r["status"] == "pass", r
     ctx.mail_chat = lambda msgs, model, timeout: (_ for _ in ()).throw(OSError("down"))
@@ -168,7 +173,7 @@ def test_run_summarises_per_category_and_records_the_run(tmp_path):
          "input": {"text": "in 45 minutes", "now": "2026-11-20T10:00"}, "expect": {"equals": "wrong"}},
         {"id": "s1", "category": "safety", "kind": "chat_reply", "needs": "local", "input": {"text": "hi"},
          "expect": {"path": "reply", "equals": "x"}}]}
-    out = evals.run(Settings(), now=NOW, golden=golden, ollama_up=False)
+    out = evals.run(Settings(vault=VAULT), now=NOW, golden=golden, ollama_up=False)
     assert (out["passed"], out["total"], out["skipped"], out["golden_version"]) == (1, 2, 1, 7)
     assert out["categories"]["reminder"] == {"passed": 1, "total": 2, "skipped": 0}
     assert out["categories"]["safety"] == {"passed": 0, "total": 0, "skipped": 1}
@@ -278,7 +283,7 @@ def test_evening_line_is_silent_for_a_good_week_and_for_old_or_missing_runs():
 def test_the_evening_note_includes_the_line(monkeypatch):
     from waggle import brief
     monkeypatch.setattr(evals, "evening_lines", lambda now, settings=None: "Answer check slipped: memory 5->3 of 5.")
-    note = brief.evening_note(Settings(), NOW)
+    note = brief.evening_note(Settings(vault=VAULT), NOW)
     assert "Answer check slipped: memory 5->3 of 5." in (note if isinstance(note, str) else json.dumps(note))
 
 
@@ -292,21 +297,21 @@ def test_claude_gate_needs_a_real_reading_under_sixty_percent(monkeypatch):
     from waggle import budget, quota
     monkeypatch.setattr(budget, "check", lambda *a, **k: (True, "ok", 0))
     monkeypatch.setattr(quota, "window_view", lambda s, now=None: view(0.59))
-    assert evals.claude_gate(Settings(), NOW) == (True, "ok")
+    assert evals.claude_gate(Settings(vault=VAULT), NOW) == (True, "ok")
     monkeypatch.setattr(quota, "window_view", lambda s, now=None: view(0.60))
-    ok, why = evals.claude_gate(Settings(), NOW)
+    ok, why = evals.claude_gate(Settings(vault=VAULT), NOW)
     assert not ok and "60%" in why
     monkeypatch.setattr(quota, "window_view", lambda s, now=None: view(0.10, "estimate"))
-    ok, why = evals.claude_gate(Settings(), NOW)
+    ok, why = evals.claude_gate(Settings(vault=VAULT), NOW)
     assert not ok and "real reading" in why
     monkeypatch.setattr(quota, "window_view", lambda s, now=None: view(0.10))
     monkeypatch.setattr(budget, "check", lambda *a, **k: (False, "background budget used", 0))
-    assert evals.claude_gate(Settings(), NOW) == (False, "background budget used")
+    assert evals.claude_gate(Settings(vault=VAULT), NOW) == (False, "background budget used")
 
 
 def test_claude_cases_are_left_out_when_the_gate_says_no(monkeypatch):
     monkeypatch.setattr(evals, "claude_gate", lambda s, now=None: (False, "the 5-hour window is at 72%"))
-    out = evals.run(Settings(), now=NOW, claude=True, code_only=True, save=False, ollama_up=False)
+    out = evals.run(Settings(vault=VAULT), now=NOW, claude=True, code_only=True, save=False, ollama_up=False)
     assert out["mode"] == "local" and any("72%" in n for n in out["notes"])
     assert not any(r["id"].startswith("cl-") for r in out["results"])
 
@@ -321,7 +326,7 @@ def test_claude_cases_run_in_the_background_budget_with_the_evals_purpose(monkey
         if "User message" in prompt:
             return {"json": {"route": "answer"}}
         return {"json": {"decisions": [{"key": "m1", "action": "text"}, {"key": "k1", "action": "none"}]}}
-    out = evals.run(Settings(), now=NOW, claude=True, asker=asker, ollama_up=False, save=False,
+    out = evals.run(Settings(vault=VAULT), now=NOW, claude=True, asker=asker, ollama_up=False, save=False,
                     ids=["cl-route-1", "cl-out-1", "cl-out-2"])
     assert out["mode"] == "local+claude" and out["passed"] == 3, out["results"]
     assert calls and all(p == "evals" and bg for p, bg in calls)
@@ -332,7 +337,7 @@ def test_a_budget_refusal_skips_the_claude_case(monkeypatch):
 
     def asker(prompt, **kw):
         raise claude_cli.ClaudeError("background budget: used", "budget")
-    out = evals.run(Settings(), now=NOW, claude=True, asker=asker, ollama_up=False, save=False, ids=["cl-route-2"])
+    out = evals.run(Settings(vault=VAULT), now=NOW, claude=True, asker=asker, ollama_up=False, save=False, ids=["cl-route-2"])
     assert out["results"][0]["status"] == "skip" and out["passed"] == 0
 
 
@@ -353,9 +358,9 @@ def test_the_timer_is_registered_once_on_sunday_after_the_learning_loop_and_outs
     nxt = dt.datetime.fromtimestamp(cron.next_after(t["spec"], NOW))
     assert nxt.weekday() == 6 and (nxt.hour, nxt.minute) == (20, 45)  # Sunday
     # after the learning loop starts (20:30), before the 21:00 evening note, outside quiet hours
-    ll = dt.datetime.fromtimestamp(cron.next_after(learnloop.cron_spec(Settings()), NOW - 3600))
+    ll = dt.datetime.fromtimestamp(cron.next_after(learnloop.cron_spec(Settings(vault=VAULT)), NOW - 3600))
     assert (ll.hour, ll.minute) < (nxt.hour, nxt.minute) < (21, 0)
-    start, end = Settings().quiet_hours
+    start, end = Settings(vault=VAULT).quiet_hours
     assert not (nxt.hour >= start or nxt.hour < end)
 
 
@@ -406,7 +411,7 @@ def test_the_job_waits_out_quiet_hours_and_a_running_learning_loop(monkeypatch):
 # ---- voice_fast: which tier answers a spoken request ---------------------------------------------------------
 
 def test_the_voice_fast_cases_that_need_no_model_pass_on_the_real_code():
-    out = evals.run(Settings(), now=NOW, code_only=True, categories=["voice_fast"], save=False, ollama_up=False)
+    out = evals.run(Settings(vault=VAULT), now=NOW, code_only=True, categories=["voice_fast"], save=False, ollama_up=False)
     bad = [(r["id"], r["detail"]) for r in out["results"] if r["status"] != "pass"]
     assert not bad and out["total"] >= 12 and {r["tier"] for r in out["results"]} == {"code", "claude"}
 
@@ -481,10 +486,10 @@ def test_the_voice_model_is_warmed_again_even_when_a_case_crashes(monkeypatch):
 
 def test_a_run_of_the_voice_model_alone_needs_no_rewarm_and_a_fake_model_never_warms(monkeypatch):
     seen = _spy(monkeypatch)
-    evals.run(Settings(), now=NOW, golden=_golden("vf-local-1"), save=False)
+    evals.run(Settings(vault=VAULT), now=NOW, golden=_golden("vf-local-1"), save=False)
     assert [s[:2] for s in seen] == [("voice", "gemma4:latest")]
     seen.clear()
-    evals.run(Settings(), now=NOW, golden=_golden("saf-5", "vf-local-1"), chat=lambda m, s: {"reply": "ok"}, save=False)
+    evals.run(Settings(vault=VAULT), now=NOW, golden=_golden("saf-5", "vf-local-1"), chat=lambda m, s: {"reply": "ok"}, save=False)
     assert seen == []  # a test's fake model: nothing real is loaded
 
 

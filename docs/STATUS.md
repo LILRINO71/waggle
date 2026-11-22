@@ -58,6 +58,14 @@ usage card.
 | Jobs per day at idle | about 1,500 |
 | Own Python modules / size | 160 / about 3 MB |
 
+## Owner decisions (2026-11-21)
+
+- Vault: `PersonalIntelligenceVault`; Waggle writes only in `12 - Waggle`.
+- First objectives for the night shift: **FTC SimBench Pro** and **Waggle itself**.
+- Night shift: **23:00-07:00**, at most **35 %** of the weekly Claude allowance.
+- Reboot: accept the gap until sign-in; Waggle sends a phone message when it is back.
+- Overnight work may be pushed as `waggle/*` branches with **draft** pull requests; Waggle never merges.
+
 ## Step 0 log
 
 - 2026-11-21: decision document approved and saved here.

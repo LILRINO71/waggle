@@ -138,7 +138,11 @@ def write_roots(settings=None):
     s = settings or Settings.load()
     home = Path.home()
     from . import vault
-    roots = [home / "Claude", vault.own(s), s.jobs_dir, data_path("."), home / ".hermes" / "skills" / "waggle",
+    try:
+        own = vault.own(s)
+    except vault.VaultNotSet:
+        own = ""  # no vault configured: it is simply not a write root (fail closed, the rest of the check still runs)
+    roots = [home / "Claude", own, s.jobs_dir, data_path("."), home / ".hermes" / "skills" / "waggle",
              os.environ.get("TEMP", ""), *getattr(s, "extra_write_roots", [])]
     return [norm(r) for r in roots if str(r)]
 
