@@ -224,3 +224,7 @@ Owner's live voice test drove these, each proven live:
   today: 18 replayable turns, local judge), tool finder (`find_tool` live: 3 candidates for "tables from PDFs",
   nothing installed; `install_tool` always asks).
 - Next: rebuild/kws (sherpa-onnx wake word, default decided by its bench).
+- 17:45 live 9555e59 (suite 3904): wake word via sherpa-onnx KWS (`pc_voice_wake_mode` kws|stt|both; model
+  ~/.waggle/models/kws-zipformer-gigaspeech-3.3M, `python -m waggle.kws status`). Synthetic bench: 100% vs 95% hits,
+  0 false wakes, 0 recogniser calls on room talk (64 before). Not yet tried on the owner's real voice; if it misses,
+  set `"pc_voice_wake_mode": "stt"` (or "both") and redeploy.
