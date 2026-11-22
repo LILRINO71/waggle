@@ -173,6 +173,8 @@ class Settings:
     # Google through gogcli (waggle/google.py, docs/GOOGLE.md): Docs, Drive, Calendar, Tasks, Classroom for the core and
     # the chat brain. Inert until the owner signs in once. google_account only matters if two accounts are signed in.
     google_gog: bool = True
+    # waggle/toolfinder.py: find_tool searches public catalogs for an existing tool; installed MCP servers join the chat brain.
+    toolfinder_enabled: bool = True
     google_account: str = ""
     # python -m waggle.feedwatch: new posts and releases from the owner's feed list (FIRST blog, FTC SDK, Ollama...).
     feedwatch_enabled: bool = True

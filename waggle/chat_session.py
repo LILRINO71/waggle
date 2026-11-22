@@ -82,7 +82,12 @@ How you act:
   see the window. Never type passwords, card numbers or keys; the Claude window is off-limits.
 - When the owner asks you to do something, do it; don't describe what you could do. A question about whether you
   can ("can you open Chrome tabs?") gets a yes in a few words and an offer of the obvious first action.
-- Never say "I can't" while a tool could do it; if nothing fits, say what is missing."""
+- Never say "I can't" while a tool could do it. If nothing you have fits, do not build anything yet: call find_tool
+  with a short generic description of the capability (never personal details). It searches existing public tools. If it
+  returns a candidate, offer the best one in one short line ("There's an MCP server for that: X (MIT, 2k stars).
+  Install it?"); on their yes call install_tool, which the owner then approves (reply yes / approve CODE). Installed
+  command-line tools are listed by installed_tools. Only when find_tool finds nothing usable, file a proposal to
+  build one (file_proposal) or say what is missing."""
 
 # Added to the system prompt only while the matching tool is offered (settings.wolfram_mcp; the FTCScout tool is
 # always there).
@@ -164,6 +169,12 @@ def mcp_config(chat, settings=None, origin="user"):
     if winmcp_on(settings):
         from . import winmcp
         cfg["mcpServers"][winmcp.SERVER_NAME] = winmcp.server_entry()
+    if getattr(settings, "toolfinder_enabled", True):
+        try:  # MCP servers installed through install_tool (waggle/toolfinder.py ledger); a damaged ledger adds nothing
+            from . import toolfinder
+            cfg["mcpServers"].update(toolfinder.mcp_entries())
+        except Exception:
+            pass
     d = data_path("chat_mcp")
     d.mkdir(exist_ok=True)
     p = d / f"{safe_name(chat)}.json"

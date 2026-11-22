@@ -185,6 +185,7 @@ ASK_SHELL = [
      "sending a message as you"),
     (r"(\.env\b|twilio\.env|id_rsa|\.pem\b|credentials\.json|token\.json|\.git-credentials)", "touching a secrets file"),
     (r"\b(takeown|icacls)\b", "changing file permissions"),
+    (r"waggle[./\\]+toolfinder\b[^\n]*\b(un)?install\b", "installing third-party software"),
 ]
 REGENERABLE = re.compile(r"(node_modules|__pycache__|\.pytest_cache|\.venv|venv|dist|build|\.next|\.cache|target|"
                          r"coverage|\.mypy_cache|\.ruff_cache|tmp|temp)[\\/\"']?\s*$", re.I)
@@ -259,6 +260,8 @@ WAGGLE_TOOLS = {
     "cad_convert": (ALLOW, _NEW_FILE), "doc_to_pdf": (ALLOW, _NEW_FILE), "media_convert": (ALLOW, _NEW_FILE),
     "image_convert": (ALLOW, _NEW_FILE),
     "ftc_team": (ALLOW, "reads one FTC team's public FTCScout page (read-only)"),
+    # waggle/toolfinder.py: searching public catalogs only reads; installing runs third-party code, so it asks every time
+    "find_tool": (ALLOW, "searches public tool catalogs (read-only)"), "installed_tools": (ALLOW, _READS),
     # Google through gogcli (waggle/google.py): reads only look; the five below change the owner's own account
     "google_status": (ALLOW, _READS), "google_docs_read": (ALLOW, _READS), "google_drive_search": (ALLOW, _READS),
     "google_calendar_list": (ALLOW, _READS), "google_tasks_list": (ALLOW, _READS), "google_classroom_due": (ALLOW, _READS),
@@ -276,6 +279,8 @@ WAGGLE_TOOLS = {
     "graph_correct": (ASK, "retracts or merges what Waggle knows about you"),
     "routine_remove": (ASK, "deletes a routine"),
     "skill_install": (ASK, "installs community code"),
+    "install_tool": (ASK, "installs third-party software (waggle/toolfinder.py)"),  # never covered by the owner's words (owner_acts: never)
+    "uninstall_tool": (ASK, "removes software Waggle installed (waggle/toolfinder.py)"),
     "hermes_tool": (ASK, "runs a Hermes tool"),  # decided as the Hermes tool it names (decide() below)
     "google_doc_new": (ASK, "creates a Google Doc in your Drive"),  # owner turn only (owner_acts); the tool refuses the rest
     "google_doc_append": (ASK, "adds text to one of your Google Docs"),

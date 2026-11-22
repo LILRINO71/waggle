@@ -301,7 +301,7 @@ def _load_providers():
     for mod in ("waggle.traces", "waggle.learning", "waggle.agents", "waggle.routines", "waggle.models",
                 "waggle.engines", "waggle.memory_care", "waggle.doctor",
                 "waggle.objectives", "waggle.graph", "waggle.chat_jobs", "waggle.proposals", "waggle.tools_ext", "waggle.ftcscout",
-                "waggle.google", "waggle.focus"):
+                "waggle.google", "waggle.focus", "waggle.toolfinder"):
         try:
             m = importlib.import_module(mod)
         except ImportError:
