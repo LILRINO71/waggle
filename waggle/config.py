@@ -188,6 +188,10 @@ class Settings:
     proposals_context7: bool = True
     # Proposal verify step: pyright errors in the touched files are listed in the merge message (a warning, never a gate).
     proposals_pyright: bool = True
+    # Proposal verify step: replay the owner's real recent turns and the fixed eval cases on the base and on the change
+    # (tools/replay, Inspect AI in ~/.waggle-tools/inspect, local model only); a change that makes answers worse is not
+    # offered for merge. Skipped with a note when the venv is missing. False: no replay.
+    proposals_replay: bool = True
     drop_ocr_model: str = ""  # empty = local_model
     # Nightly local backup of the data home (waggle/backup.py): dated zips here, the newest backup_keep kept. Not a
     # cloud folder, because the data includes tokens. Empty = %USERPROFILE%\WaggleBackups.

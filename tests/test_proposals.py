@@ -62,8 +62,13 @@ class FakeEnv(Env):
         self.test_calls, self.sent, self.queued, self.deploys = [], [], [], []
         self.alive_pids, self.budget, self.is_quiet = set(), (True, "ok"), False
         self.enqueue_error = None
+        self.replay_result, self.replay_calls = {"status": "skipped", "why": "not run in tests"}, []
 
     # fakes of the outside world
+    def replay(self, base, head):
+        self.replay_calls.append((base, head))
+        return self.replay_result
+
     def now(self):
         return self.t
 
@@ -487,7 +492,8 @@ def test_a_change_to_a_safety_file_is_said_plainly_in_the_text(env):
 @pytest.mark.parametrize("path,flagged", [
     ("waggle/policy.py", True), ("waggle\\guard.py", True), ("waggle/budget.py", True),
     ("hermes_plugin/waggle/__init__.py", True), ("waggle/proposals.py", True), ("tools/deploy.ps1", True),
-    ("tests/holdout_set.json", True), ("waggle/foo.py", False), ("tests/test_foo.py", False),
+    ("tests/holdout_set.json", True), ("tools/replay/run.py", True), ("waggle/evals_golden.json", True),
+    ("waggle/foo.py", False), ("tests/test_foo.py", False),
 ])
 def test_the_protected_set_is_the_guards_list_plus_the_pipeline_and_the_approval_path(path, flagged):
     assert bool(proposals.touches_protected([path])) is flagged
@@ -1199,3 +1205,80 @@ def test_ready_text_carries_the_pyright_line():
                    "pyright": "Type check (pyright, warning only): 2 new errors in the files it touched."}}
     text = proposals.ready_text(p)
     assert "warning only): 2 new errors" in text and text.index("Type check") < text.index("It touches no safety")
+
+
+# ---- the replay gate (tools/replay): answers that got worse are not offered for merge ---------------------------
+
+def _worse():
+    return {"status": "ok", "blocked": True, "why": "model-scored answers are worse by 4 cases net (5 lost, 1 gained; "
+            "the margin is 2)", "summary": "Replay of 30 scored cases: base 24/30, head 20/30: head is WORSE.",
+            "lost": ["r:t12", "r:t15"], "report_path": "C:/x/report.json"}
+
+
+def test_the_replay_runs_on_base_and_head_after_the_full_suite_and_its_result_is_in_the_text(env):
+    env.replay_result = {"status": "ok", "blocked": False, "summary": "Replay of 30 scored cases: base 24/30, head 25/30: "
+                         "head is not worse (margin 2)."}
+    p = to_awaiting(env)
+    assert env.replay_calls == [(B, H)]
+    assert "head is not worse (margin 2)" in env.sent[0]["text"]
+    assert proposals.get(p["id"])["tests"]["replay"]["status"] == "ok"
+    assert env.cmds("push", "origin", f"proposals/{p['id']}:proposals/{p['id']}")
+
+
+def test_a_skipped_replay_is_said_plainly_and_does_not_block(env):
+    env.replay_result = {"status": "skipped", "why": "the Inspect venv is missing"}
+    to_awaiting(env)
+    assert "Replay of real answers: skipped (the Inspect venv is missing)" in env.sent[0]["text"]
+
+
+def test_answers_that_got_worse_stop_the_proposal_before_the_push_and_the_owner_is_told_why(env):
+    env.replay_result = _worse()
+    p = file_one(env)  # an automatic one: normally silent when it fails, but this refusal is always told
+    drive(env)
+    env.jobs["job1"]["status"] = "done"
+    r = final(env)
+    assert r["did"] == "failed" and "makes them worse" in r["why"]
+    assert not env.cmds("push", "origin", f"proposals/{p['id']}:proposals/{p['id']}")
+    assert len(env.sent) == 1
+    text = env.sent[0]["text"]
+    assert "did NOT offer this for merge" in text and "5 lost, 1 gained" in text and "r:t12" in text
+    assert "report.json" in text and "merge" not in text.replace("merge.", "").replace("for merge", "")
+    assert state(p) == "failed"
+
+
+def test_a_crashing_replay_is_a_skip(env):
+    def boom(base, head):
+        raise RuntimeError("x")
+    env.replay = boom
+    p = to_awaiting(env)
+    assert proposals.get(p["id"])["tests"]["replay"]["status"] == "skipped"
+    assert "the replay crashed" in env.sent[0]["text"]
+
+
+def test_the_real_replay_method_skips_with_a_reason_and_never_raises(tmp_path, settings, monkeypatch):
+    e = Env(settings=settings, repo=tmp_path / "live", write_root=tmp_path / "wt")
+    (tmp_path / "live" / "tools" / "replay").mkdir(parents=True)
+    venv = tmp_path / "py.exe"
+    monkeypatch.setenv("WAGGLE_INSPECT_PY", str(tmp_path / "nope.exe"))
+    assert "venv is missing" in e.replay(B, H)["why"]
+    monkeypatch.setenv("WAGGLE_INSPECT_PY", str(venv))
+    venv.write_text("x")
+    assert "no tools/replay yet" in e.replay(B, H)["why"]
+    (tmp_path / "live" / "tools" / "replay" / "run.py").write_text("x")
+    settings.proposals_replay = False
+    assert "switched off" in e.replay(B, H)["why"]
+    settings.proposals_replay = True
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        Path(cmd[cmd.index("--json") + 1]).write_text(json.dumps({"status": "ok", "blocked": False, "summary": "s"}))
+    monkeypatch.setattr(proposals.subprocess, "run", fake_run)
+    got = e.replay(B, H)
+    assert got["status"] == "ok" and calls and "--base" in calls[0] and calls[0][calls[0].index("--head") + 1] == H
+    assert str(tmp_path / "live" / "tools" / "replay" / "run.py") in calls[0]  # the live checkout's runner, not the change's
+
+    def fail_run(cmd, **kw):
+        raise OSError("no")
+    monkeypatch.setattr(proposals.subprocess, "run", fail_run)
+    assert e.replay(B, H)["status"] == "skipped"
