@@ -157,6 +157,8 @@ class Settings:
                                                       "WebFetch"])
     # Wolfram's free cloud MCP (no key): checked maths and science for the chat brain. false = not offered.
     wolfram_mcp: bool = True
+    # Windows-MCP (waggle/winmcp.py): the chat brain reads the Windows UI tree and acts on apps. false = not offered.
+    windows_mcp: bool = True
     # Google through gogcli (waggle/google.py, docs/GOOGLE.md): Docs, Drive, Calendar, Tasks, Classroom for the core and
     # the chat brain. Inert until the owner signs in once. google_account only matters if two accounts are signed in.
     google_gog: bool = True
