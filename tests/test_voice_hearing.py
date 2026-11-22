@@ -232,7 +232,7 @@ def test_the_heard_line_is_never_spoken(settings, monkeypatch):
 
 
 def test_a_typed_turn_has_no_heard_line(settings):
-    rec, api, seen = voice_turn_of(settings, "", reply="It is three o'clock.", kind="text", typed="what time is it?")
+    rec, api, seen = voice_turn_of(settings, "", reply="It is three o'clock.", kind="text", typed="read me the headline")  # not a fast-path question
     assert written(rec, api) == "It is three o'clock." and "heard_line" not in (rec.voice or {})
 
 
