@@ -21,12 +21,19 @@ def python():
     return ROOT / "venv" / "Scripts" / "python.exe"
 
 
+def windowless_python():
+    """pythonw.exe next to python.exe: started by a process with no console (the chat brain), python.exe opens a console
+    window and takes the focus (measured with tools/window_probe.py); pythonw.exe opens nothing."""
+    w = python().with_name("pythonw.exe")
+    return w if w.exists() else python()
+
+
 def installed():
     return python().exists() and LAUNCHER.exists()
 
 
 def server_entry():
     """The MCP config entry: the venv's python running the launcher (which fixes the tool list)."""
-    return {"type": "stdio", "command": str(python()), "args": [str(LAUNCHER)],
+    return {"type": "stdio", "command": str(windowless_python()), "args": [str(LAUNCHER)],
             "env": {"ANONYMIZED_TELEMETRY": "false", "WINDOWS_MCP_DISABLE_FLASH": "1", "PYTHONUTF8": "1",
                     "WAGGLE_HOME": str(data_path("."))}}

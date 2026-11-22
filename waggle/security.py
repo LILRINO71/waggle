@@ -134,7 +134,7 @@ def _check(tool_name, args):
         why = screen_risk(args)
         if why:
             return {"action": "approve", "message": f"Waggle wants to control your screen ({why}). OK?"}
-    hit = winmcp_check(tool_name, args)
+    hit = winmcp_check(tool_name, args, owner=_owner_turn())
     if hit and hit[0] == "deny":
         return {"action": "block", "message": f"Blocked: {hit[1]}."}
     if hit:
@@ -220,6 +220,16 @@ class WinResolver:
         return _winmcp_describe(u.GetAncestor(h, 2) or h)  # GA_ROOT
 
 
+def _owner_turn():
+    """True in the owner's own chat turn (guard.read_turn_state); anything else, or an error, is False."""
+    try:
+        from . import guard
+        turn = guard.read_turn_state()
+        return bool(isinstance(turn, dict) and turn.get("owner"))
+    except Exception:
+        return False
+
+
 def _winmcp_state():
     try:
         import json
@@ -255,7 +265,7 @@ def _winmcp_bad_window(w):
     return ""
 
 
-def winmcp_check(tool_name, args, resolver=None, state=None):
+def winmcp_check(tool_name, args, resolver=None, state=None, owner=True):
     """None when this Windows-MCP call may run; otherwise ('deny' | 'ask', why). Anything but a Windows-MCP tool: None.
     Looking (Snapshot, WaitFor) is free. Acting is checked against every window it could land on; a window that cannot
     be identified asks. A tool outside the offered set (PowerShell, Registry, FileSystem, Process...) is refused."""
@@ -263,6 +273,8 @@ def winmcp_check(tool_name, args, resolver=None, state=None):
     if not m:
         return None
     tool, args = m.group("tool").lower(), (args if isinstance(args, dict) else {})
+    if not owner and tool != "controlstatus":  # every call puts a topmost frame on screen for about 15 s
+        return "deny", "Windows-MCP draws a frame on the screen, so it only runs in a turn the owner started"
     if tool in WINMCP_LOOK:
         return None
     if tool not in WINMCP_ACT:

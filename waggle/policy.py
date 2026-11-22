@@ -423,8 +423,8 @@ def _base_decide(tool_name, args=None, settings=None, cwd=None):
         why = screen_risk(args)
         return Decision(ASK, f"controlling your screen ({why})", kind="screen") if why else Decision(ALLOW)
     if name.startswith(("mcp__windows-mcp__", "mcp__windows_mcp__")):  # Windows-MCP: the same rules as computer_use
-        from .security import winmcp_check
-        hit = winmcp_check(raw, args)
+        from .security import _owner_turn, winmcp_check
+        hit = winmcp_check(raw, args, owner=_owner_turn())
         if hit is None:
             return Decision(ALLOW)
         if hit[0] == "deny":

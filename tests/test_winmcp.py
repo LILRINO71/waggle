@@ -35,8 +35,9 @@ def check(tool, args, fg=("Untitled - Notepad", "notepad.exe"), at=None, state=N
 @pytest.fixture
 def fake_windows(monkeypatch):
     """The policy path builds its own resolver: hand it a fake whose windows the test sets."""
-    box = {"fake": Fake()}
+    box = {"fake": Fake(), "owner": True}
     monkeypatch.setattr(security, "WinResolver", lambda: box["fake"])
+    monkeypatch.setattr(security, "_owner_turn", lambda: box["owner"])
     return box
 
 
@@ -205,6 +206,30 @@ def test_the_hermes_guard_checks_it_too(fake_windows):
     assert security.check_tool_call(T + "Click", {"loc": [1, 1]})["action"] == "block"
 
 
+# ---- nothing on screen unless the owner asked ----------------------------------------------------------------------
+
+def test_every_windows_mcp_call_outside_an_owner_turn_is_denied(fake_windows):
+    """Windows-MCP puts a topmost frame on every screen for about 15 s after any call (measured), looking included."""
+    for tool in ("Snapshot", "Click", "Type", "Shortcut", "Wait", "App"):
+        assert security.winmcp_check(T + tool, {}, resolver=Fake(), state={}, owner=False)[0] == "deny", tool
+    assert security.winmcp_check(T + "ControlStatus", {}, owner=False) is None  # draws nothing
+    fake_windows["owner"] = False
+    assert policy.decide(T + "Snapshot", {}).action == policy.DENY
+    assert security.check_tool_call(T + "Snapshot", {})["action"] == "block"
+    fake_windows["owner"] = True
+    assert policy.decide(T + "Snapshot", {}).allowed
+
+
+def test_the_owner_turn_helper_fails_closed(monkeypatch):
+    from waggle import guard
+    monkeypatch.setattr(guard, "read_turn_state", lambda: None)
+    assert security._owner_turn() is False
+    monkeypatch.setattr(guard, "read_turn_state", lambda: {"owner": True})
+    assert security._owner_turn() is True
+    monkeypatch.setattr(guard, "read_turn_state", lambda: 1 / 0)
+    assert security._owner_turn() is False
+
+
 # ---- the real Windows lookup (windows only) -------------------------------------------------------------------------
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows window calls")
@@ -229,9 +254,20 @@ def test_windows_mcp_is_offered_only_when_installed_and_on(settings, monkeypatch
     assert entry["type"] == "stdio" and entry["env"]["ANONYMIZED_TELEMETRY"] == "false"
     assert entry["env"]["WINDOWS_MCP_DISABLE_FLASH"] == "1" and entry["env"]["WAGGLE_HOME"] == str(data_path("."))
     assert entry["args"] == [str(REPO / "tools" / "winmcp_server.py")]
-    assert "windows-mcp" in entry["command"] or "windows-mcp" in entry["command"].replace("\\", "/")
+    assert "windows-mcp" in entry["command"].replace("\\", "/")
+    assert Path(entry["command"]).name in ("pythonw.exe", "python.exe")  # pythonw when installed: no console window
     monkeypatch.setattr(winmcp, "installed", lambda: False)
     assert winmcp.SERVER_NAME not in servers()  # not installed: never a dangling server
+
+
+def test_the_server_starts_with_pythonw_so_no_console_window_opens(tmp_path, monkeypatch):
+    scripts = tmp_path / "venv" / "Scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "python.exe").write_text("")
+    monkeypatch.setattr(winmcp, "ROOT", tmp_path)
+    assert winmcp.windowless_python().name == "python.exe"  # no pythonw there: fall back
+    (scripts / "pythonw.exe").write_text("")
+    assert winmcp.windowless_python().name == "pythonw.exe" and winmcp.server_entry()["command"].endswith("pythonw.exe")
 
 
 def test_the_server_name_makes_the_tool_names_the_policy_matches():
