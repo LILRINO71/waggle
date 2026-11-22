@@ -49,10 +49,13 @@ Say the name first: "Jarvis, what's on my calendar?" or "Hey Jarvis ...". Only t
 listens. The name must start what you say; "I told Jarvis ..." does not count. A short, unusual name works best.
 After a change, measure it again (`python tools/pcvoice_measure.py --names Jarvis --sanity`).
 
-What happens to what the microphone hears while the wake word is on: each burst of sound is cut out by its
-loudness and turned into words by Waggle's own recogniser on this PC (nothing leaves the PC for this). If the words
-do not begin with the name, they are dropped at once: the sound exists on disk only for the moment the recogniser
-reads it (then it is deleted), and the words are never logged or stored. Windows shows its microphone-in-use icon the whole time the wake word is on.
+What happens to what the microphone hears while the wake word is on: each burst of sound is cut out (by the
+neural speech gate below) and a small keyword spotter reads its first seconds for the name (next section). Only a burst
+with the name in it is turned into words, by Waggle's own recogniser on this PC (nothing leaves the PC for this). If
+the words do not begin with the name, they are dropped at once: the sound exists on disk only for the moment the
+recogniser reads it (then it is deleted), and the words are never logged or stored. Room speech without the name (a
+television, a call) is never transcribed at all. With `"pc_voice_wake_mode": "stt"` every burst is transcribed, as
+before this change. Windows shows its microphone-in-use icon the whole time the wake word is on.
 
 ## Waggle speaking first
 
@@ -81,6 +84,73 @@ hours still hold: nothing is said out loud during them.
   with you at the PC it is said there ("Sir, your reminder: ...") and both Telegram messages arrive silently.
 - **Measure the judge:** `python -m waggle.bench voice` (50 labelled cases in `bench/voice_intent.jsonl`; `--model-only`,
   `--no-model`, `--model NAME`).
+
+## Hearing the name first: the keyword spotter (21 November, `pc_voice_wake_mode`)
+
+Until now every burst of speech in the room went to the recogniser on the GPU, and the words had to start with
+"Waggle". With a television or anime on, that was dozens of transcriptions an hour ("heard speech, no wake name (13 so
+far)" in the log), and a real "Waggle" was sometimes written as "bagel" or "Tay Waggle" and lost.
+
+Now a small model listens for the name itself, before any transcription:
+
+| | |
+|---|---|
+| Model | sherpa-onnx-kws-zipformer-gigaspeech-3.3M (k2-fsa, Apache-2.0), int8, 5.3 MB, English, any word can be the keyword |
+| Runner | `sherpa-onnx` 2.0.1 (Apache-2.0, released 27 Oct, a 2.5 MB cp314 Windows wheel plus a 17 MB runtime, in the core interpreter: `py -3.14 -m pip install sherpa-onnx==2.0.1`) |
+| Files | `<home>\models\kws-zipformer-gigaspeech-3.3M\` (4 files), pinned by size and sha256 like the Silero files: `python -m waggle.kws fetch` (17.6 MB archive, checked, 4 files kept), `python -m waggle.kws status`, `python -m waggle.kws test FILE.wav` |
+| Code | `waggle/kws.py`; the wiring is `PcVoice.wake_frame`, `_kws_hit`, `_rescue` and `heard` in `waggle/pcvoice.py` |
+
+How it works: when an utterance ends (the Silero gate), the spotter reads its first seconds (the name has to begin within
+`pc_voice_kws_head_s` = 1.0 s of the first word, so "Hey Waggle" fits and "...the waggle dance of bees" does not).
+No name: the utterance is dropped without being transcribed. A name: the utterance with 1.5 s of sound before it
+goes to the recogniser exactly as before, so "Waggle, what time is it" still sends the rest. If the recogniser wrote
+the name as another word the spotter's hit still counts (`pc_voice_kws_trust`): "Bagel, what time is it" is recognised
+again from the audio after the name; "Tay Waggle, what time..." uses the words after "Waggle"; a name-like word
+inside a sentence or after "the", "my", "that" ... is not a wake. Follow-up windows after an answer never need the name
+(unchanged). If the model or sherpa-onnx is missing, or the spotter raises, the mode becomes "stt" for that run and one
+warning says so.
+
+Two things about this model that the code works around (found by measuring): a keyword that starts 1.3-1.6 s after the
+start of the audio it is fed (and again 1.5 s later) is missed, whatever the level (the plain recogniser reads the same
+audio correctly), so every utterance is scanned twice, the second time with 0.7 s of silence in front, which puts the
+name outside the dead zone in one of the two passes; and the microphone's quiet speech (1% of full scale) is raised
+before scanning, as the recogniser's front end does (without it, a fifth of the "Waggle"s were missed). The model's
+"mobile" variant does not run under sherpa-onnx 1.13.8 or 2.0.1 at all (a Reshape error), so the full int8 one is used.
+
+### Measured (no microphone, no speaker: `python tools/kws_eval.py synth|sweep|run|soak`)
+
+Kokoro (Waggle's own voice) spoke the clips; the test voices (am_adam, bf_emma, af_bella, bm_lewis, at speeds 0.9 and 1.1)
+are not the ones used to pick the settings (bm_george, af_heart). Each clip is mixed into the room at the owner's own
+level (speech RMS 250, floor 2; from the real log: speech RMS 180-330, floor 0.5-4), quieter (150), louder (700),
+with a fan and with synthetic music 10 dB lower (and, in the last row only, with a second talker, a television, 10 dB
+lower), then run frame by frame through the PC voice's own wake path
+(`PcVoice.wake_frame`: the Silero gate, the spotter, `heard`) in dry-run mode with the real recogniser (faster-whisper
+turbo through `waggle.stt`, the call `/voice/transcribe` makes).
+
+| | stt (before) | kws, text must say the name | **kws (default)** | both |
+|---|---|---|---|---|
+| Wake phrases heard (200: 5 phrases x 8 voices/speeds x 5 rooms) | 95.0% | 95.0% | **100%** | 100% |
+| Request came through whole ("time", "calendar", "stretch") | 95.0% | 95.0% | **100%** | 100% |
+| Hard negatives that woke it (80: bagel, wiggle, waffle, haggle, gaggle, Maggie ... and the waggle dance said mid-sentence) | 0 | 0 | **0** | 0 |
+| False wakes in 10 min of room (65 utterances: TV talk, music, keys, thumps) | 0 | 0 | **0** | 0 |
+| Recogniser calls in those 10 min | 64 | 0 | **0** | 64 |
+| CPU, gate + spotter, % of one core | 0.51 | 1.36 | **1.36** | 1.44 |
+| Name said over a second talker 10 dB lower (40) | 15% | 10% | 22% | 28% |
+
+- The 5% the old way lost: "Hey Waggle." came out of the recogniser as "Tay-Waggle!" or "Tay Waggle." for two voices; the
+  spotter hears the name there, so "kws" keeps those.
+- Soak, 60 minutes of room without any recogniser (6 evenings of the same kinds of sound): 379 utterances, 6 reached the
+  recogniser (6 per hour, instead of 379), all of them a mid-sentence "waggle dance" line inside the head window, which the
+  words then reject; no other sound let anything through. The spotter costs about 80 ms per utterance on one thread.
+- The first run of the trusting mode woke on 12 of 80 hard negatives ("I read that the waggle dance ...": the spotter
+  heard the name, the recogniser wrote it mid-sentence). `_rescue` now rejects a name-like word that is not first or second,
+  or follows "the", "my" ..., and the table is that second run (the other columns were not affected).
+- The name said while a television keeps talking is the weak spot of every mode: the gate sees one long utterance that
+  began with the television, so the name is not at its start. Nothing here fixes that.
+- Everything is synthesised speech in a synthetic room. The owner's real voice, the real microphone and real music are not
+  in it. Say if it misses you or wakes up by itself, and set `"pc_voice_wake_mode": "stt"` to go back.
+- `pc_voice_kws_threshold` works from 0.25 up (0.4 still heard 19 of 20, 0.6 only 8, 0.8 none; below 0.25 nothing
+  changes): raise it if it wakes too easily. `pc_voice_kws_score` (1.0) is the model's boost for the keyword, leave it.
 
 ## Hearing you better: speech detection and the end of your turn
 
@@ -175,6 +245,8 @@ All settings go in `config.json` in the Waggle home. They are read when the PC v
 | What | Setting | Default |
 |---|---|---|
 | The wake word | `"pc_voice_wake": false` | on |
+| Hear the name with the keyword spotter first (`kws`), transcribe everything (`stt`, the old way) or both | `"pc_voice_wake_mode": "stt"` | kws |
+| Spotter: how sure it must be, how soon after speech starts the name must begin, whether its hit counts when the recogniser wrote another word | `"pc_voice_kws_threshold": 0.25`, `"pc_voice_kws_head_s": 1.0`, `"pc_voice_kws_trust": true` | 0.25, 1.0 s, true |
 | Waggle speaking its own messages | `"pc_voice_speak_messages": false` | on |
 | The hotkey | `"pc_voice_hotkey": "ctrl+alt+q"` (any ctrl/alt/shift/win + key) | `ctrl+alt+backquote` |
 | How long it waits for a follow-up | `"pc_voice_followup_s": 12` | 12 s (a soft tone after each answer says it is still listening; off: `"pc_voice_followup_cue": false`) |
@@ -193,6 +265,8 @@ All settings go in `config.json` in the Waggle home. They are read when the PC v
 
 - Stop it now: `python -m waggle.pcvoice stop` (it starts again at the next logon).
 - See what it is doing: `python -m waggle.pcvoice status` (hotkey, wake word, microphone, counters, last error).
+- Remove the spotter: `"pc_voice_wake_mode": "stt"`; `py -3.14 -m pip uninstall sherpa-onnx sherpa-onnx-core`; delete
+  `<home>\models\kws-zipformer-gigaspeech-3.3M`.
 - Remove it completely: `powershell -ExecutionPolicy Bypass -File tools\install-pcvoice-task.ps1 -Uninstall`.
 
 ## For whoever deploys it
