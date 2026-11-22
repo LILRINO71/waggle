@@ -126,6 +126,7 @@ def snapshot():
         "jobs": [{k: j.get(k) for k in ("id", "title", "status", "created", "project")} for j in js[:8]],
         "agents": _cached("agents", 30, agents.status),
         "routines": routines.listing(),
+        "recipes": _cached("recipes", 60, lambda: __import__("waggle.recipes", fromlist=["x"]).summary(s)),
         "objectives": _cached("objectives", 10, lambda: __import__("waggle.objectives", fromlist=["x"]).status()[:8]),
         "cron": _cached("cron", 30, cron_jobs),
         "approvals": policy.pending(),
@@ -302,7 +303,8 @@ function render(d){
  const ro=d.routines||[];$("routines").innerHTML=ro.length?ro.map(r=>`<div class="row"><span>${r.enabled?"":"⏸ "}${esc(r.name)} <span class="tag">${esc(r.agent)}</span></span><span class="dim">next ${esc(r.next||"–")}${r.last_status?" · "+esc(r.last_status):""}</span></div>`).join(""):empty("No routines.");
  const l=d.learning||{};const rp=l.router_prompt||{};
  $("learning").innerHTML=`<div class="row"><span>Router prompt</span><span>v${rp.active||0} <span class="dim">(${Object.keys(rp.versions||{}).length} tried)</span></span></div>
-  <div class="row"><span>Skill candidates</span><span>${l.candidates||0}</span></div>`+(l.events||[]).slice().reverse().map(e=>`<div class="row"><span class="dim">${esc(e.action)}</span><span class="dim">${ago(e.time)}</span></div>`).join("");
+  <div class="row"><span>Skill candidates</span><span>${l.candidates||0}</span></div>
+  <div class="row"><span>Automation ideas</span><span>${(d.recipes&&d.recipes.open&&d.recipes.open.length)?d.recipes.open.map(r=>esc(r.code)+" "+esc(r.name)).join(", "):"none waiting"}</span></div>`+(l.events||[]).slice().reverse().map(e=>`<div class="row"><span class="dim">${esc(e.action)}</span><span class="dim">${ago(e.time)}</span></div>`).join("");
  const sk=d.skills||{};$("skills").innerHTML=sk.error?esc(sk.error):`<div class="big">${sk.total||0}</div><div class="chips" style="margin:6px 0 10px">${Object.entries(sk.by_tier||{}).map(([k,v])=>`<span class="tag">${esc(k)} ${v}</span>`).join("")}</div>`+
   ((sk.most_used||[]).length?(sk.most_used.map(m=>`<div class="row"><span>${esc(m[0])}</span><span class="dim">${m[1]} uses</span></div>`).join("")):empty("No skills used yet."));
  const m=d.memory||{};$("memory").innerHTML=m.error?esc(m.error):`<div class="row"><span>Vault notes</span><span>${m.notes}</span></div><div class="row"><span>Indexed chunks</span><span>${m.indexed_chunks}</span></div>

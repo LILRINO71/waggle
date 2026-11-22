@@ -185,6 +185,13 @@ def evening_note(settings=None, now=None, activity=None):
         held_line = ""
     if held_line:
         lines.append(held_line)
+    try:  # a new automation suggestion waiting for the owner's answer (waggle/recipes.py)
+        from . import recipes
+        recipe_line = recipes.evening_line(now, s)
+    except Exception:  # noqa: BLE001
+        recipe_line = ""
+    if recipe_line:
+        lines.append(recipe_line)
     learned = _learned(now)
     lines.append("Learned: " + ("; ".join(learned) if learned else "nothing new recorded today") + ".")
     try:  # the learning loop's changes, one line each with its undo code (waggle/learnloop.py)

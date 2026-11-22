@@ -38,7 +38,7 @@ DEFAULT_VALUE = 0.5
 # What a message of this kind is worth when it is welcome (1 = the best an unprompted message can be).
 KIND_VALUE = {"followup": 1.0, "checkin": 1.0, "github_ci": 0.8, "build": 0.8, "github_pr": 0.7, "mail": 0.7,
               "upcoming": 0.7, "objective": 0.6, "automation": 0.6, "github_issue": 0.5, "unpushed": 0.5,
-              "cron": 0.5, "routine": 0.4}
+              "cron": 0.5, "routine": 0.4, "recipe": 0.6}
 NOTE = "low welcome odds"   # the guard note, counted by held_today()
 STOP = re.compile(r"(?:\bnot now\b|\bleave me alone\b|\bshut up\b|\btoo many (?:messages|texts|notifications|"
                   r"suggestions)\b|\bno more (?:messages|texts|suggestions)\b|\bdon'?t (?:text|message|ping|bother) "
@@ -133,6 +133,19 @@ def label_outcomes(settings=None, now=None, turns=None, window_s=WINDOW_S):
     return n
 
 
+def teach(outbox_id, kind, label, sent_at=None, now=None):
+    """Record the owner's direct answer to one suggestion (label: welcome, unwelcome, never) without waiting for the
+    6 h window. It replaces a label the window may already have given. No outbox row (None): nothing to teach."""
+    if outbox_id is None or label not in ("welcome", "unwelcome", "never"):
+        return False
+    now = now or time.time()
+    con = _db()
+    con.execute("INSERT OR REPLACE INTO outcomes VALUES (?,?,?,?,?)", (int(outbox_id), kind, label, sent_at or now, now))
+    con.commit()
+    con.close()
+    return True
+
+
 def odds(kind, now=None):
     """{"kind", "a", "b", "p", "n", "welcome", "ignored", "unwelcome"}: the Beta posterior over 'welcome' for a
     kind of signal, from its labelled outcomes (older ones weigh less)."""
@@ -150,6 +163,8 @@ def odds(kind, now=None):
             a += w
         elif label == "unwelcome":
             b += w * UNWELCOME_WEIGHT
+        elif label == "never":  # the owner said "never" to a suggestion: twice as strong as a stop
+            b += w * UNWELCOME_WEIGHT * 2
         else:
             b += w * IGNORED_WEIGHT
     return {"kind": kind, "a": round(a, 3), "b": round(b, 3), "p": round(a / (a + b), 3), "n": len(rows), **count}

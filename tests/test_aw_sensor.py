@@ -90,7 +90,8 @@ def test_poll_stores_derived_rows_and_never_raw_titles_or_urls(settings):
     assert [r["host"] for r in rows if r["project"] == "video"] == ["youtube.com"]
     assert [r["ws"] for r in rows if r["app"] == "code"] == ["ftc-base"]
     blob = b"".join(p.read_bytes() for p in data_path("").iterdir() if p.is_file())
-    for secret in (b"HOMEWORK-SECRET", b"whatever-secret", b"URLSECRET99", b"DOCSECRET77", b"docs.google.com"):
+    assert [r["host"] for r in rows if r["project"] == "school"] == ["docs.google.com"]  # a fixed host, no path or id
+    for secret in (b"HOMEWORK-SECRET", b"whatever-secret", b"URLSECRET99", b"DOCSECRET77", b"/document/"):
         assert secret not in blob, secret
 
 

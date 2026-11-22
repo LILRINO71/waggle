@@ -113,6 +113,10 @@ APP_RULES = [
     ("assistant", r"^claude$"),
     ("video", r"^(vlc|mpv|netflix|disneyplus|primevideo)$"),
 ]
+# Fixed hosts kept as the site without changing the project (a homework doc stays "school"): the recipe miner tells
+# Classroom, Docs and Calendar apart by them. Only the host, never a path or a document id.
+KEEP_HOSTS = r"^(docs|drive|calendar)\.google\.com$"
+_KEEP_RE = re.compile(KEEP_HOSTS)
 _HOST_RE = [(p, re.compile(rx)) for p, rx in HOST_RULES]
 _TITLE_RE = [(p, re.compile(rx)) for p, rx in TITLE_RULES]
 _APP_RE = [(p, re.compile(rx)) for p, rx in APP_RULES]
@@ -216,6 +220,8 @@ def classify(app, title="", host="", labels=None):
             if rx.search(host):
                 project, kept = p, host
                 break
+    if host and not kept and _KEEP_RE.search(host):
+        kept = host
     if not project:
         for p, rx in _TITLE_RE:
             if rx.search(t):
