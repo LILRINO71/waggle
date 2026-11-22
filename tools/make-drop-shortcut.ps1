@@ -50,10 +50,10 @@ function Get-WaggleVault {
             $json = Get-Content -LiteralPath $cfg -Raw -Encoding UTF8 | ConvertFrom-Json
             if ($json.vault) { return [string]$json.vault }
         } catch {
-            Write-Warning "Could not read $cfg ($($_.Exception.Message)); using the default vault."
+            throw "Could not read $cfg ($($_.Exception.Message)). Pass -Vault <folder> instead."
         }
     }
-    return (Join-Path $env:USERPROFILE "WaggleVault")
+    throw "config.json names no vault (`"vault`"). Pass -Vault <folder>, or run: python -m waggle.cli init"
 }
 
 $vaultDir = Get-WaggleVault -Explicit $Vault

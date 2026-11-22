@@ -63,7 +63,7 @@ def health():
         ollama = False
     return {"gateway": bridge.Client(timeout=1).health(), "ollama": ollama, "ollama_loaded": loaded,
             "kokoro": _up("http://127.0.0.1:8899/"), "claude_cli": bool(claude_cli.find_claude()),
-            "vault": Path(s.vault).exists()}
+            "vault": bool(s.vault) and Path(s.vault).exists()}
 
 
 def _jsonl_tail(name, n=30):

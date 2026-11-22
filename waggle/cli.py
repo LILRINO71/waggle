@@ -59,6 +59,8 @@ def main(argv=None):
             print(control.off_text(result))
         sys.exit(0 if result["ok"] else 1)
     if a.cmd == "init":
+        if not st.vault:  # the one place a vault is chosen for the owner: a fresh install, said out loud and saved
+            st.vault = str(Path.home() / "WaggleVault")
         st.save()
         print(f"vault: {vault.init(st)}\nconfig: saved")
     elif a.cmd == "status":

@@ -210,6 +210,8 @@ def classify_call(tool_name, args=None, settings=None):
         p = str(args.get("file_path") or args.get("notebook_path") or "")
         out["path"] = p
         try:
+            if not s.vault:
+                raise ValueError("no vault set")  # Path("") would be the working folder
             vault, target = Path(s.vault).resolve(), Path(p).resolve()
             in_vault = vault == target or vault in target.parents
         except (OSError, ValueError):

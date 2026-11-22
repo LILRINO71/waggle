@@ -11,7 +11,9 @@ CONFIG_FILE = HOME / "config.json"
 
 @dataclass
 class Settings:
-    vault: str = str(Path.home() / "WaggleVault")  # the whole vault: Waggle READS all of it (search, graph, profile)
+    # The whole vault: Waggle READS all of it (search, graph, profile). No default on purpose: a config.json without
+    # "vault" must not quietly start a second vault somewhere else (vault.root() refuses; `cli init` sets one).
+    vault: str = ""
     # Waggle's own notes live in this folder inside the vault and it writes nowhere else. "" = the vault root (a vault
     # that is Waggle's alone); the owner's vault uses "12 - Waggle". The history (vault_git) lives in that folder too.
     vault_own: str = ""

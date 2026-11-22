@@ -33,9 +33,16 @@ SEED = {
 }
 
 
+class VaultNotSet(RuntimeError):
+    """config.json names no vault. Waggle reads and writes nothing rather than guess a folder."""
+
+
 def root(settings=None):
-    """The whole vault: what Waggle READS (memory search, graph, digest, profile)."""
-    return Path((settings or Settings.load()).vault)
+    """The whole vault: what Waggle READS (memory search, graph, digest, profile). Refuses when none is set."""
+    raw = str((settings or Settings.load()).vault or "").strip()
+    if not raw:
+        raise VaultNotSet('no vault set: add "vault" to config.json (or run python -m waggle.cli init)')
+    return Path(raw)
 
 
 def own_rel(settings=None):

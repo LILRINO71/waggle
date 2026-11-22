@@ -129,6 +129,8 @@ def check_cron():
 
 def check_vault(s):
     from . import memory_care
+    if not s.vault:
+        return "fail", 'no vault set in config.json ("vault")', "Add it to config.json, or run: python -m waggle.cli init"
     if not Path(s.vault).exists():
         return "fail", f"vault missing at {s.vault}", "Run: python -m waggle.cli init"
     from . import vault

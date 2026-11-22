@@ -470,3 +470,24 @@ def test_move_repoints_the_feed_waggle_shortcut(move_env):
     assert mv.same_path(mv.shortcut_target(desktop / mv.SHORTCUT), old / "Drop")
     assert run_move(mv, old, new, cfg, desktop, "--apply") == 0
     assert mv.same_path(mv.shortcut_target(desktop / mv.SHORTCUT), new / OWN / "Drop")
+
+
+# ---- no implicit vault (architecture decision 2026-11-21, step 0) -----------------------------------------------
+
+def test_no_vault_setting_means_no_vault(tmp_path):
+    from waggle import doctor
+    from waggle.config import Settings
+    s = Settings()  # a config.json without "vault"
+    assert s.vault == ""
+    with pytest.raises(vault.VaultNotSet):
+        vault.root(s)
+    with pytest.raises(vault.VaultNotSet):
+        vault.own(s)
+    status, detail, _fix = doctor.check_vault(s)
+    assert status == "fail" and "no vault set" in detail
+
+
+def test_a_set_vault_is_used_as_is(tmp_path):
+    from waggle.config import Settings
+    s = Settings(vault=str(tmp_path / "v"))
+    assert vault.root(s) == tmp_path / "v"

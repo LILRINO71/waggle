@@ -33,7 +33,9 @@ def build_sandbox(live):
         if (live / name).exists():
             shutil.copy2(live / name, home / name)
     cfg = json.loads((live / "config.json").read_text(encoding="utf-8")) if (live / "config.json").exists() else {}
-    vault_src = Path(cfg.get("vault") or Path.home() / "WaggleVault")
+    if not cfg.get("vault"):
+        raise SystemExit('config.json names no vault ("vault"); nothing to copy')
+    vault_src = Path(cfg["vault"])
     if vault_src.exists():
         shutil.copytree(vault_src, box / "vault", copy_function=shutil.copy2)  # mtimes kept: the index stays valid
     cfg["vault"] = str(box / "vault")
