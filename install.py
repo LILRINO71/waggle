@@ -118,6 +118,15 @@ def _merge_json(path, update):
 def setup_obsidian(s):
     """Waggle HQ look: dark theme, the waggle.css snippet, coloured graph groups, HQ as the open note."""
     obs = Path(s.vault) / ".obsidian"
+    if vault.own_rel(s):  # the owner's vault: their theme, CSS, graph and settings are never touched
+        snip = obs / "snippets" / "waggle-hq.css"
+        if obs.is_dir() and not snip.exists():  # only a stylesheet of ours that nothing enables (Settings > Appearance)
+            snip.parent.mkdir(exist_ok=True)
+            shutil.copyfile(REPO / "obsidian" / "snippets" / "waggle.css", snip)
+        from waggle import hq
+        hq.write(s)
+        print("obsidian: the owner's vault is left as it is; HQ written into", vault.own_rel(s))
+        return
     (obs / "snippets").mkdir(parents=True, exist_ok=True)
     shutil.copyfile(REPO / "obsidian" / "snippets" / "waggle.css", obs / "snippets" / "waggle.css")
     _merge_json(obs / "appearance.json", {"enabledCssSnippets": ["waggle"], "theme": "obsidian",

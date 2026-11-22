@@ -75,12 +75,12 @@ RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"
 # ---- paths and names -----------------------------------------------------------------------------
 
 def drop_dir(settings=None):
-    return vault.root(settings) / DROP
+    return vault.own(settings) / DROP
 
 
 def init(settings=None):
     """Create Drop/ and the Sources folders. Returns the Drop folder."""
-    r = vault.root(settings)
+    r = vault.own(settings)
     for sub in (DROP, FILES):
         (r / sub).mkdir(parents=True, exist_ok=True)
     return r / DROP
@@ -194,7 +194,7 @@ def parse_front(text):
 
 def notes_index(settings=None):
     """({sha256: note rel path}, [rel paths of notes whose summary is pending]) from the Sources notes."""
-    r = vault.root(settings)
+    r = vault.own(settings)
     known, pending = {}, []
     base = r / SOURCES
     if not base.exists():
@@ -413,7 +413,7 @@ def file_one(path, run, drop, known):
         if title and GENERIC_NAME.match(path.stem.strip()):
             stem = safe_title(title)
         ym = run.ym
-        files_dir = vault.root(s) / FILES / ym
+        files_dir = vault.own(s) / FILES / ym
         files_dir.mkdir(parents=True, exist_ok=True)
         dest = files_dir / path.name
         if dest.exists():
@@ -423,8 +423,8 @@ def file_one(path, run, drop, known):
         except PermissionError:
             return {"status": "busy", "file": rel_name, "why": "the file is open in another program"}
         moved = dest
-        orig_rel = dest.relative_to(vault.root(s)).as_posix()
-        note_dir = vault.root(s) / SOURCES / ym
+        orig_rel = dest.relative_to(vault.own(s)).as_posix()
+        note_dir = vault.own(s) / SOURCES / ym
         note_dir.mkdir(parents=True, exist_ok=True)
         note_path = _unique(note_dir / f"{stem}.md")
         added = f"{run.date:%Y-%m-%d}"
@@ -446,7 +446,7 @@ def file_one(path, run, drop, known):
         if ex.text:
             body += ["## Extracted text", "", _neutralise(ex.text), ""]
         vault.write(f"{SOURCES}/{ym}/{note_path.name}", front(fm) + "\n".join(body), s)
-        known[digest] = note_path.relative_to(vault.root(s)).as_posix()
+        known[digest] = note_path.relative_to(vault.own(s)).as_posix()
         events.log("dropbox", action="filed", file=rel_name, note=known[digest], type=ex.kind, summary=status)
         return {"status": "filed", "file": rel_name, "note": known[digest], "type": ex.kind, "summary": status}
     except dx.ExtractError as e:
@@ -476,7 +476,7 @@ def fill_pending(run, rels, limit=MAX_RETRIES_PER_PASS):
     for rel in rels[:limit]:
         if run.model_down:
             break
-        p = vault.root(s) / rel
+        p = vault.own(s) / rel
         try:
             text = p.read_text(encoding="utf-8")
         except OSError:
@@ -484,7 +484,7 @@ def fill_pending(run, rels, limit=MAX_RETRIES_PER_PASS):
         fm = parse_front(text)
         kind = fm.get("type", "text")
         if kind == "image":
-            orig = vault.root(s) / fm.get("original", "")
+            orig = vault.own(s) / fm.get("original", "")
             if not orig.is_file():
                 continue
             status, description, note = run.describe_pic(orig)
@@ -672,7 +672,7 @@ def register_core(now=None):
 
 def status(settings=None):
     s = settings or Settings.load()
-    r = vault.root(s)
+    r = vault.own(s)
     drop = r / DROP
     st = get_state()
     known, pending = notes_index(s)

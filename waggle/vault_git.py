@@ -1,6 +1,10 @@
 """Every automatic change Waggle makes to the vault is a git commit you can look at and undo.
 
-The vault gets a local git repository (never pushed anywhere, no remote). Writers (the digest, the learning loop,
+The history covers Waggle's own folder only (settings.vault_own, e.g. "12 - Waggle"; the whole vault when that is
+empty). The repository lives INSIDE that folder, so git never sees the owner's other notes: the owner's edits
+elsewhere in the vault are never committed, restored or reverted, and no .git appears at the vault root.
+
+The folder gets a local git repository (never pushed anywhere, no remote). Writers (the digest, the learning loop,
 learn.py's fact files, the purge, intake and the Drop folder) change notes through `vault.write` / `vault.append`
 as before; this module records what they did:
 
@@ -22,9 +26,9 @@ as before; this module records what they did:
 Commands:  python -m waggle.vault_git log [-n 20] | show <sha> | restore <sha> | status | snapshot | gc
            /waggle memory   and   /waggle memory restore <sha>   in the owner's Telegram chat (engine_commands.py)
 
-Off switch: "vault_git": false in ~/.waggle/config.json (the history stays in <vault>/.git until you delete it).
+Off switch: "vault_git": false in ~/.waggle/config.json (the history stays in <own folder>/.git until you delete it).
 
-Pending paths are kept in <vault>/.git/waggle-pending.json, so a write made by one process (the dashboard) is
+Pending paths are kept in <own folder>/.git/waggle-pending.json, so a write made by one process (the dashboard) is
 committed with the right name by another (the core). git is always started without a window (CREATE_NO_WINDOW).
 Design after nanobot's Dream versioning (MIT) and letta-code's memory constraints (Apache-2.0); no code copied.
 """
@@ -215,7 +219,8 @@ def _lock(root):
 # ---- paths ------------------------------------------------------------------------------------------------
 
 def _root(s):
-    return Path(vault.root(s))
+    """The repository folder: Waggle's own folder in the vault (the vault root when vault_own is empty)."""
+    return Path(vault.own(s))
 
 
 def _rel(root, path):
@@ -670,7 +675,7 @@ def show(sha, settings=None, max_diff=3000):
 def status(settings=None):
     s = settings or Settings.load()
     root = _root(s)
-    d = {"enabled": enabled(s), "vault": str(root), "repo": _repo(root),
+    d = {"enabled": enabled(s), "vault": str(root), "own": vault.own_rel(s), "repo": _repo(root),
          "readonly": _readonly_globs(s), "max_kb": _max_bytes(s) // 1024}
     if d["repo"]:
         d["commits"] = int(_git(root, "rev-list", "--count", "HEAD").out.strip() or 0)

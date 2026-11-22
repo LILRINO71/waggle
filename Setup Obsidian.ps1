@@ -1,6 +1,13 @@
-# Installs Obsidian (free, via winget), registers ~/WaggleVault as a vault, and opens it.
-# Safe to re-run.
-$vault = "$env:USERPROFILE\WaggleVault"
+# Installs Obsidian (free, via winget), registers the vault (the "vault" setting in ~/.waggle/config.json, default
+# ~/PersonalIntelligenceVault) and opens Waggle's own folder in it ("vault_own", e.g. "12 - Waggle"). Safe to re-run.
+$vault = "$env:USERPROFILE\PersonalIntelligenceVault"
+$own = ""
+$waggleCfg = Join-Path $(if ($env:WAGGLE_HOME) { $env:WAGGLE_HOME } else { "$env:USERPROFILE\.waggle" }) "config.json"
+if (Test-Path $waggleCfg) {
+    $wc = Get-Content $waggleCfg -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($wc.vault) { $vault = [string]$wc.vault }
+    if ($wc.vault_own) { $own = ([string]$wc.vault_own).Trim("/", "\") }
+}
 $exe = "$env:LOCALAPPDATA\Programs\Obsidian\Obsidian.exe"
 
 if (-not (Test-Path $exe)) {
@@ -24,5 +31,6 @@ if (-not $known) {
     Write-Host "Registered vault: $vault"
 }
 
-Start-Process ("obsidian://open?path=" + [uri]::EscapeDataString("$vault\Me\Profile.md"))
-Write-Host "== Obsidian open on WaggleVault"
+$note = if ($own) { "$vault\$own\Waggle HQ.md" } else { "$vault\Me\Profile.md" }
+Start-Process ("obsidian://open?path=" + [uri]::EscapeDataString($note))
+Write-Host "== Obsidian open on $vault"

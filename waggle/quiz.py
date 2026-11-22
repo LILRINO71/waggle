@@ -105,7 +105,7 @@ def _vault_text(s):
     parts = []
     for p in vault.notes(s):
         rel = p.relative_to(r).as_posix()
-        if memory.indexable(rel):
+        if memory.indexable(rel, s=s):
             parts.append(memory.clean(p.read_text(encoding="utf-8", errors="replace")).lower())
     return "\n".join(parts)
 

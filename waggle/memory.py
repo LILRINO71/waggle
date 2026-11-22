@@ -106,10 +106,22 @@ def _db():
     return con
 
 
-def indexable(rel, text=None):
-    """False for Waggle's own pages, test artefacts, archives and notes that opt out."""
+def indexable(rel, text=None, s=None, own=None):
+    """False for Waggle's own pages, test artefacts, archives and notes that opt out. `rel` is vault-relative. The
+    rules about Waggle's own folders (Objectives/, Archive/ ...) apply inside Waggle's own folder only; the owner's
+    notes elsewhere in the vault are indexed unless they opt out or sit in a dot folder. `own` is the own-folder
+    name when the caller already knows it."""
     rel = rel.replace("\\", "/")
-    if rel in EXCLUDE_FILES or rel.startswith(EXCLUDE_PREFIXES) or "/." in "/" + rel:
+    if own is None:
+        own = vault.own_rel(s)
+    if "/." in "/" + rel:
+        return False
+    if own:
+        if rel.startswith(own + "/"):
+            rel = rel[len(own) + 1:]
+        else:  # the owner's own note
+            return not (text is not None and NO_INDEX.search(text[:600]))
+    if rel in EXCLUDE_FILES or rel.startswith(EXCLUDE_PREFIXES):
         return False
     if text is not None and NO_INDEX.search(text[:600]):
         return False
@@ -182,16 +194,17 @@ def reindex(settings=None, embedder=None):
         seen = {row[0]: row[1] for row in con.execute("SELECT path, MAX(mtime) FROM chunks GROUP BY path")}
         current = {}
         updated = 0
+        own = vault.own_rel(s)
         for p in vault.notes(s):
             rel = p.relative_to(r).as_posix()
-            if not indexable(rel):
+            if not indexable(rel, own=own):
                 continue
             mtime = p.stat().st_mtime
             current[rel] = mtime
             if seen.get(rel) == mtime:
                 continue
             text = p.read_text(encoding="utf-8", errors="replace")
-            pieces = [c for c in chunk(f"[{rel}]\n{clean(text)}") if _has_body(c)] if indexable(rel, text) else []
+            pieces = [c for c in chunk(f"[{rel}]\n{clean(text)}") if _has_body(c)] if indexable(rel, text, own=own) else []
             con.execute("DELETE FROM chunks WHERE path=?", (rel,))
             if pieces:
                 vecs = embedder(pieces)
@@ -245,7 +258,8 @@ def _rows(s):
     con = _db()
     rows = con.execute("SELECT path, text, vec, idx, mtime FROM chunks WHERE idx >= 0").fetchall()
     con.close()
-    return [r for r in rows if indexable(r[0])]
+    own = vault.own_rel(s)
+    return [r for r in rows if indexable(r[0], own=own)]
 
 
 def fts_terms(text, cap=40):
@@ -338,7 +352,7 @@ def _rank(query, s, embedder=None, now=None):
         for p in vault.notes(s):
             rel = p.relative_to(r).as_posix()
             text = p.read_text(encoding="utf-8", errors="replace")
-            if indexable(rel, text):
+            if indexable(rel, text, s):
                 rows += [(rel, c, b"", i, None) for i, c in enumerate(chunk(clean(text)))]
     scored = []
     for path, text, vec, idx, mtime in rows:
@@ -545,9 +559,17 @@ def _strip_frontmatter(text):
 
 
 def _profile_core(s, cap=2400):
+    """Who the user is: Waggle's own Me/Profile.md plus, when `vault_profile_notes` names them, the owner's real
+    profile notes boiled down (vault.profile_digest). Together they stay inside about `cap` characters."""
     prof = _strip_frontmatter(vault.read("Me/Profile.md", s)).strip()
     prof = re.sub(r"\n{3,}", "\n\n", prof)
-    return prof[:cap] + ("\n..." if len(prof) > cap else "")
+    mine = vault.profile_digest(s, min(int(getattr(s, "vault_profile_chars", 1600) or 1600), cap - 600))
+    if not mine:
+        return prof[:cap] + ("\n..." if len(prof) > cap else "")
+    room = max(600, cap - len(mine) - 40)
+    if len(prof) > room:
+        prof = prof[:room].rsplit("\n", 1)[0].rstrip() + "\n..."
+    return (prof + "\n\nFrom the user's own profile notes:\n" + mine).strip()
 
 
 def _focus_lines(s, cap=1800):
@@ -643,15 +665,20 @@ def _resolve(name, s):
     if not name:
         return None
     try:
-        p = vault.safe_path(name, s)
-        if p.exists():
-            return p
+        paths = [vault.vault_path(name, s), vault.own_path(name, s)]  # a search result's path, then a Waggle path
+        for p in (paths if "/" in name else paths[:1]):
+            if p.exists():
+                return p
     except ValueError:
         return None
     stem = name.split("/")[-1].removesuffix(".md").lower()
+    own = vault.own_rel(s)
     found = [p for p in vault.notes(s) if p.stem.lower() == stem]
-    found.sort(key=lambda p: (not indexable(p.relative_to(vault.root(s)).as_posix()), len(p.parts)))
-    return found[0] if found else None
+    found.sort(key=lambda p: (not indexable(p.relative_to(vault.root(s)).as_posix(), own=own),
+                              vault.in_own(p, s), len(p.parts)))  # the owner's note wins a tie
+    if found:
+        return found[0]
+    return paths[1] if paths[1].exists() else None
 
 
 def read_note(name, settings=None, session="", max_chars=8000):
@@ -660,8 +687,9 @@ def read_note(name, settings=None, session="", max_chars=8000):
     p = _resolve(name, s)
     if not p:
         return {"error": f"no note named {name!r}"}
-    rel = p.relative_to(vault.root(s)).as_posix()
-    if rel.startswith(HISTORY_PREFIXES):
+    rel = p.resolve().relative_to(vault.root(s).resolve()).as_posix()
+    inner = vault.own_relpath(p, s)  # the archive rule is about Waggle's own folders
+    if (inner or "").startswith(HISTORY_PREFIXES):
         return {"error": f"{name!r} is in an archive folder; archives are not read"}
     text = clean(p.read_text(encoding="utf-8", errors="replace"))
     _log("read", name, rel, [{"path": rel, "score": None}], {}, session)
@@ -686,7 +714,7 @@ def related(name, settings=None, session="", limit=20):
     pat = re.compile(r"\[\[(?:[^\]|#]*/)?" + re.escape(stem) + r"(?:[#|][^\]]*)?\]\]", re.I)
     for q in vault.notes(s):
         rel = q.relative_to(root).as_posix()
-        if q == p or not indexable(rel):
+        if q == p or not indexable(rel, s=s):
             continue
         try:
             if pat.search(q.read_text(encoding="utf-8", errors="replace")):

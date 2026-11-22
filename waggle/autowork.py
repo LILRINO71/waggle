@@ -149,9 +149,14 @@ def run_tests(cmd, cwd, timeout=TEST_TIMEOUT_S):
     return p.returncode, (summary if isinstance(summary, str) else summary[0])[:200]
 
 
+def _own_vault(s):
+    from . import vault
+    return str(vault.own(s))
+
+
 def _fmt(template, goal_id, s):
     from . import config
-    return str(template).format(home=str(Path.home()), vault=s.vault, jobs=s.jobs_dir,
+    return str(template).format(home=str(Path.home()), vault=_own_vault(s), jobs=s.jobs_dir,
                                 waggle_home=str(config.HOME), goal=goal_id)
 
 

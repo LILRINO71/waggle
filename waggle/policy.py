@@ -137,7 +137,8 @@ def norm(path):
 def write_roots(settings=None):
     s = settings or Settings.load()
     home = Path.home()
-    roots = [home / "Claude", s.vault, s.jobs_dir, data_path("."), home / ".hermes" / "skills" / "waggle",
+    from . import vault
+    roots = [home / "Claude", vault.own(s), s.jobs_dir, data_path("."), home / ".hermes" / "skills" / "waggle",
              os.environ.get("TEMP", ""), *getattr(s, "extra_write_roots", [])]
     return [norm(r) for r in roots if str(r)]
 

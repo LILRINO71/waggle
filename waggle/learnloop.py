@@ -633,7 +633,7 @@ def _vault_notes_with(text, s):
     needle = text.lower()
     for p in vault.notes(s):
         rel = p.relative_to(root).as_posix()
-        if memory.indexable(rel) and needle in memory.clean(p.read_text(encoding="utf-8", errors="replace")).lower():
+        if memory.indexable(rel, s=s) and needle in memory.clean(p.read_text(encoding="utf-8", errors="replace")).lower():
             found.append(rel)
     return found[:5]
 

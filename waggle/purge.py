@@ -193,10 +193,12 @@ def flag_lines(text, matcher):
 
 def _plan_vault(s, matcher):
     root = vault.root(s)
+    own = vault.own_rel(s)
     plan = []
-    for p in sorted(vault.notes(s)):
+    for p in sorted(vault.own_notes(s)):  # Waggle's own notes only: the owner's notes are never rewritten
         rel = p.relative_to(root).as_posix()
-        if not (memory.indexable(rel) or rel.startswith(HISTORY)) or rel.startswith(MIRROR):
+        inner = vault.own_relpath(p, s) or rel
+        if not (memory.indexable(rel, own=own) or inner.startswith(HISTORY)) or inner.startswith(MIRROR):
             continue  # Objectives, Inbox, Jobs and Waggle's own pages are test-artefact areas for `ingest cleanup`;
             # the Claude Code mirror is the user's own notes, copied as they are
         try:
@@ -297,6 +299,7 @@ def _plan_index(s, new_texts, matcher):
     markers = con.execute("SELECT path FROM chunks WHERE idx<0").fetchall()
     con.close()
     exists = {p.relative_to(root).as_posix(): p for p in vault.notes(s)}
+    own = vault.own_rel(s)
     cache, stale = {}, {}
 
     def current(rel):
@@ -308,18 +311,18 @@ def _plan_index(s, new_texts, matcher):
         return cache[rel]
 
     for rowid, rel, idx, text in rows:
-        if not memory.indexable(rel):
+        if not memory.indexable(rel, own=own):
             why = "note is excluded from retrieval"
         elif rel not in exists:
             why = "note no longer exists"
         elif text not in current(rel):
             why = "no longer in its note"
-        elif matcher.match(text):
+        elif (not own or rel.startswith(own + "/")) and matcher.match(text):  # never the owner's own notes
             why = "matches a non-user turn"
         else:
             continue
         stale.setdefault(why, []).append(rowid)
-    gone = [r[0] for r in markers if r[0] not in exists or not memory.indexable(r[0])]
+    gone = [r[0] for r in markers if r[0] not in exists or not memory.indexable(r[0], own=own)]
     return {"rows": stale, "markers": gone}
 
 

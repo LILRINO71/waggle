@@ -227,7 +227,8 @@ def vocabulary(settings=None, now=None):
         if settings is None:
             from .config import Settings
             settings = Settings.load()
-        root = Path(str(getattr(settings, "vault", "") or "")) / "Projects"
+        from . import vault
+        root = vault.own(settings) / "Projects"
         names += sorted(p.stem for p in root.glob("*.md"))[:40]
     except Exception:  # a hint only: never fail a transcription over it
         pass

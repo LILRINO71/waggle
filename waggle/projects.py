@@ -43,7 +43,7 @@ def create(name, settings=None, overwrite=False, **fields):
 
 
 def all_projects(settings=None):
-    r = vault.root(settings) / "Projects"
+    r = vault.own(settings) / "Projects"
     out = []
     for p in sorted(r.glob("*.md")) if r.exists() else []:
         text = p.read_text(encoding="utf-8")

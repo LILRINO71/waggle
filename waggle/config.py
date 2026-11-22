@@ -11,7 +11,14 @@ CONFIG_FILE = HOME / "config.json"
 
 @dataclass
 class Settings:
-    vault: str = str(Path.home() / "WaggleVault")
+    vault: str = str(Path.home() / "WaggleVault")  # the whole vault: Waggle READS all of it (search, graph, profile)
+    # Waggle's own notes live in this folder inside the vault and it writes nowhere else. "" = the vault root (a vault
+    # that is Waggle's alone); the owner's vault uses "12 - Waggle". The history (vault_git) lives in that folder too.
+    vault_own: str = ""
+    # The owner's own profile notes, vault-relative paths or globs, read into the "about me" context and the morning
+    # brief (never written). Empty = Waggle's own Me/Profile only.
+    vault_profile_notes: list = field(default_factory=list)
+    vault_profile_chars: int = 1600  # how much of them goes into the context
     # Vault history (waggle/vault_git.py): every Waggle change to the vault is a local git commit you can undo.
     vault_git: bool = True
     vault_git_max_kb: int = 512  # a note Waggle writes that is bigger than this is refused and put back

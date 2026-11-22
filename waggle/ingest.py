@@ -113,7 +113,7 @@ def _archive(rel, s, why, now=None):
     vault_git.note_write(src, s)
     vault_git.note_write(dst, s)
     shutil.move(str(src), str(dst))
-    return dst.relative_to(vault.root(s)).as_posix()
+    return dst.relative_to(vault.own(s)).as_posix()
 
 
 # ---- 1a. Claude Code memory mirror -----------------------------------------------------------------
@@ -192,7 +192,7 @@ def mirror_claude_memory(settings=None, dirs=None, now=None):
 def memory_notes_mentioning(names, settings=None):
     """Mirrored memory notes (stems) whose text mentions any of `names` (repo / project names, aliases)."""
     s = settings or Settings.load()
-    folder = vault.root(s) / MIRROR_DIR
+    folder = vault.own(s) / MIRROR_DIR
     pats = [re.compile(rf"(?<![\w-]){re.escape(n.lower())}(?![\w-])") for n in names if n and len(n) >= 4]
     hits = []
     for p in sorted(folder.glob("*.md")) if folder.exists() else []:
@@ -612,7 +612,7 @@ def _signature(text, common):
 def goals_for_project(project, settings=None):
     """Goal notes this project serves: it links the goal, the goal lists it, or they share a distinctive word."""
     s = settings or Settings.load()
-    gdir = vault.root(s) / GOAL_FOLDER
+    gdir = vault.own(s) / GOAL_FOLDER
     if not gdir.exists():
         return []
     ptext = vault.read(f"Projects/{project}", s)
@@ -655,7 +655,7 @@ def sync_goals(settings=None, now=None):
             vault.write(rel, f"---\ntype: goal\nstatus: active\n---\n# {name}\n\n## Goal\n{g}\n\n## Why\n\n"
                              f"## Notes\n\n", s)
             out["created"] += 1
-    for gp in sorted((vault.root(s) / GOAL_FOLDER).glob("*.md")) if (vault.root(s) / GOAL_FOLDER).exists() else []:
+    for gp in sorted((vault.own(s) / GOAL_FOLDER).glob("*.md")) if (vault.own(s) / GOAL_FOLDER).exists() else []:
         linked = [p["name"] for p in allp if gp.stem in goals_for_project(p["name"], s)]
         lines = [f"_Kept current by Waggle ({_stamp(now)}): projects that serve this goal and their latest "
                  "activity. Add [[links]] outside this block to connect more._", ""]
@@ -676,7 +676,7 @@ def sync_goals(settings=None, now=None):
         text = gp.read_text(encoding="utf-8", errors="replace")
         new = set_block(text, "goal progress", "\n".join(lines), heading="Projects and progress", before="## Notes")
         if _norm(new) != _norm(text):
-            vault.write(gp.relative_to(vault.root(s)).as_posix(), new, s)
+            vault.write(gp.relative_to(vault.own(s)).as_posix(), new, s)
             out["updated"] += 1
     return out
 
@@ -820,9 +820,9 @@ def cleanup_plan(settings=None):
     """What `cleanup --apply` would move: Waggle's test objectives/inbox/job notes, and journal days that are only
     route log lines. Hand-written notes are never in the plan (Inbox notes without a test-like name stay)."""
     s = settings or Settings.load()
-    root = vault.root(s)
+    root = vault.own(s)
     plan = []
-    for p in vault.notes(s):
+    for p in vault.own_notes(s):
         rel = p.relative_to(root).as_posix()
         if rel.startswith(("Objectives/", "Jobs/")):
             plan.append({"path": rel, "why": "Waggle-written objective/job note"})
@@ -844,7 +844,7 @@ def cleanup(settings=None, apply=False, now=None):
     if not apply:
         return {"dry_run": True, "would_move": plan}
     stamp = dt.datetime.fromtimestamp(_now(now)).strftime("%Y%m%d-%H%M%S")
-    root = vault.root(s)
+    root = vault.own(s)
     moved = []
     for item in plan:
         src = root / item["path"]
@@ -870,7 +870,7 @@ def restore(cleanup_id, settings=None):
         from . import purge as purge_mod
         return purge_mod.restore(cleanup_id, settings)
     s = settings or Settings.load()
-    root = vault.root(s)
+    root = vault.own(s)
     items = json.loads(data_path(f"cleanup-{cleanup_id}.json").read_text(encoding="utf-8"))
     back = 0
     for it in items:
