@@ -75,3 +75,16 @@ usage card.
 - Cleanup tier 2: disabling the stray `Hermes_Gateway` task needs administrator rights; left to the owner.
 - Vault: the implicit `~/WaggleVault` default is gone (config, two tools); regression tests added.
 - Full suite 3,910 passed; deployed eae8fe9 with `tools/deploy.ps1`; live canary answered in 11.0 s; guard clean.
+- 48 h soak (to 2026-11-23): 1,961 jobs, 0 failed; 128 of 128 mail checks ran; reminders delivered; 23 of 26
+  owner turns ok.
+- Reboot, real (PC off 2026-11-22 15:39 to 2026-11-23 11:46): after sign-in every process was back within about
+  75 s with one gateway; the stray `Hermes_Gateway` task did not start a second one. Outage of about 20 h: the
+  evening note, morning brief and backup were skipped by design. **Reliable row for "one machine" stays open.**
+- Back-online message added (owner's reboot decision).
+- Timer experiment: in a throwaway home a disabled timer stays off through a core restart and `timers.enable`
+  turns it back on. Then on live: `calendar.fetch`, `calendar.headsup`, `deadman.beat` disabled (undo:
+  `timers.enable(id)`).
+- HQ note and canvas rewritten only when they change (the canvas write was being logged as an owner edit).
+- Feedback capture: welcome / ignored / unwelcome labels for every unprompted message origin, not only reasoning
+  decisions. Replay capture: every owner turn is kept in `traces.db` (never pruned), which the replay gate reads.
+- First objectives written with definitions of done: [`OBJECTIVES.md`](OBJECTIVES.md).
