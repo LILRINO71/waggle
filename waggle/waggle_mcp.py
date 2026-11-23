@@ -23,6 +23,14 @@ PROTOCOL = "2025-06-18"
 UNTRUSTED = ("web", "browser", "extract", "vision", "search", "gmail", "email", "screen", "fetch", "read")
 _client = bridge.Client()
 
+# Tools the chat brain keeps loaded on every turn (the owner's most used, measured over 61 real turns 2026-11-21:
+# reminders, Google writes, memory, background work). Every other tool is deferred behind Claude Code's ToolSearch
+# when the chat runs lean (waggle/chat_session.py LEAN_ENV): listed by name, loaded when the model searches for it.
+# Agents without ToolSearch load every tool as before; the mark is ignored there.
+ALWAYS_LOAD = frozenset({"vault_search", "recall", "remember", "send_to_me", "remind_me", "list_reminders",
+                         "background_task", "weather", "google_doc_new", "google_doc_append", "google_event_new",
+                         "google_task_add"})
+
 
 def _bridge_dispatch(name, args):
     return _client.call(name, args)
@@ -315,6 +323,14 @@ _load_providers()
 
 # ---- JSON-RPC over stdio -------------------------------------------------------------------------
 
+def tool_entry(spec):
+    """One tools/list entry; a core chat tool carries Claude Code's alwaysLoad mark (never deferred)."""
+    entry = {"name": spec["name"], "description": spec["description"], "inputSchema": spec["parameters"]}
+    if spec["name"] in ALWAYS_LOAD:
+        entry["_meta"] = {"anthropic/alwaysLoad": True}
+    return entry
+
+
 def handle(msg):
     """One JSON-RPC message -> response dict (or None for notifications)."""
     method, mid, params = msg.get("method"), msg.get("id"), msg.get("params") or {}
@@ -328,8 +344,7 @@ def handle(msg):
     if method == "ping":
         return _ok(mid, {})
     if method == "tools/list":
-        return _ok(mid, {"tools": [{"name": s["name"], "description": s["description"],
-                                    "inputSchema": s["parameters"]} for s, _ in TOOLS.values()]})
+        return _ok(mid, {"tools": [tool_entry(s) for s, _ in TOOLS.values()]})
     if method == "tools/call":
         name, args = params.get("name"), params.get("arguments") or {}
         if name not in TOOLS:

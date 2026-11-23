@@ -94,7 +94,7 @@ def test_lost_session_starts_fresh_with_the_transcript(settings):
 
 
 def test_long_sessions_restart_fresh(settings):
-    settings.chat_session_max_turns = 2
+    settings.chat_session_max_turns, settings.chat_session_max_tokens = 2, 0  # the turn count applies without a size limit
     fake = FakeClaude()
     s = session(fake, settings, transcript=lambda chat: "User: x\nWaggle: y")
     chat_store.set_session("telegram:1", "old", turns=2)

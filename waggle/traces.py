@@ -433,14 +433,19 @@ def session_turns(session, n=8, within_s=12 * 3600):
     return [(r[0] or "", r[1] or "") for r in reversed(rows)]
 
 
-def chat_transcript(chat, n=8, within_s=3 * 86400, max_chars=12000):
+def chat_transcript(chat, n=8, within_s=3 * 86400, max_chars=12000, origin=None):
     """The last n exchanges of one chat as plain "User: ... / Waggle: ..." text, oldest first, whole replies.
-    Seeds a fresh Claude session so the conversation continues after its process or session is replaced."""
+    Seeds a fresh Claude session so the conversation continues after its process or session is replaced.
+    origin: only turns from that origin ("user": the owner's own, without canary or test turns)."""
     if not chat:
         return ""
     con = _db()
-    rows = con.execute("SELECT request, reply FROM traces WHERE chat=? AND time>? AND reply IS NOT NULL "
-                       "AND reply != '' ORDER BY id DESC LIMIT ?", (chat, time.time() - within_s, n)).fetchall()
+    q = "SELECT request, reply FROM traces WHERE chat=? AND time>? AND reply IS NOT NULL AND reply != ''"
+    params = [chat, time.time() - within_s]
+    if origin:
+        q += " AND origin=?"
+        params.append(origin)
+    rows = con.execute(q + " ORDER BY id DESC LIMIT ?", (*params, n)).fetchall()
     con.close()
     text = "\n\n".join(f"User: {r[0]}\nWaggle: {r[1]}" for r in reversed(rows))
     return text[-max_chars:] if len(text) > max_chars else text

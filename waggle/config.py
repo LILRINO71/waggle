@@ -209,6 +209,13 @@ class Settings:
     chat_idle_s: int = 1800  # an idle chat process is stopped; the next message resumes the same session
     chat_turn_timeout_s: int = 600
     chat_session_max_turns: int = 40  # then a fresh session starts, seeded with the recent transcript
+    # Lean chat launch (Step 1, waggle/chat_session.py): its own empty folder, only Waggle's MCP servers
+    # (--strict-mcp-config), no user settings, memory or CLAUDE.md, and every MCP tool outside the small core loaded
+    # on demand through ToolSearch. Fixed context 115,686 -> about 15,000 tokens. false = the old launch.
+    chat_lean: bool = True
+    # A chat session whose last call carried more than this many tokens of context starts fresh on the next turn,
+    # seeded with a short summary of the conversation (0 = never by size; the day and turn limits still apply).
+    chat_session_max_tokens: int = 60000
     sync_wait_s: float = 25.0  # surfaces without message editing (desktop, voice notes) wait this long, then ack
     stream_platforms: list = field(default_factory=lambda: ["telegram"])
     edit_interval_s: float = 1.2  # Telegram allows about one edit per second per chat
