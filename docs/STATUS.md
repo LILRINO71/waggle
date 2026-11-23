@@ -88,3 +88,55 @@ usage card.
 - Feedback capture: welcome / ignored / unwelcome labels for every unprompted message origin, not only reasoning
   decisions. Replay capture: every owner turn is kept in `traces.db` (never pruned), which the replay gate reads.
 - First objectives written with definitions of done: [`OBJECTIVES.md`](OBJECTIVES.md).
+
+## Step 1 log (lean, unblocked chat on the current `claude -p` path)
+
+Gate: fixed context under 20k tokens; p50 owner turn under 5 s and "Hello" under 3 s over real turns; 0 false asks in
+50 real owner turns; Google Doc, vault edit and GitHub lookup still work through Telegram.
+
+Built on `overnight` (95e79b4, 2e9756a, e8a3392, cb8c5b7, 63611b2), each with tests:
+
+1. **Lean launch** (`chat_session.py`, switch `chat_lean`): own empty folder (`~/.waggle/chat_home`),
+   `--strict-mcp-config`, `--setting-sources ""`, no auto memory / CLAUDE.md / git / bundled skills, MCP tools deferred
+   behind Claude Code's ToolSearch except 13 core tools (`waggle_mcp.ALWAYS_LOAD`). Measured with the real CLI, one
+   "Reply with just: OK" turn, context tokens from the result event:
+
+   | Launch | Tools | Context tokens |
+   |---|---|---|
+   | Old (in `~/Claude`, 16 MCP servers incl. claude.ai connectors) | 207 | 115,686 |
+   | + empty folder, strict MCP, no setting sources | 104 | 33,186 |
+   | + MCP tools deferred, no memory/CLAUDE.md | 105 (85 deferred) | 14,532 |
+   | Final (12 core tools always loaded), Sonnet | | **16,444** |
+
+   Real `ChatSession` in a throwaway home (Sonnet): "Hello?" answered in 3.0 s cold (first words 2.63 s); a deferred
+   tool found and used through ToolSearch ("FTC team 7831" -> ftc_team, 5.8 s); vault_search/recall called directly.
+2. **Rotation by size**: a session whose last call passes `chat_session_max_tokens` (60,000) is replaced right after
+   that turn. The local model summarises the owner's last 30 turns (schema-shaped, so a "ping" in the transcript
+   can't turn it into a reply; canary turns left out) and a fresh process is pre-started carrying the summary plus
+   the last 3 exchanges. Real data: 11 useful notes from 30 owner turns in 6.2 s, $0. Turn count only applies when
+   the size limit is 0.
+3. **Canary**: a deploy now sends "canary <id> (code path): ..." which the engine answers in code for origin
+   `canary` only: Telegram in, gateway, core inbox, engine, outbox and Telegram out are proven with no Claude call
+   (ledger `canary.codepath`). The 12:30 run keeps one full Sonnet round trip a day. Before: 32 Sonnet pongs.
+4. **Permission asks by effect** (`policy.py`, `guard.py`): read-only web queries (curl -G, GraphQL queries,
+   searches, no credentials) never ask; deleting inside scratch (TEMP, worktrees, job folders) and creating a new file
+   outside the vault do not ask; `StructuredOutput` is a no-effect tool; the guard judges `$d\src\__init__.py` by
+   the resolved path when every variable is one literal. Still asking: money, credentials, messages/posts, permanent
+   deletes of the owner's data, system settings, **named third-party installs (new: `pip install x` asks;
+   `pip install -r requirements.txt` does not)**, the guard's files. Answers: spoken "Yes, go ahead and do it" /
+   "No, don't" count; consent inside a longer reply right after an ask counts (the owner's real voice reply in trace
+   206 did not before); an unsure transcript grants nothing; `duty.approvals` expires stale asks every 5 min with one
+   line to the owner.
+   **Replay evidence** (`tools/replay_asks.py`, every tool call of the owner's real turns with inputs from the
+   Claude session transcripts): 76 calls in 49 owner turns -> live policy 2 asks (both false: FTCScout GraphQL),
+   new policy **0**. The recorded false asks from `approvals.db` (TMAF, WNVR, J9YC, RM6R, F3EK, P4EV, K44T, 7A3R,
+   7HJX) are a regression test (`tests/test_policy_effects.py`).
+5. **Untrusted content**: `web_read(url, question)` replaces WebFetch for the chat and for agents: the page is
+   fetched (public http(s) only), trimmed to the paragraphs that match the question, and the local model (gemma4,
+   no tools; a tool-less Haiku call without it) returns capped typed fields (title, answer, facts, found,
+   tried_to_instruct). Live: 0.6-1.1 s warm (Wikipedia, GitHub, Python docs). Agents no longer load the Gmail
+   connector; background builds run with WebFetch and Gmail off; Hermes `web_extract` points to `web_read`. Mail
+   was already reduced to typed fields by the mail watch (local model) and the Gmail passes of `mailwatch`/`ingest`
+   (connector read tools only + schema).
+   Known gaps: `curl` of an HTML page in the shell, Hermes browser tools (wrapped `<untrusted>`, not reduced), and
+   Drive/Docs connector content for agents.
