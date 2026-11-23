@@ -35,3 +35,18 @@ def test_ago():
     now = time.time()
     assert hq.ago(now - 5, now) == "just now" and hq.ago(now - 300, now) == "5 min ago"
     assert hq.ago(now - 7200, now) == "2 h ago" and hq.ago(now - 3 * 86400, now) == "3 d ago"
+
+
+def test_hq_rewrites_only_when_something_changed(settings, monkeypatch):
+    # The duty runs every minute; an unchanged snapshot must not touch the vault (only the "updated" stamp differs).
+    from waggle import hq, vault
+    hq.write(settings)
+    note = vault.own_path("Waggle HQ", settings)
+    canvas = vault.own(settings) / "Waggle HQ.canvas"
+    m1, c1 = note.stat().st_mtime_ns, canvas.stat().st_mtime_ns
+    import time as _t
+    _t.sleep(0.05)
+    real = hq.render_md
+    monkeypatch.setattr(hq, "render_md", lambda snap, s: real(snap, s).replace("Live · updated", "Live · updated 9"))
+    hq.write(settings)
+    assert note.stat().st_mtime_ns == m1 and canvas.stat().st_mtime_ns == c1

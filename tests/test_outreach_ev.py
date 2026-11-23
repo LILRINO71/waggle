@@ -293,3 +293,22 @@ def test_the_other_stop_phrases_still_count():
     for text in ("not now", "leave me alone", "shut up", "too many messages", "no more texts", "don't text me",
                  "quit pinging"):
         assert outreach_ev.is_stop(text), text
+
+
+def test_every_unprompted_origin_is_labelled_not_only_decisions(s):
+    # Step 0 of the 2026-11-21 plan: mail alerts, briefs, background results... are labelled too (kind = origin).
+    def sent(origin, at_, text, asked=False):
+        row = notify.deliver("text", text, origin=origin, topic=text, asked=asked, now=at_, settings=Settings.load())
+        outbox.claim_due(now=at_)
+        outbox.mark_sent(row["id"], "m-" + text, now=at_)
+        return row["id"]
+    mail = sent("mailwatch", at(9), "mail alert")
+    brief = sent("brief", at(9, 5), "brief")
+    reminder = sent("reminder", at(9, 10), "stand up", asked=True)   # asked for: never labelled
+    outreach_ev.label_outcomes(s, at(18), turns=[(at(9, 30), "telegram", "thanks")])
+    got = labels()
+    assert got.get(mail) == "welcome" and got.get(brief) == "welcome" and reminder not in got
+    con = outreach_ev._db()
+    kinds = {r[0]: r[1] for r in con.execute("SELECT outbox_id, kind FROM outcomes")}
+    con.close()
+    assert kinds[mail] == "mailwatch" and kinds[brief] == "brief"

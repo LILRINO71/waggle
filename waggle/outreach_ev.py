@@ -32,6 +32,9 @@ IGNORED_WEIGHT = 0.5
 UNWELCOME_WEIGHT = 3.0
 HALF_LIFE_DAYS = 30.0
 WINDOW_S = 6 * 3600
+# Unprompted messages whose reception is labelled besides the initiative decisions (outbox origins).
+FEEDBACK_ORIGINS = ("mailwatch", "brief", "evening", "background", "core", "proposal", "tidy", "autonomy",
+                    "objective", "routine", "recipe", "scout")
 MIN_LABELS = 3
 BASE_COST = 0.25
 DEFAULT_VALUE = 0.5
@@ -108,6 +111,12 @@ def label_outcomes(settings=None, now=None, turns=None, window_s=WINDOW_S):
         "SELECT outbox_id, kind, urgent FROM decisions WHERE action IN ('text','voice') AND urgent=0 AND time>=? "
         "AND outbox_id IS NOT NULL", (now - 4 * 86400,))]
     cand = [c for c in cand if str(c["outbox_id"]).isdigit() and int(c["outbox_id"]) not in done]
+    # Every other unprompted message too (mail alerts, brief, evening note, background results ...), kind = its
+    # origin, so feedback is collected on all of them from day one (architecture decision 2026-11-21, step 0).
+    seen = {int(c["outbox_id"]) for c in cand}
+    for r in notify.rows(since=now - 4 * 86400, status="sent", origin=FEEDBACK_ORIGINS):
+        if r["id"] not in done and r["id"] not in seen:
+            cand.append({"outbox_id": r["id"], "kind": r["origin"], "urgent": 0})
     if not cand:
         con.close()
         return 0

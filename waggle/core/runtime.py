@@ -159,6 +159,45 @@ def check_guard(now=None):
     return status
 
 
+BACK_ONLINE_GAP_S = 15 * 60  # a deploy or watchdog restart is a few seconds; this is the PC being off or asleep
+_WORTH_NAMING = {"outreach.brief": "the morning brief", "outreach.evening": "the evening note",
+                 "backup.nightly": "the nightly backup", "knowledge.digest": "the daily digest"}
+
+
+def back_online_text(report, now=None):
+    """The owner's "I'm back" message after a real outage (owner decision 2026-11-21: accept the gap after a reboot,
+    but say so), or None for a short restart or a first start."""
+    import datetime as dt
+    last, now = report.get("last_tick"), report.get("now", now) or time.time()
+    if not last or now - float(last) < BACK_ONLINE_GAP_S:
+        return None
+    hours = (now - float(last)) / 3600
+    when = lambda t: dt.datetime.fromtimestamp(float(t)).strftime("%a %#I:%M %p")  # noqa: E731
+    gap = f"{hours:.0f} h" if hours >= 1.5 else f"{hours * 60:.0f} min"
+    skipped = sorted({_WORTH_NAMING[k["timer_id"]] for k in report.get("skipped", []) if k.get("timer_id") in _WORTH_NAMING})
+    text = f"Back online at {when(now)}. I was off since {when(last)} ({gap}), most likely the PC was off or asleep."
+    if skipped:
+        text += " Skipped while off: " + ", ".join(skipped) + "."
+    ran = len(report.get("fired", []))
+    if ran:
+        text += f" Caught up on {ran} scheduled job(s) that fell due meanwhile."
+    return text
+
+
+def _back_online_notice(report):
+    """Queue the back-online message through notify (quiet hours, caps, the outbox). Never breaks start-up."""
+    try:
+        text = back_online_text(report)
+        if not text:
+            return None
+        from waggle import notify
+        return notify.deliver("text", text, origin="core", ref=f"back-online:{int(float(report['last_tick']))}",
+                              topic="core:back-online")
+    except Exception as e:
+        log.error("back-online notice failed: %s", type(e).__name__)
+        return None
+
+
 def _catch_up_summary(report):
     return {"at": report["now"], "offline_since": report.get("last_tick"), "fired": len(report["fired"]),
             "late": report["late"][:50], "skipped": report["skipped"][:50]}
@@ -273,6 +312,7 @@ class Core:
         resent = outbox.recover()
         report = timers.catch_up()
         store.set_meta("core.last_catch_up", json.dumps(_catch_up_summary(report), default=str))
+        _back_online_notice(report)
         log.info("recovered jobs %s, turns %s, outbox rows %s; catch-up fired %s", recovered, turns, resent,
                  len(report["fired"]))
 

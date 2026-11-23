@@ -10,7 +10,9 @@ Styling comes from .obsidian/snippets/waggle.css (installed by install.py).
 import datetime as dt
 import json
 import math
+import re
 import time
+from pathlib import Path
 
 from . import events, jobs, projects, quota, vault
 from .config import Settings, data_path
@@ -283,12 +285,30 @@ def render_canvas(snap, base=""):
     return {"nodes": nodes, "edges": edges}
 
 
+_STAMP = re.compile(r"Live · updated [^<]*")
+
+
+def _same(path, text, ignore=None):
+    """True when the file already holds this text (the "updated HH:MM" stamp ignored), so nothing is rewritten."""
+    try:
+        old = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return (ignore.sub("", old) if ignore else old) == (ignore.sub("", text) if ignore else text)
+
+
 def write(settings=None):
+    """Rewrite the HQ note and canvas only when what they show changed (the duty runs every minute; a rewrite with
+    nothing new churned the owner's vault and the canvas write was being logged as an owner edit)."""
     s = settings or Settings.load()
     snap = snapshot(s)
-    vault.write("Waggle HQ", render_md(snap, s), s)
+    md = render_md(snap, s)
+    if not _same(vault.own_path("Waggle HQ", s), md, _STAMP):
+        vault.write("Waggle HQ", md, s)
     canvas = vault.own(s) / "Waggle HQ.canvas"
-    canvas.write_text(json.dumps(render_canvas(snap, vault.own_rel(s)), indent=1, ensure_ascii=False), encoding="utf-8")
+    body = json.dumps(render_canvas(snap, vault.own_rel(s)), indent=1, ensure_ascii=False)
+    if not _same(canvas, body):
+        canvas.write_text(body, encoding="utf-8")
     return canvas
 
 
