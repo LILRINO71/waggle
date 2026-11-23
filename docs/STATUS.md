@@ -157,5 +157,17 @@ this one run still used the old full round trip because PowerShell had read the 
 - **Still open (need the owner's real use):** p50 owner turn under 5 s and "Hello" under 3 s over real turns; 0 false
   asks over 50 real owner turns. Measure with `py -3.14 tools/replay_asks.py --since 1795468800` (asks) and the traces
   table (origin `user`, since the same time).
-- Seen while measuring: every turn re-sends the context block (~2k tokens), so the session grows ~3k tokens a turn
-  and rotates after about 12-14 turns. A candidate for the next step (send the block only when it changed).
+- Seen while measuring: every turn re-sent the context block (~2k tokens), so the session grew ~3k tokens a turn
+  and rotated after about 12-14 turns. Fixed the same day (below).
+
+**Context sent once per session (2026-11-23, live 2bd8bab).** `build_context` names its parts; the chat session
+replaces a part whose exact text it already sent in the same Claude session (core, lessons, memory, projects, graph,
+recall, voice hint) with a one-line pointer (`[core: unchanged, given earlier in this conversation]`). Kept on disk
+per chat and session id, so a resumed process still knows; a fresh, rotated or new-day session, a failed turn or a
+retry sends everything again; approvals, news, deliveries and the time always go. Trace marker
+`extra.context.repeated` lists what was left out. Full suite 4,022 passed; deploy canary used the new code path
+(2.2 s, no Claude call).
+- Real CLI, throwaway home, 6,500-character core block, 4 turns: growth 2,812 -> 80 tokens a turn.
+- Live (test client, session `055ab1bb`): turn 231 after the restart sent everything (4.32 s, process restart and
+  resume); turns 232-233 left out core and projects, the session grew 147 and 144 tokens, totals 1.67 s and 1.65 s.
+  At this rate a session reaches the 60k rotation after hundreds of turns instead of about a dozen.
