@@ -315,3 +315,26 @@ def test_leftovers_expired_long_ago_close_without_a_message(settings):
     con.commit()
     con.close()
     assert duties_core.approvals_job(now=t0 + 3 * 86400) == {"expired": 1, "sent": False}
+
+
+def test_consent_inside_a_longer_spoken_reply_grants_the_fresh_ask():
+    # trace 206 (2026-11-21): the owner's voice reply that the plain-yes check missed
+    aid = policy.request_approval("Bash", {"command": "pip install x"}, "installing", session="telegram:5")
+    said = "Where's the approval? Where can I do it? But I give it for permission, go ahead."
+    kind, _ = chat_engine.approval_preflight("telegram:5", said)
+    assert kind == "note" and policy.get(aid)["state"] == "granted"
+
+
+@pytest.mark.parametrize("said", ["don't go ahead", "wait, go ahead later", "should we go ahead first?",
+                                  "tell me about the approval"])
+def test_consent_words_with_doubt_or_refusal_grant_nothing(said):
+    aid = policy.request_approval("Bash", {"command": "pip install x"}, "installing", session="telegram:5")
+    pre = chat_engine.approval_preflight("telegram:5", said)
+    assert pre is None or pre[0] != "note" or "approved" not in pre[1]
+    assert policy.get(aid)["state"] == "pending"
+
+
+def test_consent_in_a_sentence_needs_a_fresh_ask_from_this_chat():
+    aid = policy.request_approval("Bash", {"command": "git push"}, "pushing", session="objective-abc")
+    assert chat_engine.approval_preflight("telegram:5", "Sure, you have my permission, go ahead with it all") is None
+    assert policy.get(aid)["state"] == "pending"

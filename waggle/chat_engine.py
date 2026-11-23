@@ -318,6 +318,23 @@ def is_yes(text):
     return bool(w) and len(_answer_words(text)) <= 12 and w <= _YES_OK and bool(w & _YES_CORE) and not w & _NO_CORE
 
 
+# Consent inside a longer reply, right after Waggle asked: "Where's the approval? But I give it for permission, go
+# ahead." (the owner's voice reply on 2026-11-21, trace 206, which the plain-yes check missed). Only with no word of
+# refusal or doubt anywhere in the message, and only while this chat's own ask is fresh (CONSENT_FRESH_S).
+_CONSENT = re.compile(r"\b(go ahead|i (give|gave|am giving) (you )?(it )?(for |my |the )?(permission|ok|okay|approval|"
+                      r"go-ahead)|you have my (permission|ok|okay|approval)|permission (is )?granted|i approve|"
+                      r"approved?\b|yes,? (do it|go|please|you can))", re.I)
+_REFUSE = re.compile(r"\b(don'?t|do not|dont|not|never|no|nope|cancel|stop|wait|hold on|hang on|instead|unless|"
+                     r"but not|rather|first)\b", re.I)
+CONSENT_FRESH_S = 15 * 60
+
+
+def consents(text):
+    """An explicit consent phrase in a longer message with nothing that refuses or delays it."""
+    t = (text or "").replace("\u2019", "'")
+    return bool(_CONSENT.search(t)) and not _REFUSE.search(t)
+
+
 def is_no(text):
     """A plain no, typed or spoken."""
     w = set(_answer_words(text))
@@ -377,7 +394,10 @@ def approval_preflight(chat, text, prev_msg_at=0.0, heard_unsure=False):
         return "note", ("The user said no to: " + "; ".join(p["summary"] for p in mine)
                         + ". Don't do it; finish without it and say so in one short line.")
     if not is_yes(text):
-        return None
+        fresh = [p for p in policy.pending(chat) if p.get("session") == chat
+                 and time.time() - p["created"] < CONSENT_FRESH_S]
+        if not (fresh and consents(text)):
+            return None
     mine = policy.pending(chat)
     if heard_unsure and mine:
         lines = "; ".join(policy.describe(p) for p in mine[:3])
