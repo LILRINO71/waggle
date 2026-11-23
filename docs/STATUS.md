@@ -20,7 +20,7 @@ Last updated: 2026-11-21 (Step 0). Feature freeze in force: no new features unti
 | Telegram text | yes | yes | yes | mostly | 61 owner turns answered and delivered. Inbound depends on the Hermes gateway, which the watchdog does not watch |
 | Telegram voice notes | yes | yes | yes | mostly | Owner: "speed is perfect" (11-20) |
 | PC voice | yes | yes | partly | **no** | Owner: robot-like, end of speech slow; hotkey fixes not yet confirmed by the owner |
-| Chat brain (Sonnet session, tools, Google) | yes | yes | yes | partly | p50 6.6 s, p90 22 s, max 37 s; 6 of 61 owner turns degraded. About 120,000 tokens of fixed context per call |
+| Chat brain (Sonnet session, tools, Google) | yes | yes | yes | partly | Before Step 1: p50 6.6 s, p90 22 s, max 37 s; 6 of 61 owner turns degraded; about 120,000 tokens of fixed context. **Step 1, live 9dcac65 (11-23):** first call of a fresh session 18,890 tokens (fixed part 16.4k); test-client "Hello" 2.2-2.8 s; Google Doc, vault note, GitHub lookup all worked. Owner-turn latency not yet measured (no owner turns since the deploy) |
 | Mail watch (IMAP + local model) | yes | yes | yes | partly | 182 passes, 7 alerts, caught a real deadline; 4 near-duplicate alerts; no feedback recorded |
 | Morning brief / evening note | yes | yes | yes | unknown | 1 brief, 2 evening notes sent |
 | Background task from chat | yes | yes | partly | unknown | 2 real runs, results self-reported only |
@@ -31,7 +31,7 @@ Last updated: 2026-11-21 (Step 0). Feature freeze in force: no new features unti
 | Self-improvement | yes | once | unit | no | 0 kept changes; 2 proposals (1 failed, 1 rolled back) |
 | Evals | yes | yes | n/a | no | 1 run, 41 made-up cases |
 | Memory retrieval / graph | yes | yes | quiz 73.5 % | partly | Effect on answers not measured |
-| Permission hook (guard + policy) | yes | yes | yes | **over-blocks** | 3 of 61 owner turns lost their work to a false ask; 11 of 17 approvals never answered |
+| Permission hook (guard + policy) | yes | yes | yes | over-blocked; fixed, **not yet proven in use** | Before: 3 of 61 owner turns lost their work to a false ask; 11 of 17 approvals never answered. Step 1 (11-23): asks by effect; replay of all 76 real owner tool calls: 2 asks before, 0 after; 0 approvals filed in the post-deploy checks; stale asks now expire with one line. 50 real owner turns still to count |
 | Background budget | yes | yes | yes | starves background | 22 of 22 decisions were "defer" |
 | ActivityWatch, miner, recipes | yes | sensing only | unit | no | Mined patterns are `git add > git commit`; 0 recipes |
 | Vault | yes | yes | yes | yes | All reads and writes in `PersonalIntelligenceVault`, Waggle's writes only in `12 - Waggle`. Since Step 0 there is no default vault: a config without `"vault"` makes Waggle refuse instead of using another folder |
@@ -140,3 +140,22 @@ Built on `overnight` (95e79b4, 2e9756a, e8a3392, cb8c5b7, 63611b2), each with te
    (connector read tools only + schema).
    Known gaps: `curl` of an HTML page in the shell, Hermes browser tools (wrapped `<untrusted>`, not reduced), and
    Drive/Docs connector content for agents.
+
+**Deploy (2026-11-23, live 9dcac65).** Full suite 4,018 passed (`tools/locked_suite.py`). `tools/deploy.ps1`:
+guard approved (agent, claude_cli, config, guard, policy changed), core healthy at 9dcac65, deploy canary passed (8.8 s;
+this one run still used the old full round trip because PowerShell had read the old script). Then, by hand:
+- Code-path canary: answered in code in 0.63 s, 2.2 s through Telegram, no Claude call (trace 223).
+- The process started after the deploy resumed the old session (`e00b7346`): 127,598 tokens, because that session's
+  history carried the old launch's injected memory and listings. It was over 60k, so the size rotation replaced it at
+  once: a fresh lean session (`055ab1bb`, in `~/.claude/projects/C--Users-hiheo--waggle-chat-home/`) carrying the
+  local summary. Lean resumes stay lean (throwaway home: 17,504 / 17,540 / 17,576 tokens over 3 restarts).
+- **Fixed context gate: met.** First call of the fresh session 18,890 tokens, including that turn's context block and
+  the carried summary; Claude Code's own fixed part 16.4k.
+- Test client (origin canary, never the owner's turns), totals from `traces.db`: "Hello?" 2.78 s, "Hello" 2.22 s,
+  Tokyo time 3.51 s, Google Doc created 6.36 s, vault note in `12 - Waggle/Waggle/Step 1 check.md` 10.41 s, GitHub
+  "three most recent repos" 5.41 s (correct). p50 4.5 s. No approval was filed.
+- **Still open (need the owner's real use):** p50 owner turn under 5 s and "Hello" under 3 s over real turns; 0 false
+  asks over 50 real owner turns. Measure with `py -3.14 tools/replay_asks.py --since 1795468800` (asks) and the traces
+  table (origin `user`, since the same time).
+- Seen while measuring: every turn re-sends the context block (~2k tokens), so the session grows ~3k tokens a turn
+  and rotates after about 12-14 turns. A candidate for the next step (send the block only when it changed).
