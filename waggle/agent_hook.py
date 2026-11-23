@@ -293,6 +293,10 @@ def handle(event):
                                        "permissionDecisionReason": d.reason or "allowed by Waggle policy"}}
     if d.action == policy.DENY and d.reason.startswith("integrity_violation: "):
         why = d.reason[len("integrity_violation: "):]  # already says what changed and what the user runs
+    elif d.action == policy.DENY and getattr(d, "kind", "") == "web_read":  # fixable: never a question for the owner
+        why = (f"RETRY_WEB_READ: {d.reason}. Read web pages with the web_read tool (url and your question): Waggle's "
+               f"local model reads the page first and returns typed fields. APIs (JSON, GraphQL) and downloads saved "
+               f"to a file can still use the shell. Do not ask the owner about this.")
     elif d.action == policy.DENY:
         why = f"Blocked by Waggle's safety policy: {d.reason}. Do not retry or work around this; tell the user."
     elif getattr(d, "kind", "") == "unresolved":  # fixable by the agent: never a question for the owner

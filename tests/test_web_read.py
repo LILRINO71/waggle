@@ -127,3 +127,35 @@ def test_hermes_page_extractor_is_sent_to_web_read():
 
 def test_web_read_is_allowed_like_any_read():
     assert policy.decide("mcp__waggle__web_read", {"url": "https://example.org", "question": "q"}).action == "allow"
+
+
+# ---- pages fetched in the shell go to web_read ---------------------------------------------------------------------
+
+import pytest  # noqa: E402
+
+from waggle import agent_hook  # noqa: E402
+
+
+@pytest.mark.parametrize("cmd", ["curl -s https://en.wikipedia.org/wiki/FTC",
+                                 "curl -s https://www.ftcscout.org/teams/7831 | head -50",
+                                 "Invoke-WebRequest https://example.com/blog/post | Select-Object -Expand Content",
+                                 "wget -qO- https://example.com/page", "cd /tmp && curl -sL https://example.com/"])
+def test_printing_a_web_page_in_the_shell_is_sent_to_web_read(cmd):
+    d = policy.decide("Bash", {"command": cmd})
+    assert d.action == policy.DENY and d.kind == "web_read"
+    out = agent_hook.handle({"tool_name": "Bash", "tool_input": {"command": cmd}})
+    why = out["hookSpecificOutput"]["permissionDecisionReason"]
+    assert why.startswith("RETRY_WEB_READ") and "web_read" in why and "NEEDS_APPROVAL" not in why
+    assert policy.pending() == []  # never an approval question for the owner
+
+
+@pytest.mark.parametrize("cmd", ["curl -s https://api.github.com/repos/LILRINO71/waggle",
+                                 "curl -s https://api.ftcscout.org/graphql -d '{\"query\":\"{x}\"}'",
+                                 "curl -s https://raw.githubusercontent.com/a/b/main/README.md",
+                                 "curl -sL https://example.com/file.zip -o x.zip", "wget https://example.com/page",
+                                 "curl -I https://example.com", "curl -s http://127.0.0.1:5600/api/0/buckets",
+                                 "curl -s https://example.com/data | jq .", "irm https://ipinfo.io/json",
+                                 "curl -s https://example.com/v2/items", "curl -s https://example.com > page.html",
+                                 "curl -H 'Accept: application/json' https://example.com/teams"])
+def test_apis_downloads_and_local_services_still_run(cmd):
+    assert policy.decide("Bash", {"command": cmd}).action == policy.ALLOW

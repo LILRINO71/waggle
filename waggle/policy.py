@@ -282,6 +282,34 @@ def _web_query_only(cmd):
     return graphql_query or bool(_QUERY_PATH.search(c))
 
 
+_FETCH = re.compile(r"(?i)(?:^|[\s(])(curl|wget|invoke-webrequest|iwr|invoke-restmethod|irm)(?:\.exe)?(?=\s)")
+_URL = re.compile(r"(?i)https?://[^\s'\"<>|)]+")
+_API_URL = re.compile(r"(?i)^https?://(api\.|[^/]*\.api\.|raw\.githubusercontent\.com|gist\.githubusercontent\.com|"
+                      r"[^/]*(localhost|127\.0\.0\.1|\[::1\])[:/])|/(api|graphql|rest|json|v\d+(\.\d+)?)(/|\?|$)|"
+                      r"\.(json|xml|csv|tsv|txt|md|yaml|yml|ics|rss|atom)(\?|$)|[?&](format|output|fmt)=(json|xml|csv)")
+_SAVED = re.compile(r"(?i)(^|\s)(-o|-O|--output|--remote-name|-OutFile|--output-document|-P)(\s|=|$)|>\s*[^\s&|]")
+_ONLY_HEADERS = re.compile(r"(?i)(^|\s)(-I|--head|-Method\s+Head)(\s|$)")
+_PARSED = re.compile(r"(?i)\|\s*(jq|convertfrom-json|python3?\s+-m\s+json\.tool|yq|xmllint)\b")
+_JSON_ASKED = re.compile(r"(?i)accept\s*:\s*application/(json|vnd)")
+
+
+def raw_page_fetch(cmd):
+    """The URL of a web PAGE a shell command would print into the session (untrusted text, unreduced), or "".
+    Not a page: an API (api.* hosts, /api/, /graphql, /v1/, raw files, .json/.xml/.csv, format=json, Accept: JSON,
+    output piped into jq), a download saved to a file, a headers-only check, the PC's own services."""
+    for chain in re.split(r"&&|\|\||;|\n", cmd or ""):
+        if not _FETCH.search(chain):
+            continue
+        if re.search(r"(?i)\bwget\b", chain) and not re.search(r"(?i)-q?O\s*-(\s|$)|--output-document[= ]-", chain):
+            continue  # wget saves to a file unless told to print
+        if _SAVED.search(chain) or _ONLY_HEADERS.search(chain) or _PARSED.search(chain) or _JSON_ASKED.search(chain):
+            continue
+        for url in _URL.findall(chain):
+            if not _API_URL.search(url):
+                return url
+    return ""
+
+
 def _scratch_roots(settings=None):
     s = settings or Settings.load()
     home = Path.home()
@@ -569,6 +597,9 @@ def _base_decide(tool_name, args=None, settings=None, cwd=None):
         return Decision(ASK, f"changing a file outside your project folders ({path})", kind="outside")
     if name in SHELL_TOOLS:
         action, why = classify_shell(str(args.get("command") or args.get("cmd") or ""))
+        page = raw_page_fetch(str(args.get("command") or args.get("cmd") or "")) if action == ALLOW else ""
+        if page:  # the untrusted-content rule: pages are read by web_read, never printed into a session with tools
+            return Decision(DENY, f"this prints the web page {page[:120]} into the session unread", kind="web_read")
         return Decision(action, why, kind="shell" if action == ASK else "")
     if name.startswith("mcp__waggle__"):
         if base == "hermes_tool":
