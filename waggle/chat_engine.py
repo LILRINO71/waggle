@@ -290,9 +290,44 @@ YES = re.compile(r"^\s*(y|yes|yeah|yep|yup|sure|ok(ay)?|go ahead|do it|approved?
                  r"([\s,!.]+(do it|go ahead|please|you can|approved?))*[\s!.]*$", re.I)
 
 
-def approval_preflight(chat, text, prev_msg_at=0.0):
-    """Approval answers before Claude sees the message.
-    Returns ("reply", text) to answer directly, ("note", text) to tell Claude what was approved, or None."""
+# Spoken answers (voice notes, the PC line) come as whole sentences: "Yes, go ahead and do it, Waggle." counts as
+# a yes, "No, don't." as a no. Every word must belong to the answer's small vocabulary, so "yes but rename it first"
+# or "no idea" go to Claude like any other message, and a sentence with both a yes and a no word is neither.
+_YES_CORE = {"yes", "yeah", "yep", "yup", "yea", "ya", "sure", "ok", "okay", "alright", "approve", "approved", "confirm",
+             "confirmed", "allow", "proceed", "absolutely", "definitely", "affirmative", "goahead", "doit"}
+_YES_OK = _YES_CORE | {"go", "ahead", "do", "it", "please", "you", "can", "that", "thats", "is", "fine", "sounds",
+                       "good", "for", "and", "right", "now", "sir", "waggle", "just", "then", "thanks", "thank",
+                       "its", "all", "of", "them", "both", "thing", "course", "totally", "perfect", "great", "send",
+                       "run", "with", "on", "carry", "continue"}
+_NO_CORE = {"no", "nope", "nah", "dont", "cancel", "deny", "denied", "never", "nevermind", "negative", "reject", "not"}
+_NO_OK = _NO_CORE | {"thanks", "thank", "you", "please", "do", "it", "that", "sir", "waggle", "mind", "now", "leave",
+                     "forget", "about", "skip", "actually", "way", "thats", "this", "time", "one", "need", "stop"}
+
+
+def _answer_words(text):
+    t = re.sub(r"\bgo\s+ahead\b", "goahead", re.sub(r"\bdo\s+it\b", "doit", (text or "").lower().replace("'", "")
+                                                                                .replace("\u2019", "")))
+    return re.findall(r"[a-z]+", t)
+
+
+def is_yes(text):
+    """A plain yes, typed or spoken."""
+    if YES.match(text or ""):
+        return True
+    w = set(_answer_words(text))
+    return bool(w) and len(_answer_words(text)) <= 12 and w <= _YES_OK and bool(w & _YES_CORE) and not w & _NO_CORE
+
+
+def is_no(text):
+    """A plain no, typed or spoken."""
+    w = set(_answer_words(text))
+    return bool(w) and len(_answer_words(text)) <= 10 and w <= _NO_OK and bool(w & _NO_CORE) and not w & _YES_CORE
+
+
+def approval_preflight(chat, text, prev_msg_at=0.0, heard_unsure=False):
+    """Approval answers before Claude sees the message (typed, or a voice note's transcript).
+    Returns ("reply", text) to answer directly, ("note", text) to tell Claude what was approved, or None.
+    heard_unsure: speech recognition was not sure of the words, so a spoken yes grants nothing (it asks again)."""
     from . import learnloop, objectives, policy
     um = learnloop.UNDO_CMD.match(text or "")
     if um:  # "undo L7": reverts one change of the learning loop, no model involved
@@ -330,9 +365,24 @@ def approval_preflight(chat, text, prev_msg_at=0.0):
         if sess == chat:
             return "note", f"The user approved: {item['summary']}. Do exactly that now (it is allowed once) and finish."
         return "reply", f"Approved once: {item['summary']}. It will be allowed the next time exactly that action runs."
-    if not YES.match(text or ""):
+    if is_no(text):
+        mine = [p for p in policy.pending(chat) if p.get("session") == chat]
+        if not mine:
+            return None
+        for p in mine:
+            if p.get("tool") == engine_commands.MEDIA_CLEAN_TOOL:
+                return "reply", engine_commands.media_clean_answer(p, chat, Settings.load(), approve=False)
+        for p in mine:
+            policy.deny(p["id"])
+        return "note", ("The user said no to: " + "; ".join(p["summary"] for p in mine)
+                        + ". Don't do it; finish without it and say so in one short line.")
+    if not is_yes(text):
         return None
     mine = policy.pending(chat)
+    if heard_unsure and mine:
+        lines = "; ".join(policy.describe(p) for p in mine[:3])
+        return "reply", (f"I wasn't sure I heard a yes, so nothing was approved yet. Waiting: {lines}. Say \"yes\" "
+                         f"again, or type \"approve {mine[0]['code']}\".")
     cleans = [p for p in mine if p.get("tool") == engine_commands.MEDIA_CLEAN_TOOL]
     if cleans:  # a yes to "clean the saved attachments?" answers that question and nothing else
         others = [p for p in mine if p not in cleans]
@@ -983,7 +1033,8 @@ def handle_inbound(chat, text, *, kind="text", media=None, platform="telegram", 
         if answer:
             return direct(answer, "recipe")
     try:
-        pre = approval_preflight(chat, body, prev) if owner_text != "" else None  # a caption can answer an approval
+        pre = approval_preflight(chat, body, prev, heard_unsure=bool(voice and vinfo and not vinfo.get(
+            "stt_confident", True))) if owner_text != "" else None  # a caption can answer an approval
     except Exception as e:
         events.log("engine_error", stage="approvals", error=str(e)[:200])
         pre = None

@@ -213,6 +213,10 @@ def test_gh_pr_create_on_a_named_repo(home):
 
 def test_writes_anywhere_under_the_profile_are_allowed_in_an_owner_turn(home):
     path = U(home, "Documents/plan-v2.docx")
+    # Step 1: a NEW file changes nothing of the owner's, in any turn; overwriting an existing one still asks
+    assert policy.decide("Write", {"file_path": path, "content": "x"}).action == ALLOW
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text("the owner's plan", encoding="utf-8")
     assert policy.decide("Write", {"file_path": path, "content": "x"}).action == ASK
     assert policy.decide("Write", {"file_path": path, "content": "x"}, turn=owner("thanks")).action == ALLOW
 

@@ -1099,6 +1099,7 @@ class _Ctx:
         self.memo = {}
         self._ids = None
         self.git_dirs = []
+        self.skip_loose = False  # judge names only by the resolved form (shell_hit, _resolved_form)
 
     @property
     def ids(self):
@@ -1125,7 +1126,8 @@ def _analyze(stmts, cwd, ctx, depth=0, dialect=None):
             if m.start() in quoted:  # grep "a > b" file: inside a string, not a redirect
                 continue
             target = m.group(1)
-            label = ctx.match(target, vcwd) if vcwd is not None else _loose_name(target)
+            label = ctx.match(target, vcwd) if vcwd is not None else (
+                None if ctx.skip_loose else _loose_name(target))
             if label:
                 res.hit = res.hit or label
             elif _unresolvable(expand(target.strip("\"'"))) and target.strip("\"'").lower() not in (
@@ -1185,9 +1187,10 @@ def _analyze(stmts, cwd, ctx, depth=0, dialect=None):
                         piece.startswith("-") and "/" not in piece and "\\" not in piece):
                     continue
                 if vcwd is not None:
-                    label = ctx.match(piece, vcwd, ancestors, cross) or (_loose_name(piece) if unres else None)
+                    label = ctx.match(piece, vcwd, ancestors, cross) or (
+                        _loose_name(piece) if unres and not ctx.skip_loose else None)
                 else:
-                    label = None if read else _loose_name(piece)
+                    label = None if read or ctx.skip_loose else _loose_name(piece)
                 if label:
                     names.append(label)
         if verb == "find" and not read and vcwd is not None and (not rest or rest[0][:1] in "-(!"):
@@ -1272,21 +1275,57 @@ def _join_literals(s):
     return re.sub(r"([\"'])\s*\+\s*([\"'])", "", s)
 
 
-def _variants(text):
-    """The command as written plus the forms a simple disguise turns back into: 'a' + 'b' joined, $x / %x% replaced
-    by the literal assigned to it earlier in the same command, and base64 payloads decoded."""
-    out = [text, _join_literals(text)]
+# Ways a variable gets a value other than one plain literal assignment: with any of these in the command, the
+# substituted form below cannot be trusted to be the only reading, so names still count on their own.
+_VAR_OTHER = re.compile(r"(?i)set-variable|new-variable|clear-variable|remove-variable|(?<![\w-])(sv|nv|set\s+/[ap]|"
+                        r"declare|typeset|local|readonly|export\s+-|read|mapfile|readarray|eval|iex|"
+                        r"invoke-expression|source|foreach|for|while|until|select)(?![\w-])|variable:|\[ref\]|"
+                        r"-(outvariable|ov|errorvariable|ev|pipelinevariable|pv|warningvariable|wv|"
+                        r"informationvariable|iv)\b|(?<![\w/\\])\.\s+\S|\$\(|`")
+
+
+def _resolved_form(text):
+    """The command with its variables replaced, when that is the ONLY reading of it: every variable it assigns gets one
+    plain literal, once, and nothing else sets variables. Then a name such as "$d\\src\\__init__.py" is judged by the
+    path it really is (C:\\...\\autonomy-worktrees\\waggle\\src\\__init__.py), not by its bare file name. None otherwise
+    (the as-written forms keep matching protected names on their own)."""
+    found = _ASSIGN_LIT.findall(text) + _ASSIGN_SH.findall(text)
+    if not found or _VAR_OTHER.search(text):
+        return None
+    names = [n.lower() for n, _v in found]
+    if len(names) != len(set(names)):
+        return None
+    for _n, val in found:
+        v = _join_literals(val).strip("\"'")
+        if not v or "$" in v or "%" in v:
+            return None
+    t = _substituted(text)
+    return t if t is not None and t not in (text, _join_literals(text)) else None
+
+
+def _substituted(text):
+    """$x / %x% / !x! replaced by the literal assigned to it earlier in the same command (None: nothing assigned)."""
     subs = {}
     for name, val in _ASSIGN_LIT.findall(text) + _ASSIGN_SH.findall(text):
         v = _join_literals(val).strip("\"'")
         if v and not v.startswith("$"):
             subs[name] = v
-    if subs:
-        t = out[1]
-        for name, v in sorted(subs.items(), key=lambda kv: -len(kv[0])):
-            n = re.escape(name)
-            t = re.sub(r"\$\{?" + n + r"\}?(?![\w(])(?!\s*=[^=])|%" + n + "%|!" + n + "!|"
-                       r"(?<![\w$.-])" + n + r"(?![\w(])(?!\s*=[^=])", lambda _m, v=v: v, t)
+    if not subs:
+        return None
+    t = _join_literals(text)
+    for name, v in sorted(subs.items(), key=lambda kv: -len(kv[0])):
+        n = re.escape(name)
+        t = re.sub(r"\$\{?" + n + r"\}?(?![\w(])(?!\s*=[^=])|%" + n + "%|!" + n + "!|"
+                   r"(?<![\w$.-])" + n + r"(?![\w(])(?!\s*=[^=])", lambda _m, v=v: v, t)
+    return t
+
+
+def _variants(text):
+    """The command as written plus the forms a simple disguise turns back into: 'a' + 'b' joined, $x / %x% replaced
+    by the literal assigned to it earlier in the same command, and base64 payloads decoded."""
+    out = [text, _join_literals(text)]
+    t = _substituted(text)
+    if t is not None:
         out.append(t)
     for m in list(_B64.finditer(text))[:10]:
         decoded = _b64text(m.group(0))
@@ -1368,10 +1407,15 @@ def shell_hit(command, cwd=None, shell=None):
     if any(GUARD_CMD.search(v) for v in variants[1:]):
         return "running Waggle's guard command (it can re-approve changed safety files)"
     dialects = SHELL_DIALECTS.get(shell, ALL_DIALECTS)
+    resolved = _resolved_form(text)
+    raw_forms = {text, _join_literals(text), command}
     for variant in variants:
+        # the as-written forms of a command whose variables all resolve: names are judged in the resolved form only
+        ctx.skip_loose = resolved is not None and variant in raw_forms
         for st, d in _parse(variant, dialects):
             res.merge(_analyze(st, cwd, ctx, dialect=d))
         res.hit = res.hit or _pipeline_hit(variant, cwd, ctx)
+    ctx.skip_loose = False
     if res.hit:
         return REASON.format(res.hit)
     if res.named and res.nonread:

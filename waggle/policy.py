@@ -8,6 +8,13 @@ way past it. The user's choice (2026-11-18, "full auto in projects"):
   data, security/system settings, writing outside the roots, system-wide installs;
 - never: disabling security, piping downloads straight into a shell, reading credential stores.
 
+Step 1 (2026-11-23): asks are decided by what a call DOES, not by how its command reads. Reads and public web
+queries never ask (a GraphQL query or a search sent with curl -d is a read); deleting only scratch (temp folders,
+Waggle's worktrees and job folders) and making a NEW file outside the vault are not asks. What still asks: money,
+passwords and keys, messages or posts to other people (and acting on an account with its credentials), permanent
+deletes of the owner's data, security and system settings, installing third-party code, and Waggle's own policy
+files (the guard). The owner's own words still cover an ask (owner_rule).
+
 "ask" cannot pop up a dialog in a headless run, so it becomes a one-time approval request: the call is
 denied with an id and a 4-letter code, Waggle tells the user, and "approve <code>" grants exactly that call, in
 that session, once (approvals.db). A bare "yes" only answers an approval the same chat was just asked about.
@@ -147,6 +154,31 @@ def write_roots(settings=None):
     return [norm(r) for r in roots if str(r)]
 
 
+def _new_file_anywhere(path, settings=None):
+    """A Write that creates a file which does not exist yet, under the user's profile, not in a start-up location and
+    not in the vault outside Waggle's own folder (the owner's notes are theirs: Waggle writes only in `12 - Waggle`)."""
+    p = str(path or "")
+    if not p or is_secret_path(p):
+        return False
+    try:
+        if Path(os.path.expanduser(p)).exists():
+            return False
+    except (OSError, ValueError):
+        return False
+    try:
+        if _system_location(p):
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        from . import vault
+        if under(p, [norm(vault.root(settings or Settings.load()))]):
+            return False
+    except Exception:  # noqa: BLE001  (no vault set: nothing to protect there, the rest still holds)
+        pass
+    return True
+
+
 def is_secret_path(path):
     p = "/" + norm(path)
     return bool(SECRET_FILES.search(p) or SECRET_DIRS.search(p) or p.endswith("/.waggle/twilio.env"))
@@ -181,6 +213,9 @@ ASK_SHELL = [
     (r"\bSet-ExecutionPolicy\b|\bschtasks\s+/(create|change|delete)\b|Register-ScheduledTask", "changing system settings"),
     (r"\b(winget|choco|scoop|msiexec)\s+(install|uninstall|upgrade)\b|\bnpm\s+(i|install)\s+(-g|--global)\b",
      "a system-wide install"),
+    (r"(^|[;&|(]\s*|\s-m\s+)(pip3?|uv\s+pip|pipx)\s+install\b|\buv\s+(add|tool\s+install)\b|"
+     r"(^|[;&|(]\s*)(npm|pnpm)\s+(i|install|add)\b|(^|[;&|(]\s*)yarn\s+(global\s+)?add\b|"
+     r"\b(cargo|go|gem)\s+install\b", "installing third-party code"),
     (r"\bgh\s+(issue|pr|release|gist|repo)\s+(create|comment|close|delete|edit|merge)\b|\bgh\s+api\s+[^\n]*-X\s*(POST|PATCH|DELETE)",
      "posting to GitHub as you"),
     (r"(curl|wget|Invoke-WebRequest|Invoke-RestMethod|iwr|irm)\b[^\n]*(-X\s*(POST|PUT|PATCH|DELETE)|-Method\s+(Post|Put|Patch|Delete)|--data|-d\s|-F\s|--upload-file|-Body\b|-InFile\b)",
@@ -203,12 +238,123 @@ def classify_shell(cmd):
             return DENY, why
     for pat, why in ASK_SHELL:
         if re.search(pat, c, re.I):
-            if why == "deleting files" and _only_regenerable_deletes(c):
+            if why == "deleting files" and (_only_regenerable_deletes(c) or _only_scratch_deletes(c)):
+                continue
+            if why == "sending data to a website" and _web_query_only(c):
+                continue
+            if why == "installing third-party code" and _declared_installs_only(c):
                 continue
             return ASK, why
     if has_secret(c):
         return ASK, "the command contains what looks like a password or key"
     return ALLOW, ""
+
+
+# ---- effects (Step 1) ------------------------------------------------------------------------------
+
+# Hosts where a request reaches people or money, whatever its body says.
+_PEOPLE_OR_MONEY_HOST = re.compile(r"api\.telegram\.org|api\.twilio\.com|hooks\.slack\.com|slack\.com/api|"
+                                   r"discord(app)?\.com/api|graph\.microsoft\.com|gmail\.googleapis|mail\.|smtp|"
+                                   r"sendgrid|mailgun|api\.x\.com|api\.twitter|graph\.facebook|instagram|reddit\.com/api|"
+                                   r"stripe|paypal|venmo|coinbase|kalshi|robinhood|plaid|square(up)?\.com", re.I)
+# Credentials on the request: it acts as the owner on that site.
+_WEB_AUTH = re.compile(r"(?i)authorization\s*:|\bbearer\b|x-api-key|api[-_]?key|private-token|\bcookie\b|"
+                       r"(^|\s)(-u|--user|-b|--cookie|-Credential|-Headers\s+@\{[^}]*auth)(\s|=)|token=")
+_WEB_FILE_OUT = re.compile(r"(?i)(-d|--data[\w-]*|-F|--form)\s*['\"]?@|--upload-file|(^|\s)-T\s|-InFile\b")
+_WEB_WRITE_METHOD = re.compile(r"(?i)(-X|--request)\s*['\"]?(PUT|PATCH|DELETE)\b|-Method\s+['\"]?(Put|Patch|Delete)\b")
+_QUERY_PATH = re.compile(r"(?i)https?://[^\s'\"]+/(graphql|v\d+/graphql|search|_search|query|lookup)\b")
+
+
+def _web_query_only(cmd):
+    """A web request that sends data but only asks something: curl -G / --get, or a GraphQL query (not a mutation)
+    or a search posted to a public API with no credentials, no local file and no write method. Messaging and payment
+    hosts never count. Effect: nothing changes anywhere and nobody receives anything, like a GET."""
+    c = cmd or ""
+    if _PEOPLE_OR_MONEY_HOST.search(c) or _WEB_AUTH.search(c) or _WEB_FILE_OUT.search(c) or _WEB_WRITE_METHOD.search(c):
+        return False
+    if has_secret(c):
+        return False
+    if re.search(r"(^|\s)(-G|--get)(\s|$)", c):
+        return True
+    if re.search(r"\bmutation\b", c, re.I):
+        return False
+    graphql_query = bool(re.search(r"[\"']?query[\"']?\s*:\s*[\"']\s*(query\b|\{)", c, re.I))
+    return graphql_query or bool(_QUERY_PATH.search(c))
+
+
+def _scratch_roots(settings=None):
+    s = settings or Settings.load()
+    home = Path.home()
+    roots = [os.environ.get("TEMP", ""), os.environ.get("TMP", ""), home / "AppData" / "Local" / "Temp",
+             home / "autonomy-worktrees", data_path("chat_home"), getattr(s, "jobs_dir", "") or ""]
+    keep = [norm(home)]
+    try:
+        from . import vault
+        keep.append(norm(vault.root(s)))
+    except Exception:  # noqa: BLE001  (no vault set)
+        pass
+    # a "scratch" folder that holds the profile or the vault (a home inside TEMP) is not scratch
+    return [r for r in (norm(x) for x in roots if str(x)) if r and not any(k == r or k.startswith(r + "/") for k in keep)]
+
+
+def _only_scratch_deletes(cmd, settings=None):
+    """Every delete in the command names absolute paths inside scratch folders (temp, Waggle's worktrees, job
+    folders, the chat's own folder): nothing of the owner's is lost. A variable, a wildcard at the top of a scratch
+    root or a relative path means it is not known, so it still asks."""
+    pieces = [p.strip() for p in re.split(r"&&|;|\|\||\n", cmd or "")]
+    deletes = [p for p in pieces if re.match(r"(rm|del|erase|rmdir|rd|ri|remove-item)\s", p, re.I)]
+    if not deletes or any(re.search(r"[$%`*?]", p) for p in deletes):
+        return False
+    roots = _scratch_roots(settings)
+    for p in deletes:
+        ops = [o.strip("\"'") for o in _ARG.findall(p)[1:] if not o.startswith("-") and not re.match(r"^/[a-z]$", o, re.I)]
+        ops = [o for o in ops if o.lower() not in ("-recurse", "-force")]
+        if not ops:
+            return False
+        for o in ops:
+            if o.startswith("/tmp/") and len(o) > 5:
+                continue
+            if not re.match(r"^([a-zA-Z]:[\\/]|~[\\/]|/[a-zA-Z]/)", o):
+                return False
+            n = norm(o)
+            if not any(n.startswith(r + "/") for r in roots):  # inside a root, never the root itself
+                return False
+    return True
+
+
+def _declared_installs_only(cmd):
+    """Installs that add no package the agent chose: the project's own declared dependencies (pip install -r
+    requirements.txt, pip install -e ., npm install / npm ci with no names, uv sync)."""
+    for piece in [p.strip() for p in re.split(r"&&|;|\|\||\n", cmd or "")]:
+        m = re.search(r"\b(pip3?|uv\s+pip|npm|pnpm)\s+(install|i|add)\b(.*)$", piece, re.I)
+        if not m:
+            if re.search(r"\b(pipx|yarn|cargo|gem|go)\b.*\b(install|add)\b|\buv\s+(add|tool)", piece, re.I):
+                return False
+            continue
+        rest = m.group(3).split()
+        names, i = [], 0
+        while i < len(rest):
+            t = rest[i]
+            if t in ("-r", "--requirement", "-c", "--constraint"):
+                i += 2
+                continue
+            if t in ("-e", "--editable"):
+                nxt = rest[i + 1] if i + 1 < len(rest) else ""
+                if not re.match(r"^\.{1,2}([\\/][^\s]*)?(\[[\w,-]+\])?$", nxt):
+                    return False
+                i += 2
+                continue
+            if t.startswith("-"):
+                i += 1
+                continue
+            if re.match(r"^\.{1,2}([\\/][^\s]*)?(\[[\w,-]+\])?$", t):  # the project itself
+                i += 1
+                continue
+            names.append(t)
+            i += 1
+        if names:
+            return False
+    return True
 
 
 def _only_regenerable_deletes(cmd):
@@ -221,7 +367,7 @@ def _only_regenerable_deletes(cmd):
 # ---- tools -------------------------------------------------------------------------------------
 
 READ_TOOLS = {"read", "glob", "grep", "ls", "notebookread", "websearch", "webfetch", "todowrite", "todoread",
-              "taskoutput", "toolsearch"}
+              "taskoutput", "toolsearch", "structuredoutput"}  # StructuredOutput: the run's JSON answer, no effect
 WRITE_TOOLS = {"edit", "write", "multiedit", "notebookedit"}
 SHELL_TOOLS = {"bash", "powershell", "terminal", "shell", "execute_command", "run_command", "process"}
 # MCP / Hermes tool names that act on other people or the outside world.
@@ -417,6 +563,8 @@ def _base_decide(tool_name, args=None, settings=None, cwd=None):
             return Decision(ASK, "writing what looks like a password or key into a file", kind="secret")
         if under(path, write_roots(settings)):
             return Decision(ALLOW)
+        if name == "write" and _new_file_anywhere(path, settings):
+            return Decision(ALLOW, "a new file: nothing of yours is changed")
         return Decision(ASK, f"changing a file outside your project folders ({path})", kind="outside")
     if name in SHELL_TOOLS:
         action, why = classify_shell(str(args.get("command") or args.get("cmd") or ""))
@@ -917,6 +1065,11 @@ def _shell_act(verb, rest, why, cwd, stmt):
                ("install", "uninstall", "upgrade", "i")]
         return _Act("system", ("run",), [_name_target(o) for o in ops], "a system-wide install",
                     verbs=("install", "uninstall", "upgrade"))
+    if why == "installing third-party code":
+        ops = [o for o in _operands(rest, ("-r", "--requirement", "-c", "--constraint", "-i", "--index-url"))
+               if o.lower() not in ("install", "i", "add", "pip", "global", "tool", "-m")]
+        return _Act("system", ("run",), [_name_target(o) for o in ops], "installing third-party code",
+                    verbs=("install", "add"))
     if why == "posting to GitHub as you":
         ops = _operands(rest, ("-r", "--repo", "-t", "--title", "-b", "--body", "-x", "--method", "-f", "-F",
                                "--field", "--raw-field", "-l", "--label", "-a", "--assignee", "--base", "--head"))
@@ -1363,6 +1516,23 @@ def _consume(tool, args, session=""):
     finally:
         con.close()
     return False
+
+
+def expire_stale(now=None):
+    """Mark every pending approval past its time as 'expired' and return those rows, each exactly once (the duty
+    duty.approvals tells the owner in one line). A yes can never revive an expired approval."""
+    now = time.time() if now is None else now
+    out = []
+    con = _adb()
+    try:
+        for r in con.execute("SELECT * FROM approvals WHERE state='pending'").fetchall():
+            if now - r["created"] >= r["ttl"] and con.execute(
+                    "UPDATE approvals SET state='expired', decided_at=? WHERE id=? AND state='pending'",
+                    (now, r["id"])).rowcount:
+                out.append(dict(_row(r), id=r["id"], state="expired"))
+    finally:
+        con.close()
+    return sorted(out, key=lambda d: d["created"])
 
 
 def describe(item):

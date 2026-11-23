@@ -8,6 +8,9 @@
                                                                     vault part comes from knowledge.intake's graph)
   duty.consolidate  0 18 * * 0 (Sun)      latest, max 12 h late     weekly tidy of the profile notes (silent)
   duty.learn        0 19 * * 0 (Sun)      latest, max 12 h late     weekly traces -> skills; one text when it learned
+  duty.approvals    every 5 min           skip                      approvals nobody answered expire, and the owner
+                                                                    gets one line saying what was not done (Step 1:
+                                                                    11 of 17 asks were never answered and just sat)
 
 Not here, because the core already does them: waggle-proactive, waggle-digest, waggle-brief and waggle-calls only
 ran tick.main() (the outreach.look / brief / evening / call timers) and waggle-ingest is knowledge.intake.
@@ -29,9 +32,11 @@ ROUTINES = "duty.routines"
 GRAPH = "duty.graph"
 CONSOLIDATE = "duty.consolidate"
 LEARN = "duty.learn"
-KINDS = (HQ, ROUTINES, GRAPH, CONSOLIDATE, LEARN)
+APPROVALS = "duty.approvals"
+KINDS = (HQ, ROUTINES, GRAPH, CONSOLIDATE, LEARN, APPROVALS)
 DETACHED = {ROUTINES, GRAPH, CONSOLIDATE, LEARN}  # long or model-bound: own process, killed on timeout
-TIMEOUTS = {HQ: 120.0, ROUTINES: 2400.0, GRAPH: 1500.0, CONSOLIDATE: 900.0, LEARN: 1500.0}
+TIMEOUTS = {HQ: 120.0, ROUTINES: 2400.0, GRAPH: 1500.0, CONSOLIDATE: 900.0, LEARN: 1500.0, APPROVALS: 60.0}
+APPROVAL_TELL_WITHIN_S = 24 * 3600  # older leftovers (expired more than a day ago) are closed without a message
 LEASE_S = 120.0
 WEEKLY_MAX_LATE_S = 12 * 3600
 GRAPH_MAX_LATE_S = 6 * 3600
@@ -44,7 +49,8 @@ def timer_specs():
             (ROUTINES, "interval", "5m", ROUTINES, "skip", None),
             (GRAPH, "cron", "0 */6 * * *", GRAPH, "latest", GRAPH_MAX_LATE_S),
             (CONSOLIDATE, "cron", "0 18 * * 0", CONSOLIDATE, "latest", WEEKLY_MAX_LATE_S),
-            (LEARN, "cron", "0 19 * * 0", LEARN, "latest", WEEKLY_MAX_LATE_S)]
+            (LEARN, "cron", "0 19 * * 0", LEARN, "latest", WEEKLY_MAX_LATE_S),
+            (APPROVALS, "interval", "5m", APPROVALS, "skip", None)]
 
 
 def _background(purpose, fn):
@@ -151,7 +157,39 @@ def learn_job(payload=None, job=None, *, settings=None, now=None):
     return {"drafted": len(out["drafted"]), "sent": bool(line), "outbox": (row or {}).get("id")}
 
 
-HANDLERS = {HQ: hq_job, ROUTINES: routines_job, GRAPH: graph_job, CONSOLIDATE: consolidate_job, LEARN: learn_job}
+def expired_line(items):
+    """One line for the owner: what was asked and not answered, and that nothing was done."""
+    def what(it):
+        reason = str(it.get("reason") or "").split(":")[0].strip() or "an action"
+        return f"{reason} ({it.get('code')})"
+    if len(items) == 1:
+        return f"No answer came, so I let it go: {what(items[0])}. Nothing was done; ask me again if you still want it."
+    listed = "; ".join(what(i) for i in items[:4]) + (f"; and {len(items) - 4} more" if len(items) > 4 else "")
+    return f"{len(items)} requests got no answer, so I let them go: {listed}. Nothing was done."
+
+
+def approvals_job(payload=None, *, settings=None, now=None):
+    """Expire approvals nobody answered; tell the owner in one line (recent ones only)."""
+    from . import notify, policy
+    from .config import Settings
+    if _off():
+        return {"skipped": "off"}
+    now = time.time() if now is None else now
+    gone = policy.expire_stale(now)
+    recent = [g for g in gone if now - g["expires"] < APPROVAL_TELL_WITHIN_S]
+    if gone:
+        events.log("approvals_expired", count=len(gone), told=len(recent), codes=[g["code"] for g in gone][:20])
+    if not recent:
+        return {"expired": len(gone), "sent": False}
+    s = settings or Settings.load()
+    chats = [str(c).strip() for c in (getattr(s, "engine_chats", None) or []) if str(c).strip()]
+    row = notify.deliver("text", expired_line(recent), origin="approvals", ref="expired:" + ",".join(
+        g["id"] for g in recent), chat=chats[0] if chats else "", settings=s, now=now)
+    return {"expired": len(gone), "sent": True, "outbox": row.get("id")}
+
+
+HANDLERS = {HQ: hq_job, ROUTINES: routines_job, GRAPH: graph_job, CONSOLIDATE: consolidate_job, LEARN: learn_job,
+            APPROVALS: approvals_job}
 
 
 def register_jobs():

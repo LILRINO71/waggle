@@ -13,7 +13,8 @@ HOME = str(Path.home() / "Claude")
 # ---- policy -------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("cmd,want", [
-    ("git status", "allow"), ("python -m pytest -q", "allow"), ("pip install requests", "allow"),
+    ("git status", "allow"), ("python -m pytest -q", "allow"), ("pip install requests", "ask"),
+    ("pip install -r requirements.txt", "allow"), ("python -m pip install -e .[dev]", "allow"), ("npm ci", "allow"),
     ("rm -rf node_modules", "allow"), ("Remove-Item -Recurse -Force dist", "allow"),
     ("rm notes.txt", "ask"), ("Remove-Item C:/Users/hiheo/Claude/thesis.docx", "ask"),
     ("git push --force origin main", "ask"), ("git reset --hard HEAD~3", "ask"),

@@ -54,6 +54,7 @@ def test_each_moved_duty_is_a_core_timer_with_its_old_schedule(s):
         "duty.routines": ("interval", "5m", "duty.routines"),
         "duty.graph": ("cron", "0 */6 * * *", "duty.graph"),
         "duty.consolidate": ("cron", "0 18 * * 0", "duty.consolidate"),
+        "duty.approvals": ("interval", "5m", "duty.approvals"),  # Step 1: stale asks expire with one line
         "duty.learn": ("cron", "0 19 * * 0", "duty.learn"),
     }
     by = {t["id"]: t for t in timers.list(origin="duties")}
@@ -62,7 +63,7 @@ def test_each_moved_duty_is_a_core_timer_with_its_old_schedule(s):
     again_first = {k: v["next_run"] for k, v in by.items()}
     duties_core.register_core(now=at(13))  # the next start keeps the schedule and adds nothing
     again = {t["id"]: t["next_run"] for t in timers.list(origin="duties")}
-    assert again == again_first and len(again) == 5
+    assert again == again_first and len(again) == 6
 
 
 def test_the_core_loads_the_plug_in_and_it_is_in_the_production_list(monkeypatch):

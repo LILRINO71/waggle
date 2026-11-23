@@ -241,3 +241,77 @@ def test_unknown_platform_needs_a_delivery():
         chat_engine.delivery_for("x:1", "smoke-signals")
     assert chat_engine.address_for("telegram:123", "telegram") == "123"
     assert chat_engine.address_for("123", "telegram") == "123"
+
+
+# ---- Step 1: answers by voice, and asks that go stale ---------------------------------------------------------------
+
+@pytest.mark.parametrize("text", ["Yes, go ahead.", "Yeah do it", "Yes go ahead and do it, Waggle.", "sure, go for it",
+                                  "that's fine, go ahead", "Okay sure"])
+def test_a_spoken_yes_grants_this_chats_pending(text):
+    aid = policy.request_approval("Bash", {"command": "pip install requests"}, "installing third-party code",
+                                  session="telegram:5")
+    kind, _ = chat_engine.approval_preflight("telegram:5", text)
+    assert kind == "note" and policy.get(aid)["state"] == "granted"
+
+
+@pytest.mark.parametrize("text", ["yes but rename it first", "no idea", "no, go ahead", "yes I think so, why?"])
+def test_mixed_or_longer_answers_go_to_claude(text):
+    aid = policy.request_approval("Bash", {"command": "pip install x"}, "installing", session="telegram:5")
+    assert chat_engine.approval_preflight("telegram:5", text) is None
+    assert policy.get(aid)["state"] == "pending"
+
+
+@pytest.mark.parametrize("text", ["no", "No, don't.", "nope, not now", "never mind", "cancel that"])
+def test_a_plain_no_denies_this_chats_pending_and_tells_claude(text):
+    aid = policy.request_approval("Bash", {"command": "pip install x"}, "installing", session="telegram:5")
+    other = policy.request_approval("Bash", {"command": "git push"}, "pushing", session="objective-abc")
+    kind, note = chat_engine.approval_preflight("telegram:5", text)
+    assert kind == "note" and "said no" in note and policy.get(aid)["state"] == "denied"
+    assert policy.get(other)["state"] == "pending"  # background work is never answered by a bare no
+
+
+def test_a_plain_no_with_nothing_pending_is_just_a_message():
+    assert chat_engine.approval_preflight("telegram:5", "no") is None
+
+
+def test_an_unsure_transcript_grants_nothing():
+    aid = policy.request_approval("Bash", {"command": "pip install x"}, "installing", session="telegram:5")
+    kind, text = chat_engine.approval_preflight("telegram:5", "yes go ahead", heard_unsure=True)
+    assert kind == "reply" and "wasn't sure" in text and policy.get(aid)["state"] == "pending"
+
+
+def test_stale_approvals_expire_once_with_one_line_to_the_owner(settings):
+    from waggle import duties_core
+    settings.engine_chats = ["8273865620"]
+    settings.save()
+    t0 = 1_800_000_000.0
+    a = policy.request_approval("Bash", {"command": "pip install x"}, "installing third-party code", session="telegram:5")
+    b = policy.request_approval("Bash", {"command": "reg add HKCU"}, "changing the registry", session="telegram:5")
+    import sqlite3
+    from waggle.config import data_path
+    con = sqlite3.connect(data_path("approvals.db"))
+    con.execute("UPDATE approvals SET created=?", (t0,))
+    con.commit()
+    con.close()
+    assert duties_core.approvals_job(now=t0 + 60)["expired"] == 0  # still open
+    out = duties_core.approvals_job(now=t0 + policy.APPROVAL_TTL + 5)
+    assert out["expired"] == 2 and out["sent"]
+    rows = [r for r in outbox.list(limit=50) if r["origin"] == "approvals"]
+    assert len(rows) == 1 and "2 requests got no answer" in rows[0]["body"] and "Nothing was done" in rows[0]["body"]
+    assert policy.get(a)["state"] == "expired" and policy.get(b)["state"] == "expired"
+    assert duties_core.approvals_job(now=t0 + policy.APPROVAL_TTL + 400) == {"expired": 0, "sent": False}
+    kind, text = chat_engine.approval_preflight("telegram:5", f"approve {policy.get(a)['code']}")
+    assert kind == "reply" and "no longer open" in text  # a late yes revives nothing
+
+
+def test_leftovers_expired_long_ago_close_without_a_message(settings):
+    from waggle import duties_core
+    t0 = 1_800_000_000.0
+    policy.request_approval("Bash", {"command": "pip install x"}, "installing", session="telegram:5")
+    import sqlite3
+    from waggle.config import data_path
+    con = sqlite3.connect(data_path("approvals.db"))
+    con.execute("UPDATE approvals SET created=?", (t0,))
+    con.commit()
+    con.close()
+    assert duties_core.approvals_job(now=t0 + 3 * 86400) == {"expired": 1, "sent": False}
