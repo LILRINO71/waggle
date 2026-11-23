@@ -68,8 +68,8 @@ if ($st -notmatch "Waggle core: healthy") { throw "core is not healthy after the
 if ($st -notmatch "version $($after.Substring(0,7))") { throw "core does not report version $($after.Substring(0,7))" }
 
 if (-not $SkipCanary) {
-    Step "live check (canary, no reminder)"
-    & py -3.14 -m waggle.canary run --no-reminder --no-alert
+    Step "live check (canary: code path through Telegram, no reminder, no Claude call)"
+    & py -3.14 -m waggle.canary run --no-reminder --no-alert --code-path
     if ($LASTEXITCODE) { throw "the live canary failed: Waggle did not answer through Telegram" }
 }
 Write-Output "deployed $($after.Substring(0,7))"

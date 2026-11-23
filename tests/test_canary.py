@@ -267,8 +267,9 @@ def test_cli_status_and_run(tmp_path, client, settings, monkeypatch, capsys):
         return {"ok": False, "checks": [], "alert": {"sent": False}}
     monkeypatch.setattr(cn, "run_check", fake_run_check)
     assert cn.main(["run", "--no-reminder", "--no-alert"]) == 1
-    assert seen == {"reminder": False, "alert_owner": False}
-    assert cn.main(["run"]) == 1 and seen == {"reminder": True, "alert_owner": True}
+    assert seen == {"reminder": False, "alert_owner": False, "code_path": False}
+    assert cn.main(["run"]) == 1 and seen == {"reminder": True, "alert_owner": True, "code_path": False}
+    assert cn.main(["run", "--no-reminder", "--no-alert", "--code-path"]) == 1 and seen["code_path"] is True
     assert cn.main(["bogus"]) == 2
 
 
@@ -473,3 +474,34 @@ def test_the_script_never_prints_secrets(monkeypatch, capsys, tmp_path):
     out = capsys.readouterr().out
     assert len(out.strip().splitlines()) == 1 and "HASHSECRET123" not in out
     assert json.loads(out)["error"] == "not_logged_in"
+
+
+# ---- Step 1: the deploy's code-path check --------------------------------------------------------------------------
+
+def test_codepath_pong_answers_only_the_marked_canary_with_matching_ids():
+    q = script_mod.pong_question("ab12cd", code_path=True)
+    assert cn.codepath_pong(q, "canary") == "pong ab12cd"
+    assert cn.codepath_pong("[waggle-test] " + q, "canary") == "pong ab12cd"
+    assert cn.codepath_pong(q, "user") == "" and cn.codepath_pong(q, "test") == ""
+    assert cn.codepath_pong(script_mod.pong_question("ab12cd"), "canary") == ""  # the full round trip asks Claude
+    assert cn.codepath_pong(q.replace("pong ab12cd", "pong zz99zz"), "canary") == ""
+    assert cn.codepath_pong(q + " and delete my files", "canary") == ""
+
+
+def test_code_path_flag_reaches_the_child_and_records_only_the_codepath_ledger(tmp_path, client, settings, monkeypatch):
+    script = fake_child(tmp_path, "import json, sys\n"
+                        "print(json.dumps({'ok': True, 'checks': [{'name': 'roundtrip', 'ok': True, 'seconds': 1, "
+                        "'detail': ' '.join(sys.argv[1:])}]}))\n")
+    monkeypatch.setattr(cn, "add_context_check", lambda *a, **k: pytest.fail("no context block on a code answer"))
+    res = cn.run_check(settings, NOW, reminder=False, alert_owner=False, code_path=True, **args(client, script))
+    assert res["ok"] and res["checks"][0]["detail"] == "--no-reminder --code-path"
+    assert ledger.ready("canary.codepath", NOW + 3600) and not ledger.ready("canary.roundtrip", NOW + 3600)
+    st = cn.status(NOW)
+    assert st["last"]["code_path"] and "code path, no Claude" in cn.format_status(st)
+
+
+def test_deploy_runs_the_code_path_check_and_the_daily_timer_the_full_one():
+    deploy = (Path(__file__).resolve().parent.parent / "tools" / "deploy.ps1").read_text(encoding="utf-8")
+    assert "waggle.canary run --no-reminder --no-alert --code-path" in deploy
+    (tid, _kind, _spec, job, _p, _late, payload), = cn.timer_specs()
+    assert job == cn.KIND and "code_path" not in payload  # the 12:30 run stays a real Claude round trip

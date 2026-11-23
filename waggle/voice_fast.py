@@ -546,9 +546,12 @@ def unseen_note(chat, *, now=None, within_s=6 * 3600, limit=UNSEEN_MAX):
     """A note for Claude's next message: the exchanges of this chat answered without it (code or local) since the
     last one it answered, so "and tomorrow?" after a quick answer has its context. "" when there are none."""
     from . import traces
+    from .canary import codepath_pong
     rows = traces.recent_chat(chat, n=12, within_s=within_s, now=now)  # newest first
     unseen = []
     for r in rows:
+        if codepath_pong(r.get("request") or "", "canary"):
+            continue  # a deploy's code-path canary is not part of the owner's conversation
         by = str(r.get("answered_by") or "")
         if by.startswith("claude") or (by and by not in ("code", "local", "none")):
             break  # Claude answered this one: it saw everything before it

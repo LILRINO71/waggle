@@ -444,7 +444,12 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
     # (waggle/voice_fast.py); anything else goes the usual way and the miss is only noted.
     # A typed message gets the code tier only (time, date, reminders, sums, conversions), never the local model.
     fast, froute, typed_fast = None, None, False
-    if vr is not None and not note and not attachments and (attempt or 1) < 2:
+    from .canary import codepath_pong
+    pong = codepath_pong(text, rec.origin)  # a deploy's code-path canary: the whole road, no Claude call
+    if pong:
+        fast = voice_fast.Fast("code", "canary", pong, pong)
+        froute, typed_fast = voice_fast.Route("code", fast), vr is None
+    elif vr is not None and not note and not attachments and (attempt or 1) < 2:
         froute = voice_fast.route(text, s, chat=chat, voice_info=rec.voice)
         fast = froute.fast
         rec.voice["fast_why"] = froute.why or None

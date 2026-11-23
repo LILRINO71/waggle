@@ -16,13 +16,20 @@ When a check fails, or cannot run (no venv, no saved login, the script crashed, 
 plain-words text AND one ntfy push (the phone alarm does not depend on Telegram), at most once a day for the same
 failure. Nothing is sent when the check passes.
 
-  python -m waggle.canary run [--no-reminder] [--no-alert]   run it now (after a deploy: --no-reminder)
+  python -m waggle.canary run [--no-reminder] [--no-alert] [--code-path]   run it now
   python -m waggle.canary status                              the last result and the ledger entries
+
+Code path (Step 1, 2026-11-23): a deploy runs `run --no-reminder --no-alert --code-path`. The test client sends
+"canary <id> (code path): reply with exactly: pong <id>" and the engine answers it in code (codepath_pong) for origin
+"canary" only, so the whole road is proven (Telegram in, gateway, core inbox, engine, outbox, Telegram out) without a
+Claude call; its ledger entry is `canary.codepath`. The one full Claude round trip a day stays on the 12:30 timer.
+Before this, every deploy spent a Sonnet turn: 50 canary Sonnet turns against 46 of the owner's (2026-11-21).
 
 Only the standard library is used here; Telegram is reached only by the child."""
 import datetime as dt
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -46,7 +53,20 @@ SESSION_WAIT_S = 180  # the child first waits this long for another test-client 
 ALERT_ORIGIN = "canary-alert"
 LAST_KEY = "canary.last"
 ALERT_KEY = "canary.alert"
-LEDGER = {"roundtrip": "canary.roundtrip", "reminder": "canary.reminder", "context": "canary.context"}
+LEDGER = {"roundtrip": "canary.roundtrip", "reminder": "canary.reminder", "context": "canary.context",
+          "codepath": "canary.codepath"}
+METHOD_CODEPATH = "Telegram round trip through the test client, answered in code (no Claude)"
+_CODEPATH = re.compile(r"^\s*(?:\[waggle-test\]\s*)?canary ([a-z0-9]{4,16}) \(code path\): reply with exactly: "
+                       r"pong ([a-z0-9]{4,16})\s*$", re.I)
+
+
+def codepath_pong(text, origin):
+    """The engine's answer to a code-path canary ("pong <id>"), or "" for anything else. Only for origin "canary"
+    (the owner's own account sending the test mark), so nobody else can make Waggle skip its model."""
+    if origin != "canary":
+        return ""
+    m = _CODEPATH.match(text or "")
+    return f"pong {m.group(1)}" if m and m.group(1).lower() == m.group(2).lower() else ""
 METHOD = "daily Telegram round trip through the test client"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)  # no console flash when run under pythonw
 SCRIPT = Path(__file__).resolve().parent.parent / "tools" / "testclient" / "canary.py"
@@ -133,7 +153,7 @@ def _failure(name, detail, seconds=0.0):
             "error": name}
 
 
-def execute(reminder, *, base=None, script=None, python=None, timeout=None):
+def execute(reminder, *, base=None, script=None, python=None, timeout=None, code_path=False):
     """Run the child (or find out that it cannot run) and return the normalised result dict."""
     base = Path(base) if base else testclient_dir()
     py = Path(python) if python else venv_python(base)
@@ -143,7 +163,8 @@ def execute(reminder, *, base=None, script=None, python=None, timeout=None):
         return _failure("setup", f"The daily check couldn't run: {problem}.")
     timeout = float(timeout if timeout is not None else child_timeout(reminder))
     t0 = time.monotonic()
-    code, out, err, timed_out = spawn(py, script, [] if reminder else ["--no-reminder"], timeout)
+    args = ([] if reminder else ["--no-reminder"]) + (["--code-path"] if code_path else [])
+    code, out, err, timed_out = spawn(py, script, args, timeout)
     took = round(time.monotonic() - t0, 1)
     if timed_out:
         return _failure("timeout", f"The daily check didn't finish within {timeout:.0f} s and was stopped.", took)
@@ -163,8 +184,9 @@ def execute(reminder, *, base=None, script=None, python=None, timeout=None):
 
 # ---- recording and alerting ---------------------------------------------------------------------
 
-def record(result, *, reminder, now=None):
-    """Ledger entries, the event and `canary.last`. A check that did not run leaves its ledger entry alone."""
+def record(result, *, reminder, now=None, code_path=False):
+    """Ledger entries, the event and `canary.last`. A check that did not run leaves its ledger entry alone. A code-path
+    run records only `canary.codepath`: it says nothing about whether Claude answers."""
     from waggle.core import events as core_events
     from waggle.core import ledger, store
     now = store.now_or(now)
@@ -173,13 +195,15 @@ def record(result, *, reminder, now=None):
         name = LEDGER.get(c["name"])
         if name is None and not c["ok"]:
             name = LEDGER["roundtrip"]  # setup / timeout / script / telegram: the round trip did not work
+        if code_path and name == LEDGER["roundtrip"]:
+            name = LEDGER["codepath"]
         if name is not None:
-            ledger.record(name, c["ok"], method=METHOD, evidence_ref=ref, ttl_s=LEDGER_TTL_S,
-                          detail=c["detail"], now=now)
+            ledger.record(name, c["ok"], method=METHOD_CODEPATH if code_path else METHOD, evidence_ref=ref,
+                          ttl_s=LEDGER_TTL_S, detail=c["detail"], now=now)
     core_events.emit("canary.ok" if result["ok"] else "canary.failed", source="canary", ref=ref, now=now,
-                     data={"reminder": reminder, "checks": [{k: c[k] for k in ("name", "ok", "seconds")}
-                                                            for c in result["checks"]]})
-    store.set_meta(LAST_KEY, json.dumps({**result, "ts": now, "reminder": reminder}))
+                     data={"reminder": reminder, "code_path": bool(code_path),
+                           "checks": [{k: c[k] for k in ("name", "ok", "seconds")} for c in result["checks"]]})
+    store.set_meta(LAST_KEY, json.dumps({**result, "ts": now, "reminder": reminder, "code_path": bool(code_path)}))
 
 
 def failure_key(result):
@@ -261,15 +285,17 @@ def add_context_check(result, since):
         result["ok"] = False
 
 
-def run_check(settings=None, now=None, *, reminder=True, alert_owner=True, **spawn_args):
+def run_check(settings=None, now=None, *, reminder=True, alert_owner=True, code_path=False, **spawn_args):
     """The whole daily check: run the child, record the result, alert on a failure. Returns the result dict plus
-    "alert" (what was sent). `spawn_args` (base, script, python, timeout) are for tests."""
+    "alert" (what was sent). code_path: the pong is answered in code (no Claude call, no context block to check).
+    `spawn_args` (base, script, python, timeout) are for tests."""
     s = settings or Settings.load()
     now = now or time.time()
     t_start = time.time()
-    result = execute(reminder, **spawn_args)
-    add_context_check(result, t_start)
-    record(result, reminder=reminder, now=now)
+    result = execute(reminder, code_path=code_path, **spawn_args)
+    if not code_path:
+        add_context_check(result, t_start)
+    record(result, reminder=reminder, now=now, code_path=code_path)
     result["alert"] = {"sent": False, "why": "passed" if result["ok"] else "alerts off"}
     if not result["ok"] and alert_owner:
         try:
@@ -340,6 +366,7 @@ def format_status(d):
         lines = ["Daily check: has not run yet"]
     else:
         lines = [f"Daily check: {'passed' if last['ok'] else 'FAILED'} at {when(last['ts'])}"
+                 f"{' (code path, no Claude)' if last.get('code_path') else ''}"
                  f"{'' if last.get('reminder') else ' (no reminder check)'}"]
         lines += [f"  {c['name']}: {'ok' if c['ok'] else 'FAILED'} in {c['seconds']} s"
                   f"{'' if c['ok'] else ' - ' + c['detail']}" for c in last["checks"]]
@@ -352,13 +379,14 @@ def main(argv=None):
     argv = sys.argv[1:] if argv is None else list(argv)
     cmd = argv[0] if argv else "status"
     if cmd == "run":
-        res = run_check(reminder="--no-reminder" not in argv, alert_owner="--no-alert" not in argv)
+        res = run_check(reminder="--no-reminder" not in argv, alert_owner="--no-alert" not in argv,
+                        code_path="--code-path" in argv)
         print(json.dumps(res, ensure_ascii=False))
         return 0 if res["ok"] else 1
     if cmd == "status":
         print(format_status(status()))
         return 0
-    print("usage: python -m waggle.canary run [--no-reminder] [--no-alert] | status")
+    print("usage: python -m waggle.canary run [--no-reminder] [--no-alert] [--code-path] | status")
     return 2
 
 

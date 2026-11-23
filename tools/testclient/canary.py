@@ -3,6 +3,7 @@ r"""Waggle's end-to-end check ("canary"), run with the test venv's python by wag
 It talks to the bot as the owner, like ask.py, with the "[waggle-test]" mark (Waggle answers normally and records
 origin "canary", so nothing learns from it):
   1. roundtrip  "canary <id>: reply with exactly: pong <id>"  -> waits up to 90 s for a bot reply with "pong <id>".
+     With --code-path it asks "canary <id> (code path): ..." and Waggle answers in code (no Claude call).
   2. reminder   "remind me in 1 minute to canary <id>"         -> waits up to 150 s for the delivered "⏰" text.
      Skipped with --no-reminder, and skipped after a failed roundtrip (the bot is not answering at all).
 It prints ONE JSON line on stdout: {"ok", "id", "checks": [{"name", "ok", "seconds", "detail"}], "error",
@@ -28,8 +29,9 @@ POLL_S = 2.0
 DETAIL_CHARS = 160
 
 
-def pong_question(cid):
-    return f"canary {cid}: reply with exactly: pong {cid}"
+def pong_question(cid, code_path=False):
+    """code_path: Waggle answers it in code (waggle.canary.codepath_pong), proving the road without a Claude call."""
+    return f"canary {cid}{' (code path)' if code_path else ''}: reply with exactly: pong {cid}"
 
 
 def reminder_question(cid):
@@ -82,8 +84,8 @@ def _others(seen, cid):
     return (" Instead it said: " + " | ".join(tclib.short_reply(t, 80) for t in texts[-2:])) if texts else ""
 
 
-async def check_roundtrip(client, bot, cid, wait_s=PONG_WAIT_S, ours=None, owned=None, **kw):
-    sent = await client.send_message(bot, MARK + pong_question(cid))
+async def check_roundtrip(client, bot, cid, wait_s=PONG_WAIT_S, ours=None, owned=None, code_path=False, **kw):
+    sent = await client.send_message(bot, MARK + pong_question(cid, code_path))
     (ours if ours is not None else []).append(sent.id)
     owned = owned if owned is not None else {}
     m, took, seen = await wait_for(client, bot, sent, lambda t: is_pong(t, cid), wait_s, owned, **kw)
@@ -121,7 +123,7 @@ async def cleanup(client, bot, cid, ours, owned):
 
 
 async def run(client, bot_name, *, reminder=True, cid=None, pong_wait=PONG_WAIT_S, reminder_wait=REMINDER_WAIT_S,
-              keep=False, clock=time.monotonic, sleep=None, poll_s=POLL_S):
+              keep=False, clock=time.monotonic, sleep=None, poll_s=POLL_S, code_path=False):
     """The whole check on an already built client. Returns the result dict (never raises)."""
     cid = cid or tclib.new_token()
     t0 = clock()
@@ -137,7 +139,7 @@ async def run(client, bot_name, *, reminder=True, cid=None, pong_wait=PONG_WAIT_
                                              "The test client is not logged in (run tools\\testclient\\login.py)."))
                 return out
             bot = await client.get_entity(bot_name)
-            first = await check_roundtrip(client, bot, cid, pong_wait, ours, owned, **kw)
+            first = await check_roundtrip(client, bot, cid, pong_wait, ours, owned, code_path=code_path, **kw)
             out["checks"].append(first)
             if first["ok"] and reminder:
                 out["checks"].append(await check_reminder(client, bot, cid, reminder_wait, ours, owned, **kw))
@@ -160,6 +162,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--bot", default="")
     ap.add_argument("--no-reminder", action="store_true")
+    ap.add_argument("--code-path", action="store_true", help="the pong is answered in code: no Claude call")
     ap.add_argument("--keep", action="store_true", help="leave the canary's messages in the chat after a pass")
     ap.add_argument("--pong-wait", type=float, default=PONG_WAIT_S)
     ap.add_argument("--reminder-wait", type=float, default=REMINDER_WAIT_S)
@@ -196,7 +199,7 @@ def main(argv=None):
             return 1
         client = TelegramClient(tclib.session_base(d), int(api["api_id"]), api["api_hash"])
         res = asyncio.run(run(client, bot, reminder=not a.no_reminder, pong_wait=a.pong_wait,
-                              reminder_wait=a.reminder_wait, keep=a.keep))
+                              reminder_wait=a.reminder_wait, keep=a.keep, code_path=a.code_path))
     print(json.dumps(res, ensure_ascii=False), flush=True)
     return 0 if res["ok"] else 1
 

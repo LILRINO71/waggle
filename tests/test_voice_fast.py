@@ -515,3 +515,21 @@ def test_the_streamed_response_reports_the_tier(settings):
 def test_a_quick_answer_is_not_counted_as_a_local_fallback_by_the_learning_loop(settings):
     assert traces.turn_outcome(answered_by="local", delivered=True)[0] == "degraded"
     assert traces.turn_outcome(answered_by="local", delivered=True, fast=True)[0] == "ok"
+
+
+# ---- Step 1: a deploy's code-path canary is answered in code --------------------------------------------------------
+
+def test_a_code_path_canary_is_answered_in_code_and_never_reaches_claude(settings):
+    q = "canary ab12cd (code path): reply with exactly: pong ab12cd"
+    rec, d, fake = typed_turn(settings, q, origin="canary")
+    assert fake.procs == [] and rec.answered_by == "code" and rec.delivered
+    assert d.messages[-1] == "pong ab12cd" and rec.voice["fast_kind"] == "canary"
+    rec2, d2, fake2 = typed_turn(settings, "and what's new?")  # the owner's next message: the canary is not in it
+    assert "pong ab12cd" not in fake2.procs[0].inputs[0]
+
+
+def test_the_same_words_from_the_owner_or_the_old_wording_still_go_to_claude(settings):
+    rec, _, fake = typed_turn(settings, "canary ab12cd (code path): reply with exactly: pong ab12cd")  # origin user
+    assert rec.answered_by.startswith("claude") and fake.procs
+    rec, _, fake = typed_turn(settings, "canary ab12cd: reply with exactly: pong ab12cd", origin="canary")
+    assert rec.answered_by.startswith("claude") and fake.procs  # the daily full round trip
