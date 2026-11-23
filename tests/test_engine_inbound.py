@@ -338,3 +338,16 @@ def test_consent_in_a_sentence_needs_a_fresh_ask_from_this_chat():
     aid = policy.request_approval("Bash", {"command": "git push"}, "pushing", session="objective-abc")
     assert chat_engine.approval_preflight("telegram:5", "Sure, you have my permission, go ahead with it all") is None
     assert policy.get(aid)["state"] == "pending"
+
+
+def test_an_ask_the_owner_never_saw_expires_without_a_message(settings):
+    from waggle import duties_core
+    t0 = 1_800_000_000.0
+    policy.request_approval("StructuredOutput", {"events": []}, "an unfamiliar tool", session="")
+    import sqlite3
+    from waggle.config import data_path
+    con = sqlite3.connect(data_path("approvals.db"))
+    con.execute("UPDATE approvals SET created=?", (t0,))
+    con.commit()
+    con.close()
+    assert duties_core.approvals_job(now=t0 + policy.APPROVAL_TTL + 5) == {"expired": 1, "sent": False}

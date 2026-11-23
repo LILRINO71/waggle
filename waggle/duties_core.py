@@ -176,7 +176,10 @@ def approvals_job(payload=None, *, settings=None, now=None):
         return {"skipped": "off"}
     now = time.time() if now is None else now
     gone = policy.expire_stale(now)
-    recent = [g for g in gone if now - g["expires"] < APPROVAL_TELL_WITHIN_S]
+    # only asks the owner was shown: a chat's own ("telegram:..."), an objective's or a routine's (they text the owner)
+    shown = [g for g in gone if ":" in str(g.get("session") or "")
+             or str(g.get("session") or "").startswith(("objective-", "routine-"))]
+    recent = [g for g in shown if now - g["expires"] < APPROVAL_TELL_WITHIN_S]
     if gone:
         events.log("approvals_expired", count=len(gone), told=len(recent), codes=[g["code"] for g in gone][:20])
     if not recent:
