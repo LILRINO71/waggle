@@ -120,3 +120,76 @@ def test_local_summary_is_empty_when_the_model_fails():
     assert chat_session.local_summary("   ", chat_fn=lambda *a, **k: "x") == ""
     got = chat_session.local_summary("User: x", chat_fn=lambda msgs, **k: " - a fact ")
     assert got == "- a fact"
+
+
+# ---- the context block: sent once per Claude session ---------------------------------------------------------------
+
+CORE = "<waggle_core>Pranav, FTC team 7831, robotics build season</waggle_core>"
+
+
+def msg(text, core=CORE):
+    return f"<waggle_context>\n{core}\n\nNow: Monday\n</waggle_context>\n\n{text}"
+
+
+def test_an_unchanged_section_is_sent_once_per_session(settings):
+    fake = FakeClaude()
+    s = ChatSession("c", settings=settings, popen=fake, claude="claude")
+    r1 = s.turn(msg("one"), repeatable=[("core", CORE)])
+    r2 = s.turn(msg("two"), repeatable=[("core", CORE)])
+    first, second = fake.procs[0].inputs
+    assert CORE in first and r1.repeated == []
+    assert CORE not in second and chat_session.pointer("core") in second and r2.repeated == ["core"]
+    assert "Now: Monday" in second and second.endswith("two")  # this turn's state is always there
+    changed = CORE.replace("build season", "competition week")
+    s.turn(msg("three", changed), repeatable=[("core", changed)])
+    assert changed in fake.procs[0].inputs[2]  # a changed section goes out in full
+
+
+def test_a_resumed_session_still_knows_and_a_fresh_one_gets_everything(settings):
+    settings.chat_session_max_tokens = 0
+    fake = FakeClaude()
+    s = ChatSession("c", settings=settings, popen=fake, claude="claude", transcript=lambda chat, **k: "")
+    s.turn(msg("one"), repeatable=[("core", CORE)])
+    s.stop()
+    s.turn(msg("two"), repeatable=[("core", CORE)])
+    assert fake.procs[1].arg("--resume") and CORE not in fake.procs[1].inputs[0]
+    chat_store.set_session("c", "", turns=0)  # the next start is a fresh Claude session
+    s.stop()
+    s.turn(msg("three"), repeatable=[("core", CORE)])
+    assert not fake.procs[2].arg("--resume") and CORE in fake.procs[2].inputs[0]
+
+
+def test_after_a_failed_turn_everything_is_sent_again(settings):
+    state = {"n": 0}
+
+    def script(proc, text):
+        state["n"] += 1
+        if state["n"] == 2:
+            proc.emit(ev_init(proc.session_id))
+            proc.emit(ev_result(proc.session_id, "", is_error=True, subtype="error_during_execution"))
+        else:
+            proc.answer("ok")
+    fake = FakeClaude(script)
+    s = ChatSession("c", settings=settings, popen=fake, claude="claude")
+    s.turn(msg("one"), repeatable=[("core", CORE)])
+    r2 = s.turn(msg("two"), repeatable=[("core", CORE)])
+    assert not r2.ok
+    s.turn(msg("three"), repeatable=[("core", CORE)])
+    assert CORE in fake.procs[-1].inputs[-1]
+
+
+def test_the_engine_hands_its_unchanging_sections_to_the_session(settings, monkeypatch):
+    from engine_fakes import FakeDelivery
+    from waggle import chat_engine, memory, traces
+    monkeypatch.setattr(memory, "safe_core_block", lambda s=None: CORE)
+    fake = FakeClaude()
+    sess = ChatSession("telegram:9", settings=settings, popen=fake, claude="claude")
+    settings.edit_interval_s = 0.05
+    for t in ("first message", "second message"):
+        rec = chat_engine.run_turn("telegram:9", t, FakeDelivery(), platform="telegram", settings=settings,
+                                   session=sess)
+    a, b = fake.procs[0].inputs
+    assert CORE in a and CORE not in b and chat_session.pointer("core") in b
+    assert rec.context["core"] and "core" in rec.context["repeated"]
+    import json
+    assert "core" in json.loads(traces.get(rec.trace_id)["extra"])["context"]["repeated"]

@@ -177,15 +177,24 @@ class ContextBlock(str):
     """The context text of one turn, with `marker`: what it really carried. The marker is written on the turn's
     trace (extra.context) so "did the context step work?" can be checked afterwards (context_alive.py: doctor and
     the daily canary). {"v", "core": the core block was in it, "sources": the parts that produced text,
-    "lessons_checked": the lessons step ran, "lessons": ids injected, "chars"}."""
+    "lessons_checked": the lessons step ran, "lessons": ids injected, "chars"}. `sections`: (name, text) of the parts
+    the chat session may leave out when it already sent exactly that text in the same Claude session
+    (ChatSession repeatable=): the ones that do not change from turn to turn."""
     marker = None
+    sections = ()
+
+
+# Parts that a chat session may replace with a pointer when it already holds exactly the same text (Step 1: the core
+# block alone is up to 6,500 characters and was re-sent every turn). Approvals, news, deliveries and the time are
+# always sent: they are this turn's state.
+REPEATABLE = ("core", "lessons", "memory", "projects", "graph", "recall", "voice")
 
 
 def build_context(chat, text, voice=False, settings=None, since=None, budget_s=None):
     """The per-turn <waggle_context> block (a ContextBlock: a str that also carries `.marker`). Every source is
     optional: a failing one is skipped, never fatal. budget_s: how long the notes search may take (default
     CONTEXT_BUDGET_S)."""
-    parts = []
+    parts, sections = [], []
     marker = {"v": 1, "core": False, "sources": [], "lessons_checked": False, "lessons": []}
 
     def add(name, fn, budget=None):
@@ -213,6 +222,7 @@ def build_context(chat, text, voice=False, settings=None, since=None, budget_s=N
                 out = box.get("out")
             if out and out.strip():
                 parts.append(out.strip())
+                sections.append((name, out.strip()))
                 marker["sources"].append(name)
                 if name == "core" and "<waggle_core>" in out:
                     marker["core"] = True
@@ -244,11 +254,13 @@ def build_context(chat, text, voice=False, settings=None, since=None, budget_s=N
     if voice:
         from .voice_turn import VOICE_HINT
         parts.append(VOICE_HINT + "\n" + VOICE_STYLE)
+        sections.append(("voice", parts[-1]))
     parts.append(f"Now: {time.strftime('%A %Y-%m-%d %#I:%M %p')} (user's local time). Write every time for the user "
                  "in 12-hour form with AM or PM (5:44 PM), never in 24-hour form.")
     block = ContextBlock("<waggle_context>\n" + "\n\n".join(parts) + "\n</waggle_context>")
     marker["chars"] = len(block)
     block.marker = marker
+    block.sections = tuple((n, t) for n, t in sections if n in REPEATABLE)
     return block
 
 
@@ -566,9 +578,13 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
             guard.write_turn_state(chat, rec.turn_id, rec.origin, text if owner_text is None else owner_text,
                                    voice=voice, confident=rec.voice.get(
                 "stt_confident", True), max_age_s=(s.chat_turn_timeout_s or 600) + 60)  # what the owner said (policy)
-            res = sess.turn(message, on_text=vr.feed if vr else _after_heard(writer.update, rec.voice.get("heard_line")),
-                            on_tool=(lambda *a, **k: vr.ack()) if vr else writer.tool,  # PC voice: "on it" at once
-                            origin=rec.origin)
+            turn_kw = dict(on_text=vr.feed if vr else _after_heard(writer.update, rec.voice.get("heard_line")),
+                           on_tool=(lambda *a, **k: vr.ack()) if vr else writer.tool,  # PC voice: "on it" at once
+                           origin=rec.origin)
+            repeatable = tuple(getattr(ctx, "sections", ()) or ())
+            if repeatable and getattr(sess, "takes_repeatable", False):
+                turn_kw["repeatable"] = repeatable  # what the session already holds is not sent again
+            res = sess.turn(message, **turn_kw)
             guard.end_turn_state(chat, rec.turn_id)
             rec.voice["model_s"] = round(time.time() - t_model, 2) if vr else None
         except Exception as e:  # a bug in the session layer is a failed turn, never a silent one
@@ -576,6 +592,8 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
             why = f"error: {type(e).__name__}: {e}"
         if res is not None:
             rec.steps, rec.usage, rec.model = res.steps, res.usage, res.model
+            if getattr(res, "repeated", None) and isinstance(rec.context, dict):
+                rec.context["repeated"] = list(res.repeated)  # left out: the session already had them
             rec.session = {"restarted": res.restarted, "resumed": res.resumed, "retried": res.retried,
                            "fresh": res.fresh_session, "claude_session": res.session_id, "kind": res.kind,
                            "error": res.error[:300], "api_ttft_ms": res.api_ttft_ms, "attempt": attempt,

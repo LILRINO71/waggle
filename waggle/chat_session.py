@@ -126,6 +126,7 @@ class TurnResult:
     fresh_session: bool = False  # a brand-new Claude session (seeded with the transcript)
     api_ttft_ms: float = None  # Claude Code's own time to first token for this turn (from its result event)
     context_tokens: int = 0  # context the session carries after this turn (its last model call), see context_tokens()
+    repeated: list = field(default_factory=list)  # context sections left out: the session already held them
     rotating: bool = False  # this turn took the session past chat_session_max_tokens: a fresh one is being prepared
 
 
@@ -366,6 +367,57 @@ def carried_seed(summary, recent):
     return "\n\n".join(parts)
 
 
+# ---- context sent once per session (Step 1) ------------------------------------------------------------------
+# The engine's context block repeats sections that rarely change (the core block: up to 6,500 characters). Within one
+# Claude session a section whose exact text was already sent is replaced by a one-line pointer; the record is kept
+# per chat on disk, keyed by the Claude session id, so a restarted process that resumes the session still knows, and
+# a fresh, rotated or new-day session gets everything again. Measured before: the session grew ~3k tokens a turn.
+def _sent_path():
+    return data_path("chat_context_sent.json")
+
+
+def _hash(text):
+    import hashlib
+    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:20]
+
+
+def sent_sections(chat, session):
+    try:
+        d = json.loads(_sent_path().read_text(encoding="utf-8")).get(str(chat)) or {}
+    except (OSError, ValueError, AttributeError):
+        return set()
+    return set(d.get("hashes") or []) if session and d.get("session") == session else set()
+
+
+def remember_sent(chat, session, hashes):
+    p = _sent_path()
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+        d = d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        d = {}
+    old = d.get(str(chat)) or {}
+    keep = set(old.get("hashes") or []) if old.get("session") == session else set()
+    d[str(chat)] = {"session": session, "hashes": sorted(keep | set(hashes))[-200:]}
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(d), encoding="utf-8")
+    os.replace(tmp, p)
+
+
+def forget_sent(chat):
+    """The session may not hold what was sent (a failed or retried turn): send everything next time."""
+    try:
+        d = json.loads(_sent_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if isinstance(d, dict) and d.pop(str(chat), None) is not None:
+        _sent_path().write_text(json.dumps(d), encoding="utf-8")
+
+
+def pointer(name):
+    return f"[{name}: unchanged, given earlier in this conversation]"
+
+
 def build_cmd(chat, settings, claude, resume="", new_session="", servers=None, origin="user"):
     from .agent import hidden_servers, settings_json
     s = settings
@@ -466,6 +518,8 @@ class _Proc:
 
 
 class ChatSession:
+    takes_repeatable = True  # turn(..., repeatable=) is understood (chat_engine checks before passing it)
+
     def __init__(self, chat, settings=None, popen=None, claude=None, transcript=None, clock=time.time,
                  summarizer=None):
         self.chat = chat
@@ -584,9 +638,12 @@ class ChatSession:
             return {"error": f"{type(e).__name__}: {e}"[:300]}
 
     # -- one turn
-    def turn(self, text, on_text=None, on_tool=None, timeout=None, origin=None):
-        """Send one user message, stream the reply. Never raises for Claude-side failures: see .kind/.error."""
+    def turn(self, text, on_text=None, on_tool=None, timeout=None, origin=None, repeatable=()):
+        """Send one user message, stream the reply. Never raises for Claude-side failures: see .kind/.error.
+        repeatable: (name, text) sections of the message that may be replaced by a pointer when this Claude session
+        already received exactly that text."""
         res = TurnResult()
+        self._repeatable = tuple(repeatable or ())
         self._marked = False
         t0 = self.clock()
         timeout = timeout or self.settings.chat_turn_timeout_s
@@ -615,6 +672,7 @@ class ChatSession:
                 # died before saying anything: start again (resume, or fresh if the resume itself failed);
                 # Claude does not know the stored session (never written, or deleted): start a fresh one
                 res.retried = True
+                forget_sent(self.chat)
                 if gone:
                     chat_store.set_session(self.chat, "", turns=0)
                 self.stop()
@@ -640,6 +698,8 @@ class ChatSession:
                 res.kind, res.error = err
             else:
                 res.ok = True
+        if not res.ok:
+            forget_sent(self.chat)
         if res.ok or parser.result is not None:
             row = chat_store.get_chat(self.chat) or {}
             sid = parser.session_id or row.get("claude_session") or ""
@@ -698,8 +758,17 @@ class ChatSession:
         if self._seed and self._reseed and self.transcript:
             self._seed = self.transcript(self.chat) or self._seed
         self._reseed = False
+        sid = (chat_store.get_chat(self.chat) or {}).get("claude_session") or ""
+        sent, new, res.repeated = sent_sections(self.chat, sid), [], []
+        for name, part in getattr(self, "_repeatable", ()):
+            h = _hash(part)
+            if h in sent and part in msg:
+                msg = msg.replace(part, pointer(name), 1)
+                res.repeated.append(name)
+            else:
+                new.append(h)
         if self._seed:
-            msg = f"<earlier_conversation>\n{self._seed}\n</earlier_conversation>\n\n{text}"
+            msg = f"<earlier_conversation>\n{self._seed}\n</earlier_conversation>\n\n{msg}"
         try:
             self.proc.send(msg)
         except (OSError, ValueError) as e:
@@ -708,6 +777,11 @@ class ChatSession:
             return parser
         self._seed = ""
         self._carry = None  # the carried summary reached the fresh session
+        if new and sid:
+            try:
+                remember_sent(self.chat, sid, new)
+            except OSError:
+                pass
         row = chat_store.get_chat(self.chat) or {}
         if not (row.get("session_turns") or 0):
             # Claude writes the session down once it has a message: from now on it can be resumed
