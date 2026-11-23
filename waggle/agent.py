@@ -3,9 +3,11 @@
     res = agent.run("find my FTC notes from last week and summarise them", model="haiku")
 
 What the agent gets:
-- Claude Code's own tools: Read, Edit, Write, Glob, Grep, Bash, PowerShell, WebSearch, WebFetch
-- the Waggle MCP server (memory, projects, skills, Hermes tools via the bridge, agents, routines)
-- the user's claude.ai connectors (Gmail, Drive, Docs, Sheets, Calendar when connected)
+- Claude Code's own tools: Read, Edit, Write, Glob, Grep, Bash, PowerShell, WebSearch (no WebFetch: web pages go
+  through Waggle's web_read, which the local model reduces to typed fields first)
+- the Waggle MCP server (memory, projects, skills, web_read, Hermes tools via the bridge, agents, routines)
+- the user's claude.ai connectors (Drive, Docs, Sheets, Calendar when connected). Not Gmail: a mail body is read
+  only by the mail watch's local model or a tool-less call, never by a session with tools (Step 1)
 Every tool call passes the PreToolUse hook (waggle/agent_hook.py -> policy.py). Calls that need the user's OK
 come back as approval requests (res.approvals); the reply asks the user, and "yes" re-runs with that call allowed.
 The stream is parsed so every tool step lands in the trace (what was used, what failed, what was denied).
@@ -23,15 +25,16 @@ from . import claude_cli, policy, quota
 from .config import Settings, data_path
 
 REPO = Path(__file__).resolve().parent.parent
-BUILTIN_TOOLS = ["Read", "Edit", "Write", "Glob", "Grep", "Bash", "PowerShell", "WebSearch", "WebFetch", "TodoWrite"]
-CONNECTORS_KEEP = ("claude_ai_Gmail", "claude_ai_Google_Drive", "claude_ai_Google_Docs", "claude_ai_Google_Sheets",
+BUILTIN_TOOLS = ["Read", "Edit", "Write", "Glob", "Grep", "Bash", "PowerShell", "WebSearch", "TodoWrite"]
+UNTRUSTED_READERS = ("WebFetch",)
+CONNECTORS_KEEP = ("claude_ai_Google_Drive", "claude_ai_Google_Docs", "claude_ai_Google_Sheets",
                    "claude_ai_Google_Slides", "claude_ai_Claude_Docs",
                    "claude_ai_Google_Calendar", "claude_ai_Google_Tasks", "claude_ai_Gcal")
 
 AGENT_RULES = """You are Waggle, the user's personal AI agent, running on their Windows PC with real tools.
 How you work:
-- Do the task, don't describe it. Use tools: files and shell (Bash/PowerShell), web (WebSearch/WebFetch), the
-  user's Gmail/Drive/Docs connectors, and Waggle's MCP tools: vault_search/remember (their memory),
+- Do the task, don't describe it. Use tools: files and shell (Bash/PowerShell), web (WebSearch, and web_read
+  for any page), the user's Drive/Docs connectors, and Waggle's MCP tools: vault_search/remember (their memory),
   project_status/project_update, skill_search/skill_load (proven procedures - check for one before improvising a
   multi-step job), hermes_tools/hermes_tool (browser automation, computer use: mouse/keyboard/screen, vision,
   cron jobs, TTS, and more), notify_me, start_build (hand big multi-file builds to a background Opus job),
@@ -105,7 +108,7 @@ def build_cmd(model, system, effort="low", tools=None, servers=None, claude=None
     wanted = claude_cli.MODEL_IDS.get(model, model)
     cmd = [claude, "-p", "--model", wanted, "--effort", effort, "--output-format", "stream-json", "--verbose",
            "--no-session-persistence", "--disable-slash-commands",
-           "--tools", ",".join(tools or BUILTIN_TOOLS),
+           "--tools", ",".join(t for t in (tools or BUILTIN_TOOLS) if t not in UNTRUSTED_READERS),
            "--settings", json.dumps(settings_json()),
            "--mcp-config", mcp_config_path(),
            "--append-system-prompt", system]

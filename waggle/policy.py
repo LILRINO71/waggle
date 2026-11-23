@@ -410,6 +410,7 @@ WAGGLE_TOOLS = {
     "cad_convert": (ALLOW, _NEW_FILE), "doc_to_pdf": (ALLOW, _NEW_FILE), "media_convert": (ALLOW, _NEW_FILE),
     "image_convert": (ALLOW, _NEW_FILE),
     "ftc_team": (ALLOW, "reads one FTC team's public FTCScout page (read-only)"),
+    "web_read": (ALLOW, "reads a public web page through the local model, as typed fields (toolkit.web_read)"),
     # waggle/toolfinder.py: searching public catalogs only reads; installing runs third-party code, so it asks every time
     "find_tool": (ALLOW, "searches public tool catalogs (read-only)"), "installed_tools": (ALLOW, _READS),
     # Google through gogcli (waggle/google.py): reads only look; the five below change the owner's own account

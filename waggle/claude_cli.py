@@ -485,6 +485,10 @@ def stream(prompt, model="sonnet", system=None, effort="low", purpose="stream", 
                      error_kind=kind)
 
 
+# A build session runs with every tool: raw web pages and mail bodies stay out of it (the untrusted-content rule).
+BUILD_UNTRUSTED_OFF = ["WebFetch", "mcp__claude_ai_Gmail"]
+
+
 def start_session(prompt, model, cwd, log_path, system_append=None, permission_mode="bypassPermissions",
                   mcp_config=None):
     """Launch a full Claude Code run (tools on, session saved) as a detached background process."""
@@ -492,7 +496,7 @@ def start_session(prompt, model, cwd, log_path, system_append=None, permission_m
     if not claude:
         raise ClaudeError("Claude Code CLI not found. Set CLAUDE_BIN.", "missing")
     cmd = [claude, "-p", "--model", MODEL_IDS.get(model, model), "--output-format", "stream-json",
-           "--verbose", "--permission-mode", permission_mode]
+           "--verbose", "--permission-mode", permission_mode, "--disallowedTools", *BUILD_UNTRUSTED_OFF]
     if system_append:
         cmd += ["--append-system-prompt", system_append]
     if mcp_config:  # an extra MCP server file for this run only (a proposal build: Context7)

@@ -114,7 +114,8 @@ def run(job_id, resume=False):
         if resume and job.get("session_id"):
             claude = claude_cli.find_claude()
             cmd = [claude, "-p", "--resume", job["session_id"], "--model", claude_cli.MODEL_IDS.get(model, model),
-                   "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions"]
+                   "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions",
+                   "--disallowedTools", *claude_cli.BUILD_UNTRUSTED_OFF]
             if job.get("mcp_config"):
                 cmd += ["--mcp-config", job["mcp_config"]]
             with open(log, "a", encoding="utf-8") as fh:

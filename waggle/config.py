@@ -166,8 +166,9 @@ class Settings:
     media_keep_days: float = 14  # saved attachments are deleted after this many days
     audio_transcribe_max_s: float = 600  # an audio file (not a voice note) up to this long is transcribed
     video_transcribe_max_s: float = 120  # the sound of a video up to this long is transcribed (frames are always taken)
-    chat_tools: list = field(default_factory=lambda: ["Read", "Glob", "Grep", "Bash", "PowerShell", "WebSearch", "Write", "Edit", "NotebookEdit",
-                                                      "WebFetch"])
+    # WebFetch is never given (chat_session.UNTRUSTED_READERS): pages go through web_read (Step 1)
+    chat_tools: list = field(default_factory=lambda: ["Read", "Glob", "Grep", "Bash", "PowerShell", "WebSearch", "Write", "Edit",
+                                                      "NotebookEdit"])
     # Wolfram's free cloud MCP (no key): checked maths and science for the chat brain. false = not offered.
     wolfram_mcp: bool = True
     # Windows-MCP (waggle/winmcp.py): the chat brain reads the Windows UI tree and acts on apps. false = not offered.

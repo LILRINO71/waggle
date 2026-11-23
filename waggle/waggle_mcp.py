@@ -29,7 +29,7 @@ _client = bridge.Client()
 # Agents without ToolSearch load every tool as before; the mark is ignored there.
 ALWAYS_LOAD = frozenset({"vault_search", "recall", "remember", "send_to_me", "remind_me", "list_reminders",
                          "background_task", "weather", "google_doc_new", "google_doc_append", "google_event_new",
-                         "google_task_add"})
+                         "google_task_add", "web_read"})
 
 
 def _bridge_dispatch(name, args):
@@ -49,6 +49,8 @@ def t_hermes_tools(args):
 
 def t_hermes_tool(args):
     name, targs = args.get("name", ""), args.get("args") or {}
+    if name == "web_extract":  # the raw page into this session: web_read reduces it first (untrusted-content rule)
+        return "Use web_read (url and your question) to read a web page: the local model reads it first."
     if isinstance(targs, str):
         try:
             targs = json.loads(targs)
