@@ -2,6 +2,13 @@
 
 Read this first, then `overnight/REBUILD_PLAN.md` (the governing plan) and `overnight/USER_TESTS.md`.
 
+**2026-11-23, Step 1 (lean, unblocked chat) is live at 9dcac65.** The governing documents are now
+`docs/ARCHITECTURE-DECISION-2026-11-21.md` and `docs/STATUS.md` (Step 1 log there, with evidence). In short: the chat
+runs lean in `~/.waggle/chat_home` (switch `chat_lean`), rotates at 60k tokens with a local summary, deploys check
+the code path only (`canary run --code-path`), asks are decided by effect (`tests/test_policy_effects.py`,
+`tools/replay_asks.py`), stale asks expire via `duty.approvals`, and web pages go through `web_read` (WebFetch and
+the agents' Gmail connector are gone). Open: the owner-turn latency and 50-turn false-ask gates need real use.
+
 ## What is live
 
 The live checkout is `main`. Merging to `main` is a deploy: scheduled scripts and the tool hook run straight
