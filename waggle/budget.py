@@ -39,7 +39,8 @@ DEFAULT_COST = {"haiku": 0.005, "sonnet": 0.03, "opus": 0.6, "fable": 0.6}
 AGENT_COST = {"haiku": 0.06, "sonnet": 0.2, "opus": 0.8, "fable": 0.8}
 # purpose -> its own allowance: allowed while the 5-hour window stays at or below stop_at, at most daily_calls calls
 # per budget day. Not counted against background_daily_units, not stopped at background_stop_at.
-OWN_ALLOWANCE = {"mailwatch": {"stop_at": 0.92, "daily_calls": 40}}
+OWN_ALLOWANCE = {"mailwatch": {"stop_at": 0.92, "daily_calls": 40},
+                 "think": {"stop_at": 0.92, "daily_calls": 8}}   # 3 passes a day, each at most 2 calls
 
 _ctx = contextvars.ContextVar("waggle_budget_ctx", default=None)
 

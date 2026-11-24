@@ -24,6 +24,8 @@ it is missing. It is never logged and never put in a response; `python -m waggle
 
 The PC voice (waggle/pcvoice.py) uses the same entry with two query options:
     ?format=wav   the reply audio is the speech server's WAV as it is (no AAC encoding; the PC plays WAV)
+    ?client=dash  the request comes from the dashboard page (waggle/home.py): typed text is labelled as such and the
+                  written copy to Telegram goes without a notification sound
     ?client=pc    the request comes from the PC microphone: dictated text is labelled "PC wake word", the written
                   copy to Telegram goes without a notification sound (the owner just heard the answer), and an
                   answer that arrives after the holding line is marked to be spoken on the PC (waggle/pcspeak.py)
@@ -59,7 +61,7 @@ TOKEN_FILE = "voice.token"
 PATH = "/voice"
 TRANSCRIBE_PATH = "/voice/transcribe"
 STREAM_PATH = "/voice/stream"
-CLIENT_SOURCE = {"pc": "PC wake word"}  # ?client=... -> how dictated text from that client is labelled
+CLIENT_SOURCE = {"pc": "PC wake word", "dash": "typed in the Waggle dashboard"}  # ?client=... -> how dictated text from that client is labelled
 HOLD_LINE = "Working on it, sir. I will message you when it is done."
 ERROR_LINE = "I could not answer that just now, sir. Please try again in a moment."
 MAX_BODY = 2 * 1024 * 1024
@@ -225,6 +227,9 @@ class _Run:
                 meta["speak_pc"] = True
             else:  # they just heard it through the speakers: the written record arrives without a sound
                 meta["silent"] = True
+        elif self.client == "dash":  # asked and answered on the dashboard page: the record arrives without a sound
+            meta["via"] = "dashboard"
+            meta["silent"] = True
         try:
             return outbox.enqueue("text", text, chat=self.chat, idem_key=f"voice:{self.rec.turn_id}", origin="voice",
                                   meta=meta)

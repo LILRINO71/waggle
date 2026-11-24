@@ -1,0 +1,410 @@
+{
+ "about": "Situations for the thinking pass (waggle/think.py). Every person and detail here is made up. None of these situations has any code or prompt line of its own: the pass must get them from the picture and its knowledge of the world. 'tune' cases may be looked at while wording the prompt; 'holdout' cases are only ever scored. A new example from the owner is added here, never to the code.",
+ "base": {
+  "What they have said they want from you (their own words)": "- Tell me when a day or an event is a reason to reach out to someone in my life, I like doing small things for my family and friends.\n- I care more about things I would have missed than about things I already know.\n- No generic productivity nagging and nothing salesy.",
+  "Who they are (from their own notes)": "Sam, 17, high school junior. Lives with Mom and Dad and a younger sister, Priya. On FTC robotics team 4410 (lead programmer). Builds software projects on GitHub for a college portfolio. Wants to study computer science. School day 8:00 AM to 3:15 PM; usually at the PC 4 to 10 PM.",
+  "People in their life (Waggle's notes)": "- Dad: father, engineer, taught Sam to solder; they watch F1 together\n- Mom: mother, nurse, works night shifts on weekends\n- Priya: younger sister, 12\n- Arjun: best friend, on the robotics team; birthday 12 February\n- Coach Rivera: robotics mentor\n- Mr. Lee: physics teacher",
+  "Active projects": "- robot-code: autonomous routine for the next meet | next: tune the shooter\n- portfolio-site: personal site | next: add the simulator project"
+ },
+ "cases": [
+  {
+   "id": "mens-day",
+   "group": "tune",
+   "now": "2026-11-18 16:15",
+   "sections": {
+    "What they said lately (their own words, newest first)": "[Tue 17:02] they said: can you check why the CI is red on robot-code\n[Mon 19:40] they said: remind me to bring the charger tomorrow"
+   },
+   "expect": {
+    "raise": [
+     [
+      "men's day",
+      "mens day",
+      "men’s day"
+     ],
+     [
+      "dad",
+      "father"
+     ]
+    ]
+   }
+  },
+  {
+   "id": "friend-birthday-tomorrow",
+   "group": "tune",
+   "now": "2027-02-11 16:15",
+   "sections": {
+    "What they said lately (their own words, newest first)": "[Wed 18:10] they said: what's a good way to explain PID to a freshman"
+   },
+   "expect": {
+    "raise": [
+     [
+      "arjun"
+     ],
+     [
+      "birthday"
+     ]
+    ]
+   }
+  },
+  {
+   "id": "batteries-before-meet",
+   "group": "tune",
+   "now": "2026-10-14 16:15",
+   "sections": {
+    "Coming up (dated)": "- 2026-10-17 (Sat) League meet 2 at Ridgeview High, robot inspection 7:30 AM",
+    "What they said lately (their own words, newest first)": "[Tue 20:15] they said: shooter is finally consistent at 5 m/s\n[Fri 16:40] they said: both robot batteries are basically dead, they sag under load. I need to order two new ones before the meet"
+   },
+   "expect": {
+    "raise": [
+     [
+      "batter"
+     ]
+    ]
+   }
+  },
+  {
+   "id": "rain-on-outdoor-event",
+   "group": "tune",
+   "now": "2026-04-17 19:45",
+   "sections": {
+    "Coming up (dated)": "- 2026-04-18 (Sat) Team car wash fundraiser, school parking lot, 9 AM to 1 PM (Sam organised the sign-ups)",
+    "Weather": "Today: 71F, clear.\nTomorrow: 58F, rain all morning, 90% chance, easing after 2 PM."
+   },
+   "expect": {
+    "raise": [
+     [
+      "rain"
+     ],
+     [
+      "car wash",
+      "fundraiser"
+     ]
+    ]
+   }
+  },
+  {
+   "id": "ordinary-day",
+   "group": "tune",
+   "now": "2026-09-15 16:15",
+   "sections": {
+    "What they said lately (their own words, newest first)": "[Mon 17:30] they said: thanks, that fixed the import error",
+    "Weather": "Today: 84F, sunny.\nTomorrow: 85F, sunny."
+   },
+   "expect": {
+    "silent": true
+   }
+  },
+  {
+   "id": "already-told",
+   "group": "tune",
+   "now": "2026-09-22 16:15",
+   "sections": {
+    "Coming up (dated)": "- 2026-09-25 (Fri) Physics lab report due",
+    "Already told them in the last 3 days (with their reaction where known)": "[Mon 16:20] Physics lab report is due Friday. Want a 3-step plan to get it done by Thursday night?  -> welcome\n[Mon 16:24] Plan saved: data tables tonight, analysis Wednesday, write-up Thursday.",
+    "What they said lately (their own words, newest first)": "[Mon 16:22] they said: yes do the plan"
+   },
+   "expect": {
+    "silent": true
+   }
+  },
+  {
+   "id": "recommendation-letter",
+   "group": "tune",
+   "now": "2026-10-26 16:15",
+   "sections": {
+    "Coming up (dated)": "- 2026-11-01 (Sun) Early action application deadline, State University",
+    "What they said lately (their own words, newest first)": "[Sun 14:05] they said: essay draft 2 is done\n[Thu 17:50] they said: I still have to ask Mr. Lee for the recommendation letter, I'll email him this week"
+   },
+   "expect": {
+    "raise": [
+     [
+      "mr. lee",
+      "mr lee",
+      "recommendation"
+     ]
+    ]
+   }
+  },
+  {
+   "id": "clocks-change",
+   "group": "tune",
+   "now": "2026-10-31 19:45",
+   "sections": {
+    "Coming up (dated)": "- 2026-11-01 (Sun) Robotics outreach booth at the farmers market, setup 8:00 AM sharp, Sam has the banner",
+    "Who they are (from their own notes)": "Sam, 17, high school junior in California. Lives with Mom and Dad and a younger sister, Priya. On FTC robotics team 4410."
+   },
+   "expect": {
+    "raise": [
+     [
+      "clock",
+      "daylight",
+      "fall back",
+      "hour"
+     ]
+    ]
+   }
+  },
+  {
+   "id": "quiz-versus-practice",
+   "group": "tune",
+   "now": "2026-12-08 16:15",
+   "sections": {
+    "Coming up (dated)": "- 2026-12-09 (Wed) Robotics practice 5 PM to 9 PM (last one before the qualifier)\n- 2026-12-10 (Thu) Chemistry unit test, first period",
+    "What they said lately (their own words, newest first)": "[Mon 21:10] they said: I always study the night before, it sticks better"
+   },
+   "expect": {
+    "raise": [
+     [
+      "chem",
+      "test"
+     ],
+     [
+      "practice",
+      "tonight",
+      "today",
+      "wednesday"
+     ]
+    ]
+   }
+  },
+  {
+   "id": "mothers-day",
+   "group": "tune",
+   "now": "2026-05-08 16:15",
+   "sections": {
+    "What they said lately (their own words, newest first)": "[Thu 18:45] they said: push the portfolio site changes"
+   },
+   "expect": {
+    "raise": [
+     [
+      "mother's day",
+      "mothers day",
+      "mother’s day"
+     ],
+     [
+      "mom",
+      "mother"
+     ]
+    ]
+   }
+  },
+  {
+   "id": "trial-about-to-charge",
+   "group": "holdout",
+   "now": "2026-08-12 16:15",
+   "sections": {
+    "What they said lately (their own words, newest first)": "[Tue 19:00] they said: how do I export a STEP file\n[Thu 20:30] they said: just started the 7 day free trial of CircuitLab Pro for the wiring diagram, I have to cancel it before it charges my mom's card"
+   },
+   "expect": {
+    "raise": [
+     [
+      "trial",
+      "cancel"
+     ]
+    ]
+   }
+  },
+  {
+   "id": "no-sleep-before-test",
+   "group": "holdout",
+   "now": "2026-03-11 19:45",
+   "sections": {
+    "Coming up (dated)": "- 2026-03-12 (Thu) SAT school-day test, 8:00 AM",
+    "What they said lately (their own words, newest first)": "[Wed 01:52] they said: why does my odometry drift after turns\n[Tue 02:14] they said: one more bug then I sleep\n[Mon 01:37] they said: what's the max current for a gobilda yellow jacket"
+   },
+   "expect": {
+    "raise": [
+     [
+      "sleep",
+      "bed",
+      "rest",
+      "early night"
+     ]
+    ]
+   }
+  },
+  {
+   "id": "friend-surgery-day",
+   "group": "holdout",
+   "now": "2026-06-18 19:45",
+   "sections": {
+    "People in their life (Waggle's notes)": "- Dad: father\n- Mom: mother\n- Maya: close friend since middle school, lab partner",
+    "What they said lately (their own words, newest first)": "[Thu 16:30] they said: finish the drivetrain CAD notes\n[Mon 18:20] they said: Maya's knee surgery is Thursday morning, she's pretty nervous about it"
+   },
+   "expect": {
+    "raise": [
+     [
+      "maya"
+     ]
+    ]
+   }
+  },
+  {
+   "id": "judges-see-red-build",
+   "group": "holdout",
+   "now": "2026-01-13 16:15",
+   "sections": {
+    "What they said lately (their own words, newest first)": "[Mon 17:45] they said: the scholarship committee said they will look through my GitHub on Friday, mostly the simulator repo",
+    "What Waggle's detectors noticed (handled separately; context only)": "- [github_ci] simulator: tests failing on main since Sunday (evening)\n- [mail] Newsletter: 10 robotics kits on sale (dropped)"
+   },
+   "expect": {
+    "raise": [
+     [
+      "simulator",
+      "ci",
+      "tests",
+      "build"
+     ],
+     [
+      "friday",
+      "scholarship",
+      "committee"
+     ]
+    ]
+   }
+  },
+  {
+   "id": "asked-for-quiet",
+   "group": "holdout",
+   "now": "2026-07-11 16:15",
+   "sections": {
+    "What they said lately (their own words, newest first)": "[Sat 10:05] they said: don't message me about small stuff today, I'm taking the day off",
+    "What Waggle's detectors noticed (handled separately; context only)": "- [github] portfolio-site: 2 commits not pushed (pending)\n- [mail] Weekly digest from a coding blog (evening)",
+    "Weather": "Today: 88F, sunny.\nTomorrow: 90F, sunny."
+   },
+   "expect": {
+    "silent": true
+   }
+  },
+  {
+   "id": "registration-opens",
+   "group": "holdout",
+   "now": "2026-11-19 19:45",
+   "sections": {
+    "What they said lately (their own words, newest first)": "[Mon 16:50] they said: dual enrollment registration opens Friday at 7 AM and the intro CS section fills in like ten minutes. I haven't picked my backup classes yet"
+   },
+   "expect": {
+    "raise": [
+     [
+      "registration",
+      "register",
+      "enrol"
+     ],
+     [
+      "backup",
+      "7"
+     ]
+    ]
+   }
+  },
+  {
+   "id": "heat-at-outdoor-booth",
+   "group": "holdout",
+   "now": "2026-08-21 19:45",
+   "sections": {
+    "Coming up (dated)": "- 2026-08-22 (Sat) Robotics demo booth at the county fair, outdoors, 11 AM to 3 PM, Sam runs the driving station",
+    "Weather": "Today: 101F, sunny.\nTomorrow: 109F, sunny, excessive heat warning noon to 8 PM."
+   },
+   "expect": {
+    "raise": [
+     [
+      "heat",
+      "hot",
+      "109",
+      "water",
+      "shade"
+     ]
+    ]
+   }
+  },
+  {
+   "id": "mentor-went-out-of-his-way",
+   "group": "holdout",
+   "now": "2026-02-02 16:15",
+   "sections": {
+    "What they said lately (their own words, newest first)": "[Sun 19:30] they said: we passed inspection with the new intake!!\n[Sat 21:40] they said: Coach Rivera stayed at the shop until 9 tonight and drove an hour to get us a replacement servo, without him the intake would not exist"
+   },
+   "expect": {
+    "raise": [
+     [
+      "rivera",
+      "coach"
+     ],
+     [
+      "thank"
+     ]
+    ]
+   }
+  },
+  {
+   "id": "birthday-in-the-notes",
+   "group": "holdout",
+   "now": "2026-11-20 16:15",
+   "sections": {
+    "People in their life (Waggle's notes)": "- Dad: father\n- Mom: mother\n- Grandma Leela: grandmother, lives in Pune, calls on Sundays",
+    "What they said lately (their own words, newest first)": "[Tue 18:00] they said: grandma's birthday is some time this month, I wrote the date in my notes last year, don't let me miss it"
+   },
+   "lookups": {
+    "vault": "(Family/Dates.md) Grandma Leela: birthday 21 November. Call in the morning India time is evening here."
+   },
+   "expect": {
+    "raise": [
+     [
+      "grandma",
+      "leela"
+     ],
+     [
+      "birthday"
+     ]
+    ],
+    "lookup": true
+   }
+  },
+  {
+   "id": "knows-nobody",
+   "group": "tune",
+   "now": "2026-09-08 16:15",
+   "replace": {
+    "Who they are (from their own notes)": "Sam, 17, high school junior. On a robotics team. Builds software projects.",
+    "People in their life (Waggle's notes)": ""
+   },
+   "sections": {
+    "What they said lately (their own words, newest first)": "[Mon 17:10] they said: what's the difference between a servo and a motor"
+   },
+   "expect": {
+    "question": true,
+    "no_invented_people": true
+   },
+   "note": "moved from holdout on 2026-11-24: the question paragraph of the prompt was reworded after this case failed"
+  },
+  {
+   "id": "marketing-noise",
+   "group": "holdout",
+   "now": "2026-11-24 16:15",
+   "sections": {
+    "What Waggle's detectors noticed (handled separately; context only)": "- [mail] BLACK FRIDAY: 40% off mechanical keyboards, today only (dropped)\n- [mail] Your weekly coding newsletter (evening)\n- [mail] Streaming service: new shows this week (dropped)",
+    "What they said lately (their own words, newest first)": "[Mon 20:00] they said: thanks"
+   },
+   "expect": {
+    "silent": true
+   }
+  },
+  {
+   "id": "id-before-flight",
+   "group": "holdout",
+   "now": "2026-11-20 16:15",
+   "sections": {
+    "Coming up (dated)": "- 2026-12-02 (Wed) Flight to Chicago for the invitational tournament, 6:40 AM",
+    "What they said lately (their own words, newest first)": "[Thu 17:20] they said: packing list for the tournament is in my notes\n[Sat 12:15] they said: ugh my state ID expired last month, I need a new one before I can fly, the DMV takes like two weeks"
+   },
+   "expect": {
+    "raise": [
+     [
+      "id",
+      "dmv"
+     ]
+    ]
+   }
+  }
+ ]
+}

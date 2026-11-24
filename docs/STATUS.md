@@ -288,3 +288,51 @@ code-path canary 2.3 s. Live: timers `night.tick` (10 min) and `night.report` (0
 reads "Tonight: SimBench PR #12 refresh; then #13; then #15 (+1). It will not start yet: the 7-day Claude limit is
 at 85%". The week resets about 2026-11-25 06:00, so the first real night is 2026-11-25. Night tasks also need
 `npm ci` from SimBench's own lockfile in the sandbox (`setup`, run by code).
+
+## Thinking pass and Home page (built 2026-11-24, on the owner's word)
+
+The owner's point: every example they gave turned into a new system. Cause, read from the code: the reasoning step
+(`initiative.py`) only judges findings that a coded detector produced, so Waggle could only notice what somebody
+had written a detector for.
+
+**The thinking pass** (`waggle/think.py`, timers `outreach.think.0-2` at 07:40, 16:15, 19:45, job `outreach.think`,
+switch `think_enabled`). One tool-less Sonnet call gets the whole picture (date, the world's calendar, the owner's
+own words about what they want, profile, people, projects, coming up, what they said and did, weather, detector
+findings, what was already told and how they reacted) and one open question. It may ask for up to three
+read-only look-ups (vault, weather, one public page), answered in a second call. Each thought goes through the
+existing guard rails (`initiative._apply`: topic repeat, daily cap, quiet hours, the expected-value check) as a
+signal of kind `thought`, so it is logged, capped and labelled like every other unprompted message. At most one
+question a day when it lacks a fact about the owner's life. Budget: its own allowance, 8 calls a day.
+
+- Rule written into the module and tested (`test_the_prompt_names_no_situation`): a new situation is never a
+  reason to add code or a prompt line. New code is only for a new thing Waggle can see. The owner's examples go
+  into `bench/think_cases.json` and, in their own words, into the vault note `12 - Waggle/Me/Proactive.md`
+  (`think.add_taste`, or the "Teach me" box on the Home page).
+- Two things the first real-model runs showed, both fixed without naming a situation: Sonnet does not recall minor
+  observances from a date alone ("Thu 2026-11-19: nothing specific"), so the pass got a sense for it
+  (`waggle/worldcal.py`: the "Holidays and observances" list of each date's Wikipedia page, cached per month-day; the
+  request names only a date); and with the list in front of it Sonnet still judged the day "not linked" until the
+  picture carried the owner's stated taste.
+- **Evidence** (`tools/think_eval.py`, real Sonnet, made-up pictures, nothing sent, results in
+  [`THINK-EVAL.md`](THINK-EVAL.md)): 22 situations, none with code of its own. First full run 21 of 22 (the miss:
+  it asked no question when it knew nobody; the question paragraph was reworded and that case moved to the tune
+  group). Final run: tune 11 of 11, holdout 10 of 11 (the miss: on a day marked quiet it suggested a Thanksgiving
+  thank-you two days ahead; the answers vary a little from run to run).
+- Live picture from the real vault: 15.7k characters in 5.7 s; it has **no people section** (Waggle's `People`
+  folder is empty), so the first passes will ask.
+- Tests: `tests/test_think.py` (30), `tests/test_worldcal.py` (7).
+- **Open (needs real days):** nothing has been sent to the owner by this pass yet. While the week is at or past
+  `seven_day_stop_at` (85 %) the pass is refused by the budget and says so in `python -m waggle.think status`.
+  Gate: over 7 days, at least 70 % of its messages labelled welcome, and the owner names one it got right that
+  nobody coded.
+
+**Waggle Home** (`waggle/home.py`, served by the dashboard at http://127.0.0.1:8897/; the older panel is at `/ops`).
+An orb to hold and talk to (or the Space key), a chat box, "On my mind" (the pass's thoughts with why, and a
+"Think now" button), "Teach me" (adds a line to the taste note), what Waggle told the owner today, the work list,
+the night report with Accept / Redo / Reject, reminders and usage.
+- Typed and spoken turns go through the core's voice line as client `dash` (`voiceline.CLIENT_SOURCE`): the same
+  engine turn, memory and permission hook as any owner turn.
+- The page can now act as the owner, so every POST is checked (`home.check_post`): Host is this machine, Origin
+  (when sent) is this page, and the request carries a token only this page was given. Tests: `tests/test_home.py`
+  (12), including another site and another host name being refused.
+- **Open:** the owner has not used it yet; the microphone path was not driven with real speech.

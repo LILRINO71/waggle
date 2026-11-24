@@ -9,6 +9,16 @@ the code path only (`canary run --code-path`), asks are decided by effect (`test
 `tools/replay_asks.py`), stale asks expire via `duty.approvals`, and web pages go through `web_read` (WebFetch and
 the agents' Gmail connector are gone). Open: the owner-turn latency and 50-turn false-ask gates need real use.
 
+**2026-11-24, the thinking pass and Waggle Home.** The owner's rule from this night: an example they give is a test
+case (`bench/think_cases.json`) and a line in their own words (`12 - Waggle/Me/Proactive.md`), never a new detector
+or prompt line; new code is only for a new thing Waggle can see or do. `waggle/think.py` is the open pass over the
+whole picture (three a day), `waggle/worldcal.py` its calendar sense, `tools/think_eval.py` the real-model check
+(22 situations), `waggle/home.py` the page at http://127.0.0.1:8897/ (the old panel is `/ops`). Details and what is
+still unproven: `docs/STATUS.md`, last section. Direction agreed the same night: Waggle is the body (ears, voice,
+phone, clock, memory) and first-party Claude the brain and worker; no new work on Waggle's own autonomy engine or
+self-improvement loop. The owner's final test for "built": they ask it to make money by itself (they set up
+payments); that runs through the night-shift worker under the money goal's rules ($0, lawful, honest).
+
 ## What is live
 
 The live checkout is `main`. Merging to `main` is a deploy: scheduled scripts and the tool hook run straight

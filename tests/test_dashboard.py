@@ -26,7 +26,8 @@ def test_server_serves_page_and_state(monkeypatch):
     try:
         base = f"http://127.0.0.1:{srv.server_address[1]}"
         page = urllib.request.urlopen(base + "/").read().decode()
-        assert "Waggle Command Center" in page
+        assert "<title>Waggle</title>" in page   # the Home page; the engine room moved to /ops
+        assert "Waggle Command Center" in urllib.request.urlopen(base + "/ops").read().decode()
         assert json.loads(urllib.request.urlopen(base + "/api/state").read()) == {"ok": True}
     finally:
         srv.shutdown()

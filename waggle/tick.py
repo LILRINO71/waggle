@@ -10,6 +10,7 @@ It registers
   outreach.brief     brief_time (cron, 07:30)       latest, max_late brief_catchup   outreach.brief
   outreach.evening   evening_time (cron, 21:00)     latest, max_late evening_catchup outreach.evening
   outreach.scout     17:00 daily (cron)             latest, max_late 7 h             outreach.scout
+  outreach.think.<n> think_times (cron, 3 a day)    latest, max_late 3 h             outreach.think (waggle/think.py)
   reminder:<id>      once (followups.add)           all                              outreach.reminder
   checkin:<id>       once (followups.capture)       all                              outreach.checkin
   call:<id>          once (call.schedule_at)        all                              outreach.call
@@ -39,7 +40,7 @@ LOOK_EVERY = "5m"
 SCOUT_CRON = "0 17 * * *"
 SCOUT_MAX_LATE_S = 7 * 3600
 JOB_KINDS = ("outreach.look", "outreach.brief", "outreach.evening", "outreach.scout", "outreach.reminder",
-             "outreach.checkin", "outreach.call", "outreach.recheck")
+             "outreach.checkin", "outreach.call", "outreach.recheck", "outreach.think")
 LOOK_STEPS = ("calls", "followups", "watchers", "responses", "decide")
 
 
@@ -279,9 +280,15 @@ def call_due(payload):
     return call.call_due(payload)
 
 
+def think_due(payload=None):
+    """Job outreach.think: the open thinking pass over the whole picture (waggle/think.py)."""
+    from . import think
+    return think.due(payload)
+
+
 HANDLERS = {"outreach.look": look, "outreach.brief": brief_due, "outreach.evening": evening_due,
             "outreach.scout": scout_due, "outreach.reminder": reminder_due, "outreach.checkin": checkin_due,
-            "outreach.call": call_due, "outreach.recheck": recheck_due}
+            "outreach.call": call_due, "outreach.recheck": recheck_due, "outreach.think": think_due}
 
 
 # ---- registration --------------------------------------------------------------------------------------------
@@ -302,8 +309,8 @@ def timer_specs(settings=None):
 def register_jobs():
     from waggle.core import jobs
     for kind, fn in HANDLERS.items():
-        # a look that fails is simply the next look; a reminder or note gets the default retries
-        jobs.register(kind, fn, max_attempts=1 if kind == "outreach.look" else 3, lease_s=600)
+        # a look or a thinking pass that fails is simply the next one; a reminder or note gets the default retries
+        jobs.register(kind, fn, max_attempts=1 if kind in ("outreach.look", "outreach.think") else 3, lease_s=600)
     return list(HANDLERS)
 
 
@@ -331,6 +338,19 @@ def register_core(now=None, settings=None):
     for tid, kind, spec, job_kind, policy, max_late in timer_specs(settings):
         timers.add(tid, kind, spec, job_kind, catch_up=policy, max_late_s=max_late, origin="outreach", now=now)
         report["timers"].append(tid)
+    from . import think
+    wanted = think.timer_specs(settings)
+    for tid, kind, spec, job_kind, policy, max_late, payload in wanted:
+        timers.add(tid, kind, spec, job_kind, payload, catch_up=policy, max_late_s=max_late, origin="outreach", now=now)
+        report["timers"].append(tid)
+    keep = {w[0] for w in wanted}
+    for i in range(4):   # a pass time that was removed from think_times (or the switch turned off) stops firing
+        tid = f"outreach.think.{i}"
+        if tid not in keep:
+            try:
+                timers.remove(tid)
+            except Exception:  # noqa: BLE001 - it never existed
+                pass
     return report
 
 

@@ -33,6 +33,11 @@ def isolated_home(tmp_path, monkeypatch):
     def no_aw(*a, **k):
         raise aw_sensor.AwDown("no ActivityWatch in tests")
     monkeypatch.setattr(aw_sensor, "_get", no_aw)  # never the real ActivityWatch (presence asks it)
+    import waggle.worldcal as worldcal
+
+    def no_wikipedia(*a, **k):
+        raise OSError("no network in tests (worldcal takes get= from the test)")
+    monkeypatch.setattr(worldcal, "_get", no_wikipedia)  # the thinking pass's calendar never reaches Wikipedia
     import waggle.checklist as checklist
     monkeypatch.setattr(checklist, "home_dir", lambda: tmp_path / "userhome")  # side-damage zones: never the real home
     import waggle.skills as skills

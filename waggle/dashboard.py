@@ -176,12 +176,60 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _port(self):
+        return self.server.server_address[1]
+
     def do_GET(self):
+        from . import home
+        if not home.local_host(self.headers.get("Host"), self._port()):  # a site whose name points at 127.0.0.1
+            return self._send(403, "this page is only served to this machine", "text/plain")
         if self.path.startswith("/api/state"):
             return self._send(200, json.dumps(snapshot(), default=str), "application/json")
+        if self.path.startswith("/api/home"):
+            return self._send(200, json.dumps(home.state(), default=str), "application/json")
         if self.path in ("/", "/index.html"):
+            return self._send(200, home.page(), "text/html; charset=utf-8")
+        if self.path in ("/ops", "/ops/"):
             return self._send(200, PAGE, "text/html; charset=utf-8")
         self._send(404, "not found", "text/plain")
+
+    def do_POST(self):
+        """The Home page acting as the owner (waggle/home.py says what is checked first)."""
+        from . import home
+        why = home.check_post(self.headers, self._port())
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if why or length < 0 or length > home.MAX_BODY:
+            return self._send(403 if why else 413, json.dumps({"error": why or "too large"}), "application/json")
+        body = self.rfile.read(length) if length else b""
+        path = self.path.split("?")[0]
+        if path == "/api/talk":
+            code, ctype, data, spoken = home.talk(body, self.headers.get("Content-Type"))
+            import urllib.parse
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Waggle-Spoken", urllib.parse.quote(spoken))
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return None
+        try:
+            args = json.loads(body.decode("utf-8")) if body else {}
+            args = args if isinstance(args, dict) else {}
+        except (UnicodeDecodeError, ValueError):
+            return self._send(400, json.dumps({"error": "a JSON body is required"}), "application/json")
+        routes = {"/api/say": lambda: home.say(args.get("text")), "/api/night": lambda: home.night(args.get("text")),
+                  "/api/taste": lambda: home.teach(args.get("line")), "/api/think": home.think_now}
+        if path not in routes:
+            return self._send(404, json.dumps({"error": "not found"}), "application/json")
+        try:
+            out = routes[path]()
+        except Exception as e:  # noqa: BLE001 - the page shows the reason
+            out = {"ok": False, "error": f"{type(e).__name__}: {str(e)[:160]}"}
+        self._send(200, json.dumps(out, default=str), "application/json")
 
 
 def serve(port=PORT):

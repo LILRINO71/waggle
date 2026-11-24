@@ -103,6 +103,11 @@ class Settings:
     daily_text_cap: int = 8  # unprompted texts/voice notes/calls a day; urgent items and things asked for bypass it
     initiative_every_min: int = 120  # how often the reasoning step looks at new signals (urgent ones: right away)
     initiative_model: str = "sonnet"
+    # The thinking pass (waggle/think.py): Claude gets the whole picture and one open question, a few times a day.
+    think_enabled: bool = True
+    think_times: list = field(default_factory=lambda: ["07:40", "16:15", "19:45"])  # at most 4 a day
+    think_model: str = "sonnet"
+    think_effort: str = "medium"
     topic_repeat_hours: int = 48  # the same topic is not raised again within this window
     evening_time: str = "21:00"  # the daily evening note (always sent)
     brief_catchup_hours: float = 3.0  # a missed morning brief is still sent this long after its time, never later
