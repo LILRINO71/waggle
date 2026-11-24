@@ -368,7 +368,7 @@ function render(d){
   ${i.pr?`<div><a href="${esc(i.pr)}" target="_blank" rel="noopener">draft pull request</a></div>`:""}
   ${i.answer?`<div class="dim">you said: ${esc(i.answer)}</div>`:`<div class="acts"><button class="ghost" onclick="nightAnswer('accept ${i.n}')">Accept</button><button class="ghost" onclick="nightAnswer('redo ${i.n}')">Redo</button><button class="ghost" onclick="nightAnswer('reject ${i.n}')">Reject</button></div>`}</div>`).join(""):`<div class="empty">No night report yet.</div>`)
   +`<div class="dim small" style="margin-top:6px">${n.queued||0} task(s) queued for the next night.</div>`;
- const u=d.usage||{};const bar=(l,p)=>p==null?"":`<div class="small">${l} <b>${p}%</b></div><div class="bar"><i style="width:${Math.min(100,p)}%"></i></div>`;
+ const u=d.usage||{};const bar=(l,p)=>p==null?"":(p=Math.round(p),`<div class="small">${l} <b>${p}%</b></div><div class="bar"><i style="width:${Math.min(100,p)}%"></i></div>`);
  $("usage").innerHTML=(bar("5-hour window",u.five_hour_pct)+bar("This week",u.week_pct)+(u.week_resets?`<div class="dim small">Week resets ${day(u.week_resets)}</div>`:""))||`<div class="empty small">No reading yet.</div>`;
 }
 async function refresh(){try{render(await (await fetch("/api/home")).json())}catch(e){}}

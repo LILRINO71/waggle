@@ -389,6 +389,13 @@ def test_the_request_lock_is_free_again_while_the_long_turn_carries_on(line, mon
     assert line.post({"text": "two"})[0] != 429
 
 
+def test_a_test_marked_typed_turn_is_a_canary_turn_without_the_mark(line):
+    code, headers, data = line.post({"text": "[waggle-test] Remind me to call Sam in ten minutes."})
+    row = traces.by_turn_id(headers["x-waggle-turn"])
+    assert code == 200 and row["origin"] == "canary"
+    assert json.loads(row["extra"])["voice_turn"]["transcript_raw"] == "Remind me to call Sam in ten minutes."
+
+
 # ---- a broken engine ------------------------------------------------------------------------------------------
 
 def test_an_engine_that_raises_is_a_spoken_apology(line, monkeypatch):

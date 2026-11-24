@@ -275,3 +275,16 @@ def test_reason_returns_the_scan(s):
     res["json"]["scan"] = {"dates": [{"date": "Thu", "on_the_calendar": "x"}], "people": "", "open_loops": "",
                            "risks": ""}
     assert think.reason("p", s, asker=Asker(res))["scan"]["dates"][0]["date"] == "Thu"
+
+
+def test_the_week_stop_holds_long_work_but_not_the_thinking_pass(s):
+    """Background work waits from seven_day_stop_at (85 %); the pass's few small calls run until 97 %."""
+    from waggle import budget, quota
+    now = at(16, 15)
+    quota.note_real_usage({"rateLimitType": "seven_day", "utilization": 0.88, "resetsAt": now + 86400}, now=now)
+    assert budget.check("claude-sonnet-5-5", "think", s, now)[0] is True
+    ok, why, _ = budget.check("claude-sonnet-5-5", "objective", s, now)
+    assert ok is False and "7-day" in why
+    quota.note_real_usage({"rateLimitType": "seven_day", "utilization": 0.98, "resetsAt": now + 86400}, now=now)
+    ok, why, _ = budget.check("claude-sonnet-5-5", "think", s, now)
+    assert ok is False and "7-day" in why

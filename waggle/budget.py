@@ -40,7 +40,9 @@ AGENT_COST = {"haiku": 0.06, "sonnet": 0.2, "opus": 0.8, "fable": 0.8}
 # purpose -> its own allowance: allowed while the 5-hour window stays at or below stop_at, at most daily_calls calls
 # per budget day. Not counted against background_daily_units, not stopped at background_stop_at.
 OWN_ALLOWANCE = {"mailwatch": {"stop_at": 0.92, "daily_calls": 40},
-                 "think": {"stop_at": 0.92, "daily_calls": 8}}   # 3 passes a day, each at most 2 calls
+                 # 3 thinking passes a day, each at most 2 small calls: they keep running until the week is nearly
+                 # used up (the general background stop, seven_day_stop_at, is for long work)
+                 "think": {"stop_at": 0.92, "daily_calls": 8, "week_stop_at": 0.97}}
 
 _ctx = contextvars.ContextVar("waggle_budget_ctx", default=None)
 
@@ -253,6 +255,9 @@ def check(model, purpose="", settings=None, now=None, window_used=None, con=None
         if st.get("blocked_until", 0) > now:
             return False, "Claude limit reached", st["blocked_until"]
         blocked, why7, retry7 = quota.seven_day_block(s, now)  # the owner's week comes first
+        if blocked and rule and rule.get("week_stop_at"):   # a few small calls a day run nearer to the week's end
+            seven = quota.seven_day_reading(now)
+            blocked = not (seven and seven["utilization"] < rule["week_stop_at"])
         if blocked:
             return False, why7, retry7
         if window_used is None:

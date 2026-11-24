@@ -186,8 +186,11 @@ class _Run:
     def _go(self):
         try:
             from waggle import chat_engine
+            # a typed message that starts with the test mark is an end-to-end check: answered, never learned from
+            marked, text = chat_engine.test_marked(self.text)
+            self.origin = chat_engine.marked_origin("user") if marked else "user"
             self.rec = chat_engine.handle_inbound(
-                self.chat, self.text, kind="voice", audio=self.audio_path, platform="telegram", origin="user",
+                self.chat, text, kind="voice", audio=self.audio_path, platform="telegram", origin=self.origin,
                 delivery=self.delivery,
                 voice_source="" if self.audio_path else CLIENT_SOURCE.get(self.client, "phone dictation"))
         except Exception as e:  # the request answers with a spoken apology; the trace holds what there is
@@ -220,7 +223,8 @@ class _Run:
         if not text or self.rec is None:
             return None
         meta = {"kind": "reply", "turn_id": self.rec.turn_id, "platform": "telegram",
-                "address": self.chat.partition(":")[2], "turn_origin": "user", "via": "voice line"}
+                "address": self.chat.partition(":")[2], "turn_origin": getattr(self, "origin", "user"),
+                "via": "voice line"}
         if self.client == "pc":
             meta["via"] = "pc voice"
             if self.detached and not self.streamed:  # only the holding line was heard: spoken on the PC if still there

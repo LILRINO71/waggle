@@ -302,7 +302,9 @@ findings, what was already told and how they reacted) and one open question. It 
 read-only look-ups (vault, weather, one public page), answered in a second call. Each thought goes through the
 existing guard rails (`initiative._apply`: topic repeat, daily cap, quiet hours, the expected-value check) as a
 signal of kind `thought`, so it is logged, capped and labelled like every other unprompted message. At most one
-question a day when it lacks a fact about the owner's life. Budget: its own allowance, 8 calls a day.
+question a day when it lacks a fact about the owner's life. Budget: its own allowance, 8 calls a day; unlike
+long background work (which waits from 85 % of the week) these few small calls run until the week is at 97 %
+(`budget.OWN_ALLOWANCE["think"]["week_stop_at"]`).
 
 - Rule written into the module and tested (`test_the_prompt_names_no_situation`): a new situation is never a
   reason to add code or a prompt line. New code is only for a new thing Waggle can see. The owner's examples go
@@ -321,9 +323,7 @@ question a day when it lacks a fact about the owner's life. Budget: its own allo
 - Live picture from the real vault: 15.7k characters in 5.7 s; it has **no people section** (Waggle's `People`
   folder is empty), so the first passes will ask.
 - Tests: `tests/test_think.py` (30), `tests/test_worldcal.py` (7).
-- **Open (needs real days):** nothing has been sent to the owner by this pass yet. While the week is at or past
-  `seven_day_stop_at` (85 %) the pass is refused by the budget and says so in `python -m waggle.think status`.
-  Gate: over 7 days, at least 70 % of its messages labelled welcome, and the owner names one it got right that
+- **Open (needs real days):** nothing has been sent to the owner by this pass yet. Gate: over 7 days, at least 70 % of its messages labelled welcome, and the owner names one it got right that
   nobody coded.
 
 **Waggle Home** (`waggle/home.py`, served by the dashboard at http://127.0.0.1:8897/; the older panel is at `/ops`).
@@ -331,7 +331,8 @@ An orb to hold and talk to (or the Space key), a chat box, "On my mind" (the pas
 "Think now" button), "Teach me" (adds a line to the taste note), what Waggle told the owner today, the work list,
 the night report with Accept / Redo / Reject, reminders and usage.
 - Typed and spoken turns go through the core's voice line as client `dash` (`voiceline.CLIENT_SOURCE`): the same
-  engine turn, memory and permission hook as any owner turn.
+  engine turn, memory and permission hook as any owner turn. A typed message that starts with `[waggle-test]` is
+  a canary turn on this path too (answered, never learned from).
 - The page can now act as the owner, so every POST is checked (`home.check_post`): Host is this machine, Origin
   (when sent) is this page, and the request carries a token only this page was given. Tests: `tests/test_home.py`
   (12), including another site and another host name being refused.
