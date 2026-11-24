@@ -337,3 +337,16 @@ the night report with Accept / Redo / Reject, reminders and usage.
   (when sent) is this page, and the request carries a token only this page was given. Tests: `tests/test_home.py`
   (12), including another site and another host name being refused.
 - **Open:** the owner has not used it yet; the microphone path was not driven with real speech.
+
+**Deploy (2026-11-23 23:45, live 3bd840e, then one Home page fix).** Full suite 4,118 passed
+(`tools/locked_suite.py`); `tools/deploy.ps1`: guard approved (budget, config changed), core healthy, code-path
+canary 2.2 s. Checked on live afterwards:
+- Timers `outreach.think.0-2` enabled, next Tue 07:40.
+- One real pass on the owner's real picture, dry (`python -m waggle.think run --dry-run`): 16,187 characters, one
+  call, one thought nobody coded for (a trip starting in two days with no destination picked, clashing with a
+  practice on the calendar). Nothing was sent.
+- Home page: `GET /` 200, `/api/home` 200, `/ops` 200; a POST without the page token 403; a test-marked typed turn
+  through the page answered in 4.2 s (trace 238, origin `canary`, source "typed in the Waggle dashboard").
+- The owner's two lines are in `12 - Waggle/Me/Proactive.md`.
+- Not done: no thought has reached the owner's phone yet (first scheduled pass Tue 07:40); the orb's microphone
+  path was not driven with real speech; nobody has pressed Accept / Redo / Reject on a real night report.

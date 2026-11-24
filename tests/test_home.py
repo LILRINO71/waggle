@@ -134,3 +134,17 @@ def test_unknown_post_path_and_bad_json(srv):
     assert post(srv, "/api/nope", {})[0] == 404
     code, _, _ = call(srv + "/api/say", b"{not json", {"Content-Type": "application/json", "X-Waggle-Token": home.TOKEN})
     assert code == 400
+
+
+def test_the_latest_pass_shows_what_it_thought_even_when_nothing_was_sent(settings):
+    res = {"json": {"thoughts": [{"topic": "trip", "action": "text", "message": "The trip has no destination yet.",
+                                  "why": "one day left"},
+                                 {"topic": "small", "action": "none", "message": "Not worth a message.", "why": "x"}]}}
+    think.run(settings, asker=lambda p, **k: res, dry=True, sections={"Now": "x"})
+    shown = home.state()["thinking"]["thoughts"]
+    assert [(t["topic"], t["action"]) for t in shown] == [("trip", "considered"), ("small", "considered")]
+    assert "dry run" in shown[0]["guard"]
+    think.run(settings, asker=lambda p, **k: res, sections={"Now": "x"})          # a real pass: "trip" is sent
+    shown = home.state()["thinking"]["thoughts"]
+    assert ("small", "considered") in [(t["topic"], t["action"]) for t in shown]
+    assert [t["topic"] for t in shown].count("trip") == 1

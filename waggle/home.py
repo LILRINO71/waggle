@@ -83,6 +83,13 @@ def _thinking_state(s, now):
     thoughts = [{"time": t["time"], "topic": t["topic"], "message": t["message"], "draft": t["draft"],
                  "action": t["action"], "wanted": t["model_action"], "why": t["why"], "guard": t["guard"]}
                 for t in reversed(think.recent_thoughts(now, days=3))][:12]
+    if last:   # what the latest pass thought and did not send (a dry run, or a thought it kept to itself)
+        have = {t["topic"] for t in thoughts if abs(t["time"] - last[0]["time"]) < 5}
+        extra = [{"time": last[0]["time"], "topic": t.get("topic"), "message": t.get("message"),
+                  "draft": t.get("draft", ""), "action": "considered", "wanted": t.get("action"),
+                  "why": t.get("why", ""), "guard": "a dry run: nothing was sent" if last[0]["dry"] else ""}
+                 for t in json.loads(last[0]["thoughts"] or "[]") if t.get("topic") not in have]
+        thoughts = extra + thoughts
     return {"enabled": bool(getattr(s, "think_enabled", True)), "times": [t for _, t in think.times(s)], "next": nxt,
             "running": _thinking["running"],
             "last": ({"time": last[0]["time"], "ok": bool(last[0]["ok"]), "note": last[0]["note"]} if last else None),
@@ -356,7 +363,7 @@ function render(d){
  const th=d.thinking||{};$("thinkbtn").disabled=!!th.running;$("thinkbtn").textContent=th.running?"Thinking…":"Think now";
  $("thinkmeta").innerHTML=th.error?esc(th.error):(th.enabled===false?"Thinking passes are switched off.":
   `Passes at ${(th.times||[]).join(", ")}`+(th.last?` · last ${day(th.last.time)}${th.last.ok?"":` <span class="tag bad">${esc(th.last.note||"failed")}</span>`}`:" · none yet")+(th.next?` · next ${day(th.next)}`:""));
- const ts=th.thoughts||[];$("thoughts").innerHTML=(ts.length?ts.map(t=>`<div class="item"><span class="tag ${esc(t.action)}">${esc({text:"told you",voice:"said it",evening:"for tonight's note",none:"kept to myself"}[t.action]||t.action)}</span>
+ const ts=th.thoughts||[];$("thoughts").innerHTML=(ts.length?ts.map(t=>`<div class="item"><span class="tag ${esc(t.action)}">${esc({text:"told you",voice:"said it",evening:"for tonight's note",none:"kept to myself",considered:"thought about it"}[t.action]||t.action)}</span>
   <span class="dim small">${day(t.time)}</span><div>${esc(t.message)}</div>${t.draft?`<div class="draft">${esc(t.draft)}</div>`:""}
   <div class="dim small">${esc(t.why)}${t.guard?" · "+esc(t.guard):""}</div></div>`).join(""):`<div class="empty">Nothing yet. Press "Think now" to see what I notice.</div>`)
   +(th.questions||[]).map(q=>`<div class="item"><span class="tag">I asked</span> <span class="dim small">${day(q.time)}</span><div>${esc(q.question)}</div></div>`).join("");
