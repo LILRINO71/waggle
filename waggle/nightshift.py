@@ -76,6 +76,7 @@ def _o1_task(n, why):
 DEFAULT_OBJECTIVES = [
     {"id": "O1", "title": "FTC SimBench Pro: bring the three stale draft pull requests back to life",
      "repo": "LILRINO71/ftc-simbench-pro", "test": "npm test", "approved": "2026-11-21",
+     "setup": "npm ci --no-audit --no-fund",
      "tasks": [_o1_task(12, "Onshape for school accounts and bug fixes"), _o1_task(13, "the UI redesign"),
                _o1_task(15, "a smoother CAD view")]},
     {"id": "O2", "title": "Waggle itself: cut idle churn without losing a duty", "repo": "LILRINO71/waggle",
@@ -444,6 +445,10 @@ def work(task_id, settings=None, agent_run=None, asker=None, now=None):
         base = base_ref(obj, t)
         wt, base_sha = make_worktree(repo, t, attempt, base)
         _set(task_id, worktree=str(wt), base=f"{base} {base_sha[:10]}")
+        if obj.get("setup"):  # the repository's own declared dependencies (its lockfile), installed by code
+            code, out = run(obj["setup"], cwd=str(wt), timeout=900, shell=True)
+            if code:
+                raise RuntimeError(f"setup ({obj['setup']}) failed: {out[-300:]}")
         note_path = _dir() / "notes" / f"{task_id}.md"
         note_path.parent.mkdir(exist_ok=True)
         note_path.unlink(missing_ok=True)

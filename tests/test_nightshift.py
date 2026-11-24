@@ -284,3 +284,13 @@ def test_registered_on_the_core():
     from waggle.core import plugins
     assert "waggle.nightshift" in plugins.MODULES
     assert [t[0] for t in ns.timer_specs()] == [ns.TICK, ns.REPORT]
+
+
+def test_a_failing_setup_stops_the_task_before_the_worker(night):
+    objs = json.loads((night.dir / "objectives.json").read_text())
+    objs[0]["setup"] = "python -c \"raise SystemExit(3)\""
+    (night.dir / "objectives.json").write_text(json.dumps(objs))
+    ns.sync()
+    ran = []
+    row = ns.work("OX-1", agent_run=lambda *a, **k: ran.append(1), asker=passes)
+    assert row["status"] == "queued" and "setup" in row["error"] and ran == []
