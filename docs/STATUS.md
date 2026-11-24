@@ -175,3 +175,55 @@ retry sends everything again; approvals, news, deliveries and the time always go
 - Live (test client, session `055ab1bb`): turn 231 after the restart sent everything (4.32 s, process restart and
   resume); turns 232-233 left out core and projects, the session grew 147 and 144 tokens, totals 1.67 s and 1.65 s.
   At this rate a session reaches the 60k rotation after hundreds of turns instead of about a dozen.
+
+## Step 2 log (trials: DBOS and the Agent SDK, 2026-11-23)
+
+Both trials ran in throwaway places, never against the live home. Scripts and results: `tools/trials/`.
+
+**DBOS Transact 3.6.0 (SQLite), decision doc 1.2: PASS with conditions.** `tools/trials/dbos/driver.py` drives one
+4-task objective (T1 -> T2 -> approval wait -> T3 -> T4 as a child workflow), each task a 15 s step that records itself
+in a separate ledger.
+- Killed in the middle of T1, then of T2: each re-ran once on recovery; the ledger shows every task done exactly once.
+- A code change between runs (pinned `application_version`) did not orphan the objective; killed during the approval
+  wait, it resumed waiting, and `DBOSClient.send` from another process released it.
+- A second worker started on the same database with the same executor id re-ran the in-flight T3 (absorbed by the
+  idempotent ledger).
+- Cancelling T4 marked it CANCELLED, but the step already running finished: cancellation acts between steps only.
+- Idle cost 0.365 % CPU; only a loopback socketpair, no listening port, no outside traffic. A `pythonw` run completed.
+- Conditions for adoption: one worker (or a unique executor id per worker), every step safe to repeat, and no promise
+  that "cancel" stops a step in flight.
+
+**claude-agent-sdk 0.2.188, decision doc 1.1: PASS only with two fixes; out of the box it FAILS the window gate.**
+Same 30 prompts (`tools/trials/sdk/prompts.py`: 12 with Bash/Glob/Read, a code word set in turn 1 and asked back in
+turn 16), same model (Haiku), tools, MCP config, Waggle policy hook (`agent_hook.py` via `--settings`), lean
+environment and throwaway home for both paths. The SDK ran from `pythonw` under a one-time Task Scheduler task with
+`tools/window_probe.py` watching; the claude process was killed after turn 15 and the session resumed.
+
+| Check | Today's path (`ChatSession`, `claude -p`) | SDK as shipped | SDK + `CREATE_NO_WINDOW` |
+|---|---|---|---|
+| Turns OK | 30/30 | 30/30 | 30/30 |
+| p50 / p90 per turn | 1.42 s / 2.17 s | 1.33 s / 2.11 s | 1.65 s / 2.13 s |
+| First-call context | 15,354 | 15,354 | 15,354 |
+| Resume after kill (code word back, same session id) | yes | yes | yes |
+| Policy hook called for every tool call | 12/12 | 12/12 | (same launch) |
+| Windows / focus changes | (Waggle's own launch is hidden) | **2 / 2** | **0 / 0** |
+| Rate-limit event | (Waggle reads it today) | yes | yes |
+
+- **Windows:** the SDK starts `claude.exe` with `anyio.open_process` and no creation flags, so from `pythonw` Windows
+  opened a Windows Terminal window that took focus, once at start and once at the resume. Passing
+  `CREATE_NO_WINDOW` (one wrapper around `open_process`, `sdk_trial.py --no-window`) removed both. SDK 0.2.188 has
+  no option for it, so the wrapper would have to be kept and re-checked on every SDK upgrade.
+- **Hooks** (in-process `HookMatcher`, timeout 10 s, Bash with `bypassPermissions`, a marker file shows whether the
+  command ran): a hook that returns normally lets it run (control); a hook that **raises** lets it run with the
+  default `on_failure` (**fails open**) and blocks it with `on_failure="block"`; a hook that hangs 60 s blocks it either
+  way (13.5 s). So every policy hook would need `on_failure="block"`.
+- **Latency:** equal within run-to-run noise (two SDK runs: 1.33 s and 1.65 s; CLI 1.42 s).
+- **Usage windows:** the `RateLimitEvent` names the window that crossed a threshold (`seven_day` here), and its raw
+  payload carries both windows (`unifiedWindows.five_hour` and `.seven_day`, utilisation and reset time). 2-5 events in
+  30 turns.
+- **Login:** the existing Claude login, no API key, no new sign-in (ANTHROPIC_* and CLAUDE_* removed from the env).
+- Not tested: a long-lived SDK client across many hours; the SDK's own session store.
+
+Verdict for Step 2's choice: the SDK gives no speed or context gain over today's lean `claude -p` path. It would add
+a window fix to carry and a hook default that fails open. Adopting it is only worth it for something the CLI path
+cannot do.

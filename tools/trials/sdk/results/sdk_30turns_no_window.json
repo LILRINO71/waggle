@@ -1,0 +1,534 @@
+{
+ "summary": {
+  "path": "sdk",
+  "turns": 30,
+  "ok": 30,
+  "p50_s": 1.65,
+  "p90_s": 2.13,
+  "first_ctx": 15354,
+  "remembered_after_resume": true,
+  "same_session_after_resume": true,
+  "tool_turns": 12,
+  "rate_limit_types": [
+   "seven_day"
+  ],
+  "rate_limit_events": 5
+ },
+ "events": [
+  "killed claude pid 22120 after turn 15",
+  "resumed session 15ae5f32-8203-4187-beff-836ba22ac838"
+ ],
+ "rows": [
+  {
+   "turn": 1,
+   "s": 1.64,
+   "ok": true,
+   "ctx": 15354,
+   "tools": [],
+   "text": "OK",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  },
+  {
+   "turn": 2,
+   "s": 1.34,
+   "ok": true,
+   "ctx": 15401,
+   "tools": [],
+   "text": "17 times 23 is 391.",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  },
+  {
+   "turn": 3,
+   "s": 0.98,
+   "ok": true,
+   "ctx": 15445,
+   "tools": [],
+   "text": "Tokyo.",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  },
+  {
+   "turn": 4,
+   "s": 2.36,
+   "ok": true,
+   "ctx": 15619,
+   "tools": [
+    "Bash"
+   ],
+   "text": "The output was `trial-3`.",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  },
+  {
+   "turn": 5,
+   "s": 1.98,
+   "ok": true,
+   "ctx": 15772,
+   "tools": [
+    "Glob"
+   ],
+   "text": "The only .txt file in the current folder is `notes.txt`.",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  },
+  {
+   "turn": 6,
+   "s": 1.88,
+   "ok": true,
+   "ctx": 15965,
+   "tools": [
+    "Read"
+   ],
+   "text": "The second line of notes.txt is \"bravo line\".",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  },
+  {
+   "turn": 7,
+   "s": 0.92,
+   "ok": true,
+   "ctx": 16042,
+   "tools": [],
+   "text": "Yes, 97 is prime, since none of the primes up to its square root (2, 3, 5, 7) divide it.",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  },
+  {
+   "turn": 8,
+   "s": 1.88,
+   "ok": true,
+   "ctx": 16216,
+   "tools": [
+    "Bash"
+   ],
+   "text": "The output was `trial-8`.",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  },
+  {
+   "turn": 9,
+   "s": 0.91,
+   "ok": true,
+   "ctx": 16260,
+   "tools": [],
+   "text": "tobor",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  },
+  {
+   "turn": 10,
+   "s": 0.89,
+   "ok": true,
+   "ctx": 16308,
+   "tools": [],
+   "text": "The square root of 144 is 12.",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  },
+  {
+   "turn": 11,
+   "s": 1.91,
+   "ok": true,
+   "ctx": 16476,
+   "tools": [
+    "Bash"
+   ],
+   "text": "Python is version 3.14.6.",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  },
+  {
+   "turn": 12,
+   "s": 0.85,
+   "ok": true,
+   "ctx": 16525,
+   "tools": [],
+   "text": "A leap year has 366 days.",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  },
+  {
+   "turn": 13,
+   "s": 2.07,
+   "ok": true,
+   "ctx": 16826,
+   "tools": [],
+   "text": "notes.txt has 4 lines as displayed, but the fourth is empty, so it has 3 lines of text.",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  },
+  {
+   "turn": 14,
+   "s": 0.87,
+   "ok": true,
+   "ctx": 16881,
+   "tools": [],
+   "text": "2 to the power of 10 is 1024.",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  },
+  {
+   "turn": 15,
+   "s": 1.83,
+   "ok": true,
+   "ctx": 17039,
+   "tools": [
+    "Glob"
+   ],
+   "text": "The current folder contains 2 files: `notes.txt` and `readme.md`.",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  },
+  {
+   "turn": 16,
+   "s": 1.48,
+   "ok": true,
+   "ctx": 17100,
+   "tools": [],
+   "text": "The code word you gave me at the start was PELICAN-7.",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  },
+  {
+   "turn": 17,
+   "s": 0.85,
+   "ok": true,
+   "ctx": 17152,
+   "tools": [],
+   "text": "45 divided by 9 is 5.",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  },
+  {
+   "turn": 18,
+   "s": 2.11,
+   "ok": true,
+   "ctx": 17327,
+   "tools": [
+    "Bash"
+   ],
+   "text": "The output was `trial-18`.",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  },
+  {
+   "turn": 19,
+   "s": 0.88,
+   "ok": true,
+   "ctx": 17366,
+   "tools": [],
+   "text": "Red.",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  },
+  {
+   "turn": 20,
+   "s": 2.16,
+   "ok": true,
+   "ctx": 17607,
+   "tools": [
+    "Read"
+   ],
+   "text": "The first line of notes.txt is \"alpha line\".",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  },
+  {
+   "turn": 21,
+   "s": 0.85,
+   "ok": true,
+   "ctx": 17657,
+   "tools": [],
+   "text": "13 plus 29 is 42.",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  },
+  {
+   "turn": 22,
+   "s": 1.88,
+   "ok": true,
+   "ctx": 17825,
+   "tools": [
+    "Bash"
+   ],
+   "text": "The output was `trial-22`.",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  },
+  {
+   "turn": 23,
+   "s": 1.65,
+   "ok": true,
+   "ctx": 17883,
+   "tools": [],
+   "text": "100 degrees Celsius at sea level.",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  },
+  {
+   "turn": 24,
+   "s": 1.88,
+   "ok": true,
+   "ctx": 18031,
+   "tools": [
+    "Glob"
+   ],
+   "text": "The only .md file in the current folder is `readme.md`.",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  },
+  {
+   "turn": 25,
+   "s": 0.81,
+   "ok": true,
+   "ctx": 18076,
+   "tools": [],
+   "text": "9 squared is 81.",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  },
+  {
+   "turn": 26,
+   "s": 2.88,
+   "ok": true,
+   "ctx": 18244,
+   "tools": [
+    "Bash"
+   ],
+   "text": "The output was `trial-26`.",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  },
+  {
+   "turn": 27,
+   "s": 2.13,
+   "ok": true,
+   "ctx": 18287,
+   "tools": [],
+   "text": "Jupiter.",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  },
+  {
+   "turn": 28,
+   "s": 1.89,
+   "ok": true,
+   "ctx": 18495,
+   "tools": [
+    "Read"
+   ],
+   "text": "The last line of notes.txt is line 4, which is empty. The last line with text is \"charlie line\".",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  },
+  {
+   "turn": 29,
+   "s": 0.89,
+   "ok": true,
+   "ctx": 18545,
+   "tools": [],
+   "text": "100 minus 37 is 63.",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  },
+  {
+   "turn": 30,
+   "s": 0.8,
+   "ok": true,
+   "ctx": 18590,
+   "tools": [],
+   "text": "Goodbye.",
+   "session": "15ae5f32-8203-4187-beff-836ba22ac838",
+   "err": ""
+  }
+ ],
+ "rate_limits": [
+  {
+   "rate_limit_info": {
+    "status": "allowed_warning",
+    "resets_at": 1795615200,
+    "rate_limit_type": "seven_day",
+    "utilization": 0.85,
+    "overage_status": "rejected",
+    "overage_resets_at": null,
+    "overage_disabled_reason": "org_level_disabled",
+    "raw": {
+     "status": "allowed_warning",
+     "resetsAt": 1795615200,
+     "rateLimitType": "seven_day",
+     "utilization": 0.85,
+     "overageStatus": "rejected",
+     "overageDisabledReason": "org_level_disabled",
+     "isUsingOverage": false,
+     "surpassedThreshold": 0.75,
+     "unifiedWindows": {
+      "five_hour": {
+       "utilization": 0.23,
+       "resetsAt": 1795480800,
+       "status": "allowed"
+      },
+      "seven_day": {
+       "utilization": 0.85,
+       "resetsAt": 1795615200,
+       "status": "allowed_warning",
+       "surpassedThreshold": 0.75
+      }
+     },
+     "overageEnabled": false
+    }
+   },
+   "uuid": "f5c622ba-cc20-4057-84d2-f8fc910bb1d1",
+   "session_id": "15ae5f32-8203-4187-beff-836ba22ac838"
+  },
+  {
+   "rate_limit_info": {
+    "status": "allowed_warning",
+    "resets_at": 1795615200,
+    "rate_limit_type": "seven_day",
+    "utilization": 0.85,
+    "overage_status": "rejected",
+    "overage_resets_at": null,
+    "overage_disabled_reason": "org_level_disabled",
+    "raw": {
+     "status": "allowed_warning",
+     "resetsAt": 1795615200,
+     "rateLimitType": "seven_day",
+     "utilization": 0.85,
+     "overageStatus": "rejected",
+     "overageDisabledReason": "org_level_disabled",
+     "isUsingOverage": false,
+     "surpassedThreshold": 0.75,
+     "unifiedWindows": {
+      "five_hour": {
+       "utilization": 0.24,
+       "resetsAt": 1795480800,
+       "status": "allowed"
+      },
+      "seven_day": {
+       "utilization": 0.85,
+       "resetsAt": 1795615200,
+       "status": "allowed_warning",
+       "surpassedThreshold": 0.75
+      }
+     },
+     "overageEnabled": false
+    }
+   },
+   "uuid": "98383c59-5639-4cfe-a24e-786e44dcbe0e",
+   "session_id": "15ae5f32-8203-4187-beff-836ba22ac838"
+  },
+  {
+   "rate_limit_info": {
+    "status": "allowed_warning",
+    "resets_at": 1795615200,
+    "rate_limit_type": "seven_day",
+    "utilization": 0.85,
+    "overage_status": "rejected",
+    "overage_resets_at": null,
+    "overage_disabled_reason": "org_level_disabled",
+    "raw": {
+     "status": "allowed_warning",
+     "resetsAt": 1795615200,
+     "rateLimitType": "seven_day",
+     "utilization": 0.85,
+     "overageStatus": "rejected",
+     "overageDisabledReason": "org_level_disabled",
+     "isUsingOverage": false,
+     "surpassedThreshold": 0.75,
+     "unifiedWindows": {
+      "five_hour": {
+       "utilization": 0.23,
+       "resetsAt": 1795480800,
+       "status": "allowed"
+      },
+      "seven_day": {
+       "utilization": 0.85,
+       "resetsAt": 1795615200,
+       "status": "allowed_warning",
+       "surpassedThreshold": 0.75
+      }
+     },
+     "overageEnabled": false
+    }
+   },
+   "uuid": "039c9c21-076a-44dc-bf9a-8c113dff449b",
+   "session_id": "15ae5f32-8203-4187-beff-836ba22ac838"
+  },
+  {
+   "rate_limit_info": {
+    "status": "allowed_warning",
+    "resets_at": 1795615200,
+    "rate_limit_type": "seven_day",
+    "utilization": 0.85,
+    "overage_status": "rejected",
+    "overage_resets_at": null,
+    "overage_disabled_reason": "org_level_disabled",
+    "raw": {
+     "status": "allowed_warning",
+     "resetsAt": 1795615200,
+     "rateLimitType": "seven_day",
+     "utilization": 0.85,
+     "overageStatus": "rejected",
+     "overageDisabledReason": "org_level_disabled",
+     "isUsingOverage": false,
+     "surpassedThreshold": 0.75,
+     "unifiedWindows": {
+      "five_hour": {
+       "utilization": 0.23,
+       "resetsAt": 1795480800,
+       "status": "allowed"
+      },
+      "seven_day": {
+       "utilization": 0.85,
+       "resetsAt": 1795615200,
+       "status": "allowed_warning",
+       "surpassedThreshold": 0.75
+      }
+     },
+     "overageEnabled": false
+    }
+   },
+   "uuid": "3cb8fa63-ea52-43dd-beec-d965ef7cf79f",
+   "session_id": "15ae5f32-8203-4187-beff-836ba22ac838"
+  },
+  {
+   "rate_limit_info": {
+    "status": "allowed_warning",
+    "resets_at": 1795615200,
+    "rate_limit_type": "seven_day",
+    "utilization": 0.85,
+    "overage_status": "rejected",
+    "overage_resets_at": null,
+    "overage_disabled_reason": "org_level_disabled",
+    "raw": {
+     "status": "allowed_warning",
+     "resetsAt": 1795615200,
+     "rateLimitType": "seven_day",
+     "utilization": 0.85,
+     "overageStatus": "rejected",
+     "overageDisabledReason": "org_level_disabled",
+     "isUsingOverage": false,
+     "surpassedThreshold": 0.75,
+     "unifiedWindows": {
+      "five_hour": {
+       "utilization": 0.24,
+       "resetsAt": 1795480800,
+       "status": "allowed"
+      },
+      "seven_day": {
+       "utilization": 0.85,
+       "resetsAt": 1795615200,
+       "status": "allowed_warning",
+       "surpassedThreshold": 0.75
+      }
+     },
+     "overageEnabled": false
+    }
+   },
+   "uuid": "d39d13e6-05be-4a41-a695-501ac610b05f",
+   "session_id": "15ae5f32-8203-4187-beff-836ba22ac838"
+  }
+ ]
+}

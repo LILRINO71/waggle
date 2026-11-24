@@ -1,0 +1,309 @@
+{
+ "summary": {
+  "path": "cli",
+  "model": "haiku",
+  "turns": 30,
+  "ok": 30,
+  "p50_s": 1.42,
+  "p90_s": 2.17,
+  "first_ctx": 15354,
+  "remembered_after_resume": true,
+  "tool_turns": 12
+ },
+ "rows": [
+  {
+   "turn": 1,
+   "s": 2.01,
+   "ok": true,
+   "ctx": 15354,
+   "tools": [],
+   "text": "OK",
+   "resumed": false
+  },
+  {
+   "turn": 2,
+   "s": 1.05,
+   "ok": true,
+   "ctx": 15401,
+   "tools": [],
+   "text": "17 times 23 is 391.",
+   "resumed": false
+  },
+  {
+   "turn": 3,
+   "s": 1.0,
+   "ok": true,
+   "ctx": 15445,
+   "tools": [],
+   "text": "Tokyo.",
+   "resumed": false
+  },
+  {
+   "turn": 4,
+   "s": 2.49,
+   "ok": true,
+   "ctx": 15619,
+   "tools": [
+    "Bash"
+   ],
+   "text": "The output was `trial-3`.",
+   "resumed": false
+  },
+  {
+   "turn": 5,
+   "s": 1.92,
+   "ok": true,
+   "ctx": 15772,
+   "tools": [
+    "Glob"
+   ],
+   "text": "The only .txt file in the current folder is `notes.txt`.",
+   "resumed": false
+  },
+  {
+   "turn": 6,
+   "s": 1.95,
+   "ok": true,
+   "ctx": 15965,
+   "tools": [
+    "Read"
+   ],
+   "text": "The second line of notes.txt is \"bravo line\".",
+   "resumed": false
+  },
+  {
+   "turn": 7,
+   "s": 1.0,
+   "ok": true,
+   "ctx": 16042,
+   "tools": [],
+   "text": "Yes, 97 is prime, since none of the primes up to its square root (2, 3, 5, 7) divide it.",
+   "resumed": false
+  },
+  {
+   "turn": 8,
+   "s": 1.97,
+   "ok": true,
+   "ctx": 16216,
+   "tools": [
+    "Bash"
+   ],
+   "text": "The output was `trial-8`.",
+   "resumed": false
+  },
+  {
+   "turn": 9,
+   "s": 0.93,
+   "ok": true,
+   "ctx": 16260,
+   "tools": [],
+   "text": "tobor",
+   "resumed": false
+  },
+  {
+   "turn": 10,
+   "s": 0.86,
+   "ok": true,
+   "ctx": 16308,
+   "tools": [],
+   "text": "The square root of 144 is 12.",
+   "resumed": false
+  },
+  {
+   "turn": 11,
+   "s": 1.99,
+   "ok": true,
+   "ctx": 16477,
+   "tools": [
+    "Bash"
+   ],
+   "text": "The Python version is 3.14.6.",
+   "resumed": false
+  },
+  {
+   "turn": 12,
+   "s": 0.88,
+   "ok": true,
+   "ctx": 16526,
+   "tools": [],
+   "text": "A leap year has 366 days.",
+   "resumed": false
+  },
+  {
+   "turn": 13,
+   "s": 2.16,
+   "ok": true,
+   "ctx": 16739,
+   "tools": [],
+   "text": "The file has 3 lines of text. The earlier read also showed an empty line 4, which is most likely just the trailing newli",
+   "resumed": false
+  },
+  {
+   "turn": 14,
+   "s": 0.96,
+   "ok": true,
+   "ctx": 16794,
+   "tools": [],
+   "text": "2 to the power of 10 is 1024.",
+   "resumed": false
+  },
+  {
+   "turn": 15,
+   "s": 2.06,
+   "ok": true,
+   "ctx": 16951,
+   "tools": [
+    "Glob"
+   ],
+   "text": "The current folder has 2 files: `notes.txt` and `readme.md`.",
+   "resumed": false
+  },
+  {
+   "turn": 16,
+   "s": 1.81,
+   "ok": true,
+   "ctx": 17012,
+   "tools": [],
+   "text": "The code word you gave me at the start was PELICAN-7.",
+   "resumed": true
+  },
+  {
+   "turn": 17,
+   "s": 0.9,
+   "ok": true,
+   "ctx": 17064,
+   "tools": [],
+   "text": "45 divided by 9 is 5.",
+   "resumed": false
+  },
+  {
+   "turn": 18,
+   "s": 2.22,
+   "ok": true,
+   "ctx": 17239,
+   "tools": [
+    "Bash"
+   ],
+   "text": "The output was `trial-18`.",
+   "resumed": false
+  },
+  {
+   "turn": 19,
+   "s": 0.94,
+   "ok": true,
+   "ctx": 17278,
+   "tools": [],
+   "text": "Red.",
+   "resumed": false
+  },
+  {
+   "turn": 20,
+   "s": 2.09,
+   "ok": true,
+   "ctx": 17524,
+   "tools": [
+    "Read"
+   ],
+   "text": "The first line of notes.txt is \"alpha line\".",
+   "resumed": false
+  },
+  {
+   "turn": 21,
+   "s": 0.89,
+   "ok": true,
+   "ctx": 17574,
+   "tools": [],
+   "text": "13 plus 29 is 42.",
+   "resumed": false
+  },
+  {
+   "turn": 22,
+   "s": 2.84,
+   "ok": true,
+   "ctx": 17742,
+   "tools": [
+    "Bash"
+   ],
+   "text": "The output was `trial-22`.",
+   "resumed": false
+  },
+  {
+   "turn": 23,
+   "s": 0.92,
+   "ok": true,
+   "ctx": 17804,
+   "tools": [],
+   "text": "The boiling point of water is 100 \u00b0C at sea level.",
+   "resumed": false
+  },
+  {
+   "turn": 24,
+   "s": 1.79,
+   "ok": true,
+   "ctx": 17952,
+   "tools": [
+    "Glob"
+   ],
+   "text": "The only .md file in the current folder is `readme.md`.",
+   "resumed": false
+  },
+  {
+   "turn": 25,
+   "s": 0.93,
+   "ok": true,
+   "ctx": 17997,
+   "tools": [],
+   "text": "9 squared is 81.",
+   "resumed": false
+  },
+  {
+   "turn": 26,
+   "s": 1.99,
+   "ok": true,
+   "ctx": 18165,
+   "tools": [
+    "Bash"
+   ],
+   "text": "The output was `trial-26`.",
+   "resumed": false
+  },
+  {
+   "turn": 27,
+   "s": 1.05,
+   "ok": true,
+   "ctx": 18208,
+   "tools": [],
+   "text": "Jupiter.",
+   "resumed": false
+  },
+  {
+   "turn": 28,
+   "s": 2.17,
+   "ok": true,
+   "ctx": 18425,
+   "tools": [
+    "Read"
+   ],
+   "text": "The last line of notes.txt is \"charlie line\". Line 4 appears empty, so it is most likely just the trailing newline.",
+   "resumed": false
+  },
+  {
+   "turn": 29,
+   "s": 0.95,
+   "ok": true,
+   "ctx": 18475,
+   "tools": [],
+   "text": "100 minus 37 is 63.",
+   "resumed": false
+  },
+  {
+   "turn": 30,
+   "s": 1.04,
+   "ok": true,
+   "ctx": 18520,
+   "tools": [],
+   "text": "Goodbye.",
+   "resumed": false
+  }
+ ]
+}

@@ -1,0 +1,57 @@
+[
+ {
+  "case": "control-pass",
+  "on_failure": null,
+  "tools": [
+   "Bash"
+  ],
+  "text": "I ran `echo ran > control-pass.txt` once. It completed with no output, so the file should now contain `ran`. I didn't check the file afterward.",
+  "is_error": false,
+  "s": 3.2,
+  "tool_ran": true
+ },
+ {
+  "case": "raise-default",
+  "on_failure": null,
+  "tools": [
+   "Bash"
+  ],
+  "text": "I ran `echo ran > raise-default.txt` once. It completed with no output, so `raise-default.txt` should now contain `ran` in the working directory.",
+  "is_error": false,
+  "s": 3.2,
+  "tool_ran": true
+ },
+ {
+  "case": "raise-block",
+  "on_failure": "block",
+  "tools": [
+   "Bash"
+  ],
+  "text": "The command did not run. A PreToolUse hook on the Bash tool failed, and the hook is set to block on failure, so the call was rejected before it executed. `raise-block.txt` was not created.\n\nI ran the ",
+  "is_error": false,
+  "s": 3.5,
+  "tool_ran": false
+ },
+ {
+  "case": "hang-default",
+  "on_failure": null,
+  "tools": [
+   "Bash"
+  ],
+  "text": "The command did not run. The Bash call was blocked before execution: a PreToolUse hook timed out (\"host client may be unreachable\"), so `hang-default.txt` was not created.\n\nYou asked for the command t",
+  "is_error": false,
+  "s": 13.6,
+  "tool_ran": false
+ },
+ {
+  "case": "hang-block",
+  "on_failure": "block",
+  "tools": [
+   "Bash"
+  ],
+  "text": "The command did not run. A PreToolUse hook timed out before it could execute, so `hang-block.txt` was not created.\n\nThe hook's failure is probably a connectivity problem with the host client, not some",
+  "is_error": false,
+  "s": 13.5,
+  "tool_ran": false
+ }
+]

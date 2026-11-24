@@ -1,0 +1,423 @@
+{
+ "summary": {
+  "path": "sdk",
+  "turns": 30,
+  "ok": 30,
+  "p50_s": 1.33,
+  "p90_s": 2.11,
+  "first_ctx": 15354,
+  "remembered_after_resume": true,
+  "same_session_after_resume": true,
+  "tool_turns": 12,
+  "rate_limit_types": [
+   "seven_day"
+  ],
+  "rate_limit_events": 2
+ },
+ "events": [
+  "killed claude pid 17396 after turn 15",
+  "resumed session ec0ba070-6436-4e52-a4d8-5ebe966f1a9d"
+ ],
+ "rows": [
+  {
+   "turn": 1,
+   "s": 2.05,
+   "ok": true,
+   "ctx": 15354,
+   "tools": [],
+   "text": "OK",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  },
+  {
+   "turn": 2,
+   "s": 1.03,
+   "ok": true,
+   "ctx": 15400,
+   "tools": [],
+   "text": "17 \u00d7 23 = 391",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  },
+  {
+   "turn": 3,
+   "s": 0.96,
+   "ok": true,
+   "ctx": 15444,
+   "tools": [],
+   "text": "Tokyo.",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  },
+  {
+   "turn": 4,
+   "s": 2.26,
+   "ok": true,
+   "ctx": 15618,
+   "tools": [
+    "Bash"
+   ],
+   "text": "The output was `trial-3`.",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  },
+  {
+   "turn": 5,
+   "s": 2.0,
+   "ok": true,
+   "ctx": 15771,
+   "tools": [
+    "Glob"
+   ],
+   "text": "The only .txt file in the current folder is `notes.txt`.",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  },
+  {
+   "turn": 6,
+   "s": 1.94,
+   "ok": true,
+   "ctx": 15964,
+   "tools": [
+    "Read"
+   ],
+   "text": "The second line of notes.txt is \"bravo line\".",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  },
+  {
+   "turn": 7,
+   "s": 0.92,
+   "ok": true,
+   "ctx": 16030,
+   "tools": [],
+   "text": "Yes, 97 is prime, since it has no divisors other than 1 and itself.",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  },
+  {
+   "turn": 8,
+   "s": 1.84,
+   "ok": true,
+   "ctx": 16204,
+   "tools": [
+    "Bash"
+   ],
+   "text": "The output was `trial-8`.",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  },
+  {
+   "turn": 9,
+   "s": 0.87,
+   "ok": true,
+   "ctx": 16248,
+   "tools": [],
+   "text": "tobor",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  },
+  {
+   "turn": 10,
+   "s": 0.9,
+   "ok": true,
+   "ctx": 16286,
+   "tools": [],
+   "text": "12",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  },
+  {
+   "turn": 11,
+   "s": 1.9,
+   "ok": true,
+   "ctx": 16455,
+   "tools": [
+    "Bash"
+   ],
+   "text": "The Python version is 3.14.6.",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  },
+  {
+   "turn": 12,
+   "s": 0.92,
+   "ok": true,
+   "ctx": 16504,
+   "tools": [],
+   "text": "A leap year has 366 days.",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  },
+  {
+   "turn": 13,
+   "s": 1.87,
+   "ok": true,
+   "ctx": 16765,
+   "tools": [],
+   "text": "The Read output numbered four lines, but line 4 was empty, so the file has 3 lines of text, plus a trailing newline or b",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  },
+  {
+   "turn": 14,
+   "s": 0.9,
+   "ok": true,
+   "ctx": 16820,
+   "tools": [],
+   "text": "2 to the power of 10 is 1024.",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  },
+  {
+   "turn": 15,
+   "s": 1.91,
+   "ok": true,
+   "ctx": 16979,
+   "tools": [
+    "Glob"
+   ],
+   "text": "There are 2 files in the current folder: `notes.txt` and `readme.md`.",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  },
+  {
+   "turn": 16,
+   "s": 1.64,
+   "ok": true,
+   "ctx": 17040,
+   "tools": [],
+   "text": "The code word you gave me at the start was PELICAN-7.",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  },
+  {
+   "turn": 17,
+   "s": 0.81,
+   "ok": true,
+   "ctx": 17092,
+   "tools": [],
+   "text": "45 divided by 9 is 5.",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  },
+  {
+   "turn": 18,
+   "s": 2.11,
+   "ok": true,
+   "ctx": 17267,
+   "tools": [
+    "Bash"
+   ],
+   "text": "The output was `trial-18`.",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  },
+  {
+   "turn": 19,
+   "s": 0.88,
+   "ok": true,
+   "ctx": 17306,
+   "tools": [],
+   "text": "Red.",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  },
+  {
+   "turn": 20,
+   "s": 2.52,
+   "ok": true,
+   "ctx": 17558,
+   "tools": [
+    "Read"
+   ],
+   "text": "The first line of notes.txt is \"alpha line\".",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  },
+  {
+   "turn": 21,
+   "s": 0.88,
+   "ok": true,
+   "ctx": 17608,
+   "tools": [],
+   "text": "13 plus 29 is 42.",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  },
+  {
+   "turn": 22,
+   "s": 1.93,
+   "ok": true,
+   "ctx": 17776,
+   "tools": [
+    "Bash"
+   ],
+   "text": "The output was `trial-22`.",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  },
+  {
+   "turn": 23,
+   "s": 0.97,
+   "ok": true,
+   "ctx": 17840,
+   "tools": [],
+   "text": "100 \u00b0C at standard atmospheric pressure (sea level).",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  },
+  {
+   "turn": 24,
+   "s": 1.88,
+   "ok": true,
+   "ctx": 17988,
+   "tools": [
+    "Glob"
+   ],
+   "text": "The only .md file in the current folder is `readme.md`.",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  },
+  {
+   "turn": 25,
+   "s": 0.91,
+   "ok": true,
+   "ctx": 18033,
+   "tools": [],
+   "text": "9 squared is 81.",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  },
+  {
+   "turn": 26,
+   "s": 1.92,
+   "ok": true,
+   "ctx": 18201,
+   "tools": [
+    "Bash"
+   ],
+   "text": "The output was `trial-26`.",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  },
+  {
+   "turn": 27,
+   "s": 0.84,
+   "ok": true,
+   "ctx": 18244,
+   "tools": [],
+   "text": "Jupiter.",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  },
+  {
+   "turn": 28,
+   "s": 2.39,
+   "ok": true,
+   "ctx": 18520,
+   "tools": [
+    "Read"
+   ],
+   "text": "The last line of text in notes.txt is \"charlie line\". The Read output also shows an empty line 4 after it.",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  },
+  {
+   "turn": 29,
+   "s": 0.85,
+   "ok": true,
+   "ctx": 18570,
+   "tools": [],
+   "text": "100 minus 37 is 63.",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  },
+  {
+   "turn": 30,
+   "s": 0.84,
+   "ok": true,
+   "ctx": 18615,
+   "tools": [],
+   "text": "Goodbye.",
+   "session": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d",
+   "err": ""
+  }
+ ],
+ "rate_limits": [
+  {
+   "rate_limit_info": {
+    "status": "allowed_warning",
+    "resets_at": 1795615200,
+    "rate_limit_type": "seven_day",
+    "utilization": 0.85,
+    "overage_status": "rejected",
+    "overage_resets_at": null,
+    "overage_disabled_reason": "org_level_disabled",
+    "raw": {
+     "status": "allowed_warning",
+     "resetsAt": 1795615200,
+     "rateLimitType": "seven_day",
+     "utilization": 0.85,
+     "overageStatus": "rejected",
+     "overageDisabledReason": "org_level_disabled",
+     "isUsingOverage": false,
+     "surpassedThreshold": 0.75,
+     "unifiedWindows": {
+      "five_hour": {
+       "utilization": 0.23,
+       "resetsAt": 1795480800,
+       "status": "allowed"
+      },
+      "seven_day": {
+       "utilization": 0.85,
+       "resetsAt": 1795615200,
+       "status": "allowed_warning",
+       "surpassedThreshold": 0.75
+      }
+     },
+     "overageEnabled": false
+    }
+   },
+   "uuid": "11fe7fcc-76a8-495f-8c2e-bab68f336a06",
+   "session_id": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d"
+  },
+  {
+   "rate_limit_info": {
+    "status": "allowed_warning",
+    "resets_at": 1795615200,
+    "rate_limit_type": "seven_day",
+    "utilization": 0.85,
+    "overage_status": "rejected",
+    "overage_resets_at": null,
+    "overage_disabled_reason": "org_level_disabled",
+    "raw": {
+     "status": "allowed_warning",
+     "resetsAt": 1795615200,
+     "rateLimitType": "seven_day",
+     "utilization": 0.85,
+     "overageStatus": "rejected",
+     "overageDisabledReason": "org_level_disabled",
+     "isUsingOverage": false,
+     "surpassedThreshold": 0.75,
+     "unifiedWindows": {
+      "five_hour": {
+       "utilization": 0.23,
+       "resetsAt": 1795480800,
+       "status": "allowed"
+      },
+      "seven_day": {
+       "utilization": 0.85,
+       "resetsAt": 1795615200,
+       "status": "allowed_warning",
+       "surpassedThreshold": 0.75
+      }
+     },
+     "overageEnabled": false
+    }
+   },
+   "uuid": "fc4e618b-667d-4ce6-a16e-936daf05f018",
+   "session_id": "ec0ba070-6436-4e52-a4d8-5ebe966f1a9d"
+  }
+ ]
+}
