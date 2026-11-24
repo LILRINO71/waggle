@@ -227,3 +227,57 @@ environment and throwaway home for both paths. The SDK ran from `pythonw` under 
 Verdict for Step 2's choice: the SDK gives no speed or context gain over today's lean `claude -p` path. It would add
 a window fix to carry and a hook default that fails open. Adopting it is only worth it for something the CLI path
 cannot do.
+
+## Steps 3-7 log (built 2026-11-23, on the owner's "build the whole thing")
+
+Code is in; every gate below needs real nights or real use, so each says what is measured and what is still open.
+
+**Step 3, first night** (`waggle/nightshift.py`, timers `night.tick` every 10 min and `night.report` 07:30,
+detached `night.task`). Works the owner's approved objectives from `~/.waggle/night/objectives.json` (seeded from
+[`OBJECTIVES.md`](OBJECTIVES.md): SimBench PRs #12, #13, #15, then Waggle's idle churn), one task at a time,
+23:00-07:00, never started after 05:00.
+- Sandbox: a clone under `~/.waggle/night/repos` whose push URL is disabled, one worktree per task on its
+  `waggle/*` branch. The worker (Sonnet through `agent.run`, the policy hook, files and shell) cannot push.
+- Checks by code: new commits, nothing uncommitted, no conflict markers, `AGENTS.md`/`.github/` unchanged (or
+  equal to main's), contains current main (O1), the objective's test command exits 0, a review note with a
+  `Verdict:` line. Then a tool-less Haiku second opinion that can only stop a delivery.
+- Delivery by code only: push `waggle/*` (no force; anything else refused) and open a **draft** PR whose body is
+  the review note. A permission ask parks the task; a failed check retries once with the gap written into the brief.
+- Morning: one message, numbered items with CI state, diff size, test line, verdict, link; the owner answers
+  `accept 1`, `reject 2 <why>`, `redo 3`, `accept all` (typed or spoken; answered in code before Claude).
+- Budget: stops for the week at `night_week_cap` (0.35) of the 7-day allowance, measured from the 7-day readings
+  around each task, and never starts while the week is at or past `seven_day_stop_at` (0.85). On 2026-11-23 the
+  week stood at 85 %, so **the first night waits for the weekly reset**; the 21:00 evening note says so.
+- Live checks without Claude: `gh pr view` finds PR #12's branch; `gh pr checks` reads CI (green).
+- Gate (open): at least 3 of 5 nights produce an accepted result.
+
+**Step 4, one work list** (`waggle/worklist.py`, MCP tool `work_status`, policy: read). One answer across the night
+shift, objectives, background tasks, autonomy goals, routines and running core jobs; a source that fails to read
+is named. On live data it listed 5 enabled autonomy goals (including "Money experiment") and 2 routines. A night
+task whose worker died with a restart or deploy is requeued on the next tick (within 10 min) with that said in
+its brief. Test: a 3-night objective with the first night's worker killed ends with every task delivered once.
+DBOS (trial passed with conditions) is **not** adopted yet: the core's job runtime plus `night.db` already give
+the same recovery for one worker, and a second process with its own packages would add to the size budget.
+Revisit if a multi-step objective needs mid-task checkpoints. Gate (open): a real 3-night objective survives a
+restart and a deploy.
+
+**Step 5, memory and promises.** Facts already land through the daily digest (16 filed since 11-21). New: a dated
+promise in Waggle's own reply ("I'll check the shooter numbers tomorrow") with no reminder, job or task created in
+that turn becomes a check-in of kind `promise` (`followups.promises`), raised at its time as "Waggle said it
+would ...". Gate (open): 18 of 20 stated facts retrievable next day (not yet measured).
+
+**Step 6, attention.** Already in place: `daily_text_cap` 8, the expected-value hold-back by kind, labels from the
+owner's replies. New: `outreach_ev.gate()`. Live, last 7 days: 11 labelled, 8 welcome = **73 % useful**, busiest
+day 0 unprompted initiative messages over the cap. Gate: 70 % over 7 days (met on this window; keep measuring).
+
+**Step 7, learning from the nights.** The owner's reject/redo reasons and failed checks on an objective go into the
+next brief of that objective ("Lessons from earlier nights"). The existing learning loop (`learnloop.py`) is
+unchanged. Gate (open): 2 kept gains and 1 proven auto-revert.
+
+**Gaps closed.** The watchdog now watches the Telegram gateway: when its process (`~/.hermes/gateway.pid`) is gone
+it runs the "Waggle Gateway" task, at most once per 5 min, real home only (event
+`gateway.relaunched_by_watchdog`).
+
+**Not built: Step 8 (reach).** Own Telegram polling with Hermes removed, and the speech-model trial. Hermes removal
+needs the replacement to run in parallel first (section 4 rule) and the voice trial needs large downloads, which
+wait for a night with the owner away from the PC.

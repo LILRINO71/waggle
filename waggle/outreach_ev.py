@@ -155,6 +155,29 @@ def teach(outbox_id, kind, label, sent_at=None, now=None):
     return True
 
 
+def gate(days=7, now=None):
+    """Step 6's gate over the last `days`: {"labelled", "welcome", "useful_rate", "max_per_day", "days"}. A
+    message counts as useful when it was labelled welcome (the owner answered it, or said so); the busiest day
+    counts every unprompted, non-urgent message that went out (the cap is daily_text_cap)."""
+    import datetime as dt
+
+    from . import notify
+    now = now or time.time()
+    since = now - days * 86400
+    con = _db()
+    rows = con.execute("SELECT label FROM outcomes WHERE sent_at>=?", (since,)).fetchall()
+    con.close()
+    per_day = {}
+    for r in notify.rows(since=since, status="sent", origin=notify.INITIATIVE_ORIGINS):
+        if r["kind"] in ("text", "voice", "call") and not r["urgent"] and not r["asked"] and r.get("sent_at"):
+            d = dt.date.fromtimestamp(r["sent_at"]).isoformat()
+            per_day[d] = per_day.get(d, 0) + 1
+    welcome = sum(1 for (l,) in rows if l == "welcome")
+    return {"labelled": len(rows), "welcome": welcome,
+            "useful_rate": round(welcome / len(rows), 2) if rows else None,
+            "max_per_day": max(per_day.values()) if per_day else 0, "days": days}
+
+
 def odds(kind, now=None):
     """{"kind", "a", "b", "p", "n", "welcome", "ignored", "unwelcome"}: the Beta posterior over 'welcome' for a
     kind of signal, from its labelled outcomes (older ones weigh less)."""

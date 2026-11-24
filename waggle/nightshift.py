@@ -453,7 +453,10 @@ def work(task_id, settings=None, agent_run=None, asker=None, now=None):
             shutil.copy2(data_path("runtime.db"), db)
             extra += f"\nRUNTIME_DB = {db}"
         gap = row.get("gap") or ""
+        learned = lessons(obj["id"], skip=task_id)
         brief = (t["brief"] + f"\n\nNOTE_PATH = {note_path}" + extra
+                 + (f"\n\nLessons from earlier nights on this objective (the owner's answers and failed checks):\n"
+                    + "\n".join(f"- {x}" for x in learned) if learned else "")
                  + (f"\n\nThis is attempt {attempt}. Last time it fell short: {gap}" if gap else ""))
         res = (agent_run or agent.run)(brief, model="sonnet", agent_rules=NIGHT_RULES, cwd=str(wt), effort="medium",
                                        timeout=WORKER_TIMEOUT_S, settings=s, purpose="night",
@@ -486,6 +489,21 @@ def work(task_id, settings=None, agent_run=None, asker=None, now=None):
         err = f"{type(e).__name__}: {e}"[:800]
         again = attempt < MAX_ATTEMPTS
         return _finish(task_id, "queued" if again else "failed", r0, error=err, gap=err)
+
+
+def lessons(objective_id, skip="", n=5):
+    """Step 7, the night shift's own learning: what the owner rejected or asked to redo (with their reason) and
+    which checks failed on this objective's other tasks, newest first, so the next brief starts from them."""
+    out = []
+    rows = sorted((t for t in tasks() if t["objective"] == objective_id and t["id"] != skip),
+                  key=lambda t: max(t["answered"] or 0, t["finished"] or 0), reverse=True)
+    for t in rows:
+        if t.get("answer") in ("rejected", "redo") and t.get("answer_reason"):
+            how = "asked for a redo" if t["answer"] == "redo" else "rejected it"
+            out.append(f"{t['title']}: the owner {how}: {t['answer_reason'][:200]}")
+        elif t["status"] == "failed" and t.get("error"):
+            out.append(f"{t['title']}: failed its checks: {t['error'][:200]}")
+    return out[:n]
 
 
 def _finish(task_id, status, r0, **cols):

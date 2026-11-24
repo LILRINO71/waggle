@@ -235,6 +235,31 @@ def test_morning_report_and_one_word_answers(night, monkeypatch, settings):
     assert ns.acceptance()["accepted"] == 1
 
 
+def test_a_rejection_becomes_a_lesson_in_the_next_brief(night):
+    objs = json.loads((night.dir / "objectives.json").read_text())
+    objs[0]["tasks"] = [dict(objs[0]["tasks"][0], id=f"OX-{i}", title=f"Task {i}", branch=f"waggle/t{i}")
+                        for i in (1, 2)]
+    (night.dir / "objectives.json").write_text(json.dumps(objs))
+    ns.sync()
+    ns._set("OX-1", status="delivered", answer="rejected", answer_reason="never rename public functions",
+            answered=at(8, 0))
+    seen = {}
+
+    def w(brief, **kw):
+        seen["brief"] = brief
+        return worker()(brief, **kw)
+    ns.work("OX-2", agent_run=w, asker=passes)
+    assert "Task 1: the owner rejected it: never rename public functions" in seen["brief"]
+
+
+def test_attention_gate_counts_welcome_and_the_busiest_day(settings):
+    from waggle import outreach_ev
+    outreach_ev.teach(1, "mail", "welcome", sent_at=at(9))
+    outreach_ev.teach(2, "mail", "ignored", sent_at=at(10)) or None
+    g = outreach_ev.gate(now=at(12))
+    assert g["labelled"] >= 1 and g["max_per_day"] == 0
+
+
 def test_evening_line_says_what_tonight_holds(night, monkeypatch, settings):
     from waggle import quota
     monkeypatch.setattr(quota, "seven_day_block", lambda s, now=None: (False, "", 0))

@@ -189,12 +189,47 @@ def _watch_pass(stale_s, now):
         if flag and flag.get("restart"):
             reason, grace = "unhealthy: " + "; ".join(flag.get("reasons", [])), STOP_TIMEOUT_S
     if reason is None:
-        return "ok"
+        return gateway_pass(now) or "ok"
     stop(timeout_s=grace)
     new = start()
     events.emit("core.restarted_by_watchdog", source="watchdog",
                 data={"reason": reason, "old_pid": pid, "new_pid": new})
     return "restarted"
+
+
+GATEWAY_CHECK_S = 60.0  # how often the watchdog looks at the Telegram gateway
+GATEWAY_RESTART_GAP_S = 300.0  # never relaunch it more often than this (a gateway that dies at once is not looped)
+
+
+def gateway_pid():
+    """The Hermes gateway's pid from its pid file, or None (no file, unreadable)."""
+    hermes_home = Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
+    try:
+        return int(json.loads((hermes_home / "gateway.pid").read_text(encoding="utf-8"))["pid"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def gateway_pass(now, alive=None, relaunch=None):
+    """The Telegram gateway carries every inbound owner message, so the watchdog watches it too: once a minute,
+    when its process is gone, the "Waggle Gateway" task is run (its launcher starts only what is down) and an event
+    is written. Only in the owner's real home; never more than once per GATEWAY_RESTART_GAP_S. Returns
+    "gateway relaunched", or None when there was nothing to do."""
+    if relaunch is None and not _real_home():
+        return None
+    last = float(store.get_meta("watchdog.gateway.checked", 0) or 0)
+    if now - last < GATEWAY_CHECK_S:
+        return None
+    store.set_meta("watchdog.gateway.checked", now)
+    pid = gateway_pid()
+    if pid and (alive or procs.alive)(pid):
+        return None
+    if now - float(store.get_meta("watchdog.gateway.relaunched", 0) or 0) < GATEWAY_RESTART_GAP_S:
+        return None
+    store.set_meta("watchdog.gateway.relaunched", now)
+    ok = (relaunch or _start_gateway_stack)()
+    events.emit("gateway.relaunched_by_watchdog", source="watchdog", data={"old_pid": pid, "ok": bool(ok)})
+    return "gateway relaunched"
 
 
 # ---- the long-lived watchdog ------------------------------------------------------------------------------
