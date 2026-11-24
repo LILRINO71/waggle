@@ -138,8 +138,12 @@ Built on `overnight` (95e79b4, 2e9756a, e8a3392, cb8c5b7, 63611b2), each with te
    connector; background builds run with WebFetch and Gmail off; Hermes `web_extract` points to `web_read`. Mail
    was already reduced to typed fields by the mail watch (local model) and the Gmail passes of `mailwatch`/`ingest`
    (connector read tools only + schema).
-   Known gaps: `curl` of an HTML page in the shell, Hermes browser tools (wrapped `<untrusted>`, not reduced), and
-   Drive/Docs connector content for agents.
+   Known gaps: Hermes browser tools (wrapped `<untrusted>`, not reduced) and Drive/Docs connector content for agents.
+   Closed 2026-11-23 (live 10af2b9, suite 4,039 passed): a shell command that would print a web page into the session
+   (`curl`, `wget -O-`, `Invoke-WebRequest`, `irm`; not an API, a download to a file, a headers check, a local service
+   or output piped into `jq`) is answered `RETRY_WEB_READ` (never an approval). Replay of the owner's 76 real calls:
+   0 asks, 0 redirects. Live: "Read <Wikipedia page> and tell me who founded FTC" -> `web_read` directly, 7.77 s,
+   correct, no approval filed (trace 235).
 
 **Deploy (2026-11-23, live 9dcac65).** Full suite 4,018 passed (`tools/locked_suite.py`). `tools/deploy.ps1`:
 guard approved (agent, claude_cli, config, guard, policy changed), core healthy at 9dcac65, deploy canary passed (8.8 s;
