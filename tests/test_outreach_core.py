@@ -231,7 +231,8 @@ def test_register_core_adds_its_timers_once(s, fake_sender):
     from waggle.core import timers
     tick.register_core(now=at(12))
     first = {t["id"]: t for t in timers.list()}
-    assert set(first) == {"outreach.look", "outreach.brief", "outreach.evening", "outreach.scout"}
+    assert set(first) == {"outreach.look", "outreach.brief", "outreach.evening", "outreach.scout",
+                          "outreach.think.0", "outreach.think.1", "outreach.think.2"}
     assert first["outreach.look"]["catch_up"] == "skip" and first["outreach.look"]["kind"] == "interval"
     ev = first["outreach.evening"]
     assert (ev["kind"], ev["spec"], ev["catch_up"], ev["max_late_s"]) == ("cron", "0 21 * * *", "latest",
