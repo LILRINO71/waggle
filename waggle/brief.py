@@ -198,6 +198,13 @@ def evening_note(settings=None, now=None, activity=None):
         recipe_line = ""
     if recipe_line:
         lines.append(recipe_line)
+    try:  # what the night shift will work on tonight (waggle/nightshift.py)
+        from . import nightshift
+        night_line = nightshift.evening_line(now, s)
+    except Exception:  # noqa: BLE001
+        night_line = ""
+    if night_line:
+        lines.append(night_line)
     learned = _learned(now)
     lines.append("Learned: " + ("; ".join(learned) if learned else "nothing new recorded today") + ".")
     try:  # the learning loop's changes, one line each with its undo code (waggle/learnloop.py)

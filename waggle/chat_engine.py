@@ -1070,6 +1070,15 @@ def handle_inbound(chat, text, *, kind="text", media=None, platform="telegram", 
             answer = None
         if answer:
             return direct(answer, "recipe")
+    if origin == "user" and not (voice and vinfo and not vinfo.get("stt_confident", True)):
+        try:  # "accept 1", "reject 2 too big", "redo 3", "accept all" on the night shift's morning report
+            from . import nightshift
+            answer = nightshift.answer(body)
+        except Exception as e:
+            events.log("engine_error", stage="nightshift", error=str(e)[:200])
+            answer = None
+        if answer:
+            return direct(answer, "night")
     try:
         pre = approval_preflight(chat, body, prev, heard_unsure=bool(voice and vinfo and not vinfo.get(
             "stt_confident", True))) if owner_text != "" else None  # a caption can answer an approval

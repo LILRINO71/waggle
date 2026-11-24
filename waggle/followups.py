@@ -125,13 +125,13 @@ def add(at, text, *, chat="", origin="user", now=None, voice=None):
     return fid
 
 
-def _add_checkin(what, due, said, said_at, trace, now, chat="", origin="user", voice=None):
+def _add_checkin(what, due, said, said_at, trace, now, chat="", origin="user", voice=None, kind="checkin"):
     from waggle.core import timers
     fid = uuid.uuid4().hex[:8]
     asked = origin == "user" and (asked_by_voice(now, chat) if voice is None else bool(voice))
     tid = timers.once(due, "outreach.checkin", {"id": fid, **({"voice": True} if asked else {})}, timer_id=f"checkin:{fid}", catch_up="all",
                       origin=origin)
-    item = {"id": fid, "kind": "checkin", "created": now, "trace": trace, "said": (said or "")[:300],
+    item = {"id": fid, "kind": kind, "created": now, "trace": trace, "said": (said or "")[:300],
             "said_at": said_at, "what": what, "due": due, "status": "open", "chat": chat, "origin": origin,
             "timer_id": tid}
     _insert(item)
@@ -190,6 +190,35 @@ def extract(text, now=None, followup_hour=19):
     return out
 
 
+# Waggle's own promises (Step 5): "I'll check the shooter numbers tomorrow" in a reply, with no reminder, job or
+# task created in that turn to keep it, becomes a dated check-in of kind "promise", so a promise is never just words.
+PROMISE = re.compile(r"\b(?:i'?ll|i will|i'?m going to)\s+((?:check|look|remind|follow up|get back|let you know|send|"
+                     r"ping|text|tell|update|try|finish|run|report|research|find|draft|prepare|write|build|test)\b"
+                     r".{2,140})", re.I)
+KEPT_BY_TOOL = ("remind_me", "background_task", "objective_create", "routine_add", "schedule_call", "call_me",
+                "google_task_add", "google_event_new", "start_build")
+
+
+def promises(reply, tools=(), now=None, followup_hour=19):
+    """[(what, due_ts)] Waggle promised in one reply and no tool of the same turn keeps."""
+    if any(str(t).rsplit("__", 1)[-1] in KEPT_BY_TOOL for t in tools or ()):
+        return []
+    now = now or dt.datetime.now()
+    out = []
+    for sentence in re.split(r"(?<=[.!?])\s+|\n", reply or ""):
+        m = PROMISE.search(sentence)
+        if not m or HYPOTHETICAL.search(sentence[:m.start()]) or sentence.strip().endswith("?"):
+            continue
+        at, has_time = when_mod.parse(sentence, now)
+        if not at:
+            continue
+        due = at if has_time else at.replace(hour=followup_hour, minute=0)
+        if due <= now:
+            continue
+        out.append((_clean(m.group(1)), due.timestamp()))
+    return out
+
+
 def capture(settings=None, now=None, rows=None):
     """Read the user's own new turns since the last run; store check-ins and create reminders. Returns what was
     added. rows: traces dicts (tests); default: traces.db. Only origin.user_turns are read."""
@@ -227,6 +256,14 @@ def capture(settings=None, now=None, rows=None):
                 item = _add_checkin(what, due, r.get("request"), r.get("time"), r.get("id"), now)
             open_items.append(item)
             added.append(item)
+        if r.get("reply") and PROMISE.search(r["reply"]):
+            tools = [st.get("tool") or "" for st in (r.get("steps") or _steps(r.get("id")))]
+            for what, due in promises(r["reply"], tools, said_at, s.followup_hour):
+                if any(i["kind"] == "promise" and i["what"].lower() == what.lower() for i in open_items):
+                    continue
+                item = _add_checkin(what, due, r.get("reply"), r.get("time"), r.get("id"), now, kind="promise")
+                open_items.append(item)
+                added.append(item)
     store.set_meta(CURSOR_META, max(r["id"] for r in new))
     if added:
         from . import events
@@ -235,12 +272,24 @@ def capture(settings=None, now=None, rows=None):
     return added
 
 
+def _steps(trace_id):
+    try:
+        from . import traces
+        return (traces.get(trace_id) or {}).get("steps") or []
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def signal_for(item, now=None):
     """The decision step's signal for a check-in whose time has come."""
     from .watchers import signal
     now = now or time.time()
     said = dt.datetime.fromtimestamp(item.get("said_at") or item["created"])
     ago = "today" if said.date() == dt.date.fromtimestamp(now) else said.strftime("on %A")
+    if item.get("kind") == "promise":
+        return signal(f"followup:{item['id']}", "followup", f"Waggle said {ago} it would {item['what']}",
+                      f'Its words: "{(item.get("said") or "")[:200]}". Keep the promise now or say why not.',
+                      f"followup:{item['id']}", when=item["due"])
     return signal(f"followup:{item['id']}", "followup", f"You said {ago} you'd {item['what']}",
                   f'Their words: "{(item.get("said") or "")[:200]}"', f"followup:{item['id']}", when=item["due"])
 

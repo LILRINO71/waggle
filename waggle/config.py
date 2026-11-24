@@ -217,6 +217,8 @@ class Settings:
     # A chat session whose last call carried more than this many tokens of context starts fresh on the next turn,
     # seeded with a short summary of the conversation (0 = never by size; the day and turn limits still apply).
     chat_session_max_tokens: int = 60000
+    night_shift: bool = True  # Step 3: approved objectives worked 23:00-07:00 (waggle/nightshift.py)
+    night_week_cap: float = 0.35  # the night shift's share of the 7-day allowance (owner, 2026-11-21)
     sync_wait_s: float = 25.0  # surfaces without message editing (desktop, voice notes) wait this long, then ack
     stream_platforms: list = field(default_factory=lambda: ["telegram"])
     edit_interval_s: float = 1.2  # Telegram allows about one edit per second per chat

@@ -423,7 +423,7 @@ WAGGLE_TOOLS = {
     "send_to_me": (ALLOW, _ONLY_USER),
     # reads and status
     "vault_search": (ALLOW, _READS), "project_status": (ALLOW, _READS), "build_status": (ALLOW, _READS),
-    "waggle_status": (ALLOW, _READS), "weather": (ALLOW, _READS), "look_at_screen": (ALLOW, _READS),
+    "waggle_status": (ALLOW, _READS), "work_status": (ALLOW, _READS), "weather": (ALLOW, _READS), "look_at_screen": (ALLOW, _READS),
     "skill_search": (ALLOW, _READS), "skill_load": (ALLOW, _READS), "skill_list": (ALLOW, _READS),
     "skill_hub_search": (ALLOW, _READS), "recall": (ALLOW, _READS), "routine_list": (ALLOW, _READS),
     "agent_list": (ALLOW, _READS), "agent_status": (ALLOW, _READS), "jobs_list": (ALLOW, _READS),
