@@ -49,7 +49,7 @@ TEST_TIMEOUT_S = 35 * 60
 TASK_TIMEOUT_S = 3 * 3600.0
 MAX_ATTEMPTS = 2
 NO_PUSH = "no-push://night-worker"
-NOWIN = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 FINISHED = ("delivered", "failed", "parked")
 ANSWERED = ("accepted", "rejected")
 PROTECTED = ("AGENTS.md", ".github/")
@@ -260,7 +260,7 @@ def run(cmd, cwd=None, timeout=600, shell=False):
     """(exit code, output tail) of a command; never raises for a failing command."""
     try:
         p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                           timeout=timeout, shell=shell, creationflags=NOWIN)
+                           timeout=timeout, shell=shell, creationflags=NO_WINDOW)
         return p.returncode, ((p.stdout or "") + (p.stderr or ""))[-4000:]
     except subprocess.TimeoutExpired:
         return 124, f"timed out after {timeout}s"
