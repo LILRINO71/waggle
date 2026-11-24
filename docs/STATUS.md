@@ -281,3 +281,10 @@ it runs the "Waggle Gateway" task, at most once per 5 min, real home only (event
 **Not built: Step 8 (reach).** Own Telegram polling with Hermes removed, and the speech-model trial. Hermes removal
 needs the replacement to run in parallel first (section 4 rule) and the voice trial needs large downloads, which
 wait for a night with the owner away from the PC.
+
+**Deploy (2026-11-23, live 4d9c943).** Full suite 4,069 passed. `tools/deploy.ps1`: guard approved (config,
+policy), every long-lived process restarted (watchdog first, so it runs the gateway check), core healthy,
+code-path canary 2.3 s. Live: timers `night.tick` (10 min) and `night.report` (07:30) registered; the evening line
+reads "Tonight: SimBench PR #12 refresh; then #13; then #15 (+1). It will not start yet: the 7-day Claude limit is
+at 85%". The week resets about 2026-11-25 06:00, so the first real night is 2026-11-25. Night tasks also need
+`npm ci` from SimBench's own lockfile in the sandbox (`setup`, run by code).
