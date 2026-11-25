@@ -103,10 +103,14 @@ def _thinking_state(s, now):
             "questions": [{"time": q["time"], "question": q["question"]} for q in think.recent_questions(now, 7)]}
 
 
+TEST_ORIGINS = ("canary", "eval", "test", "bench")
+
+
 def _told(now):
     from . import notify
     start = dt.datetime.fromtimestamp(now).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-    rows = [r for r in notify.rows(since=start) if r["status"] in ("sent", "queued", "sending", "held")]
+    rows = [r for r in notify.rows(since=start) if r["status"] in ("sent", "queued", "sending", "held")
+            and (r.get("meta") or {}).get("turn_origin") not in TEST_ORIGINS]  # test turns are not the owner's day
     return [{"time": r["created"], "text": " ".join((r["text"] or "").split())[:260], "origin": r["origin"],
              "status": r["status"], "kind": r["kind"]} for r in rows[-25:]][::-1]
 

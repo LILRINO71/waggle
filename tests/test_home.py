@@ -188,3 +188,15 @@ def test_the_page_shows_late_answers_and_keeps_waiting_after_the_holding_line():
     assert 'r.status==="working")waitFor(r.asked_at)' in page and "showLate(d.late,d.time)" in page
     assert "a.time<opened-1" in page  # only what arrived after the page was opened
     assert 'r.headers.get("X-Waggle-Status")==="working"' in page
+
+
+def test_test_turns_stay_out_of_transmissions_today(settings):
+    from waggle import home
+    from waggle.core import outbox
+    outbox.enqueue("text", "Heard: test question", chat="telegram:1", idem_key="t1", origin="voice",
+                   meta={"kind": "reply", "turn_origin": "canary"})
+    outbox.enqueue("text", "Heard: real question", chat="telegram:1", idem_key="t2", origin="voice",
+                   meta={"kind": "reply", "turn_origin": "user"})
+    import time
+    texts = [r["text"] for r in home._told(time.time())]
+    assert texts == ["Heard: real question"]

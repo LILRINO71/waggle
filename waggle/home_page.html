@@ -281,6 +281,10 @@ gv.addEventListener("pointermove",e=>{if(!G)return;const w=toWorld(e);if(!drag){
 gv.addEventListener("pointerup",async e=>{if(drag&&drag.node&&!drag.moved){sel=drag.node;openNote(sel)}drag=null});
 gv.addEventListener("wheel",e=>{e.preventDefault();const w=toWorld(e),f=Math.exp(-e.deltaY*.0015);view.k*=f;view.x=w.px-w.x*view.k;view.y=w.py-w.y*view.k},{passive:false});
 $("gsearch").oninput=e=>{query=e.target.value.trim()};
+$("gsearch").onkeydown=e=>{if(e.key!=="Enter"||!G||!query)return;const q=query.toLowerCase();  // Enter opens the best match
+ const hits=G.nodes.filter(n=>!hidden.has(n.group)&&n.name.toLowerCase().includes(q))
+  .sort((a,b)=>(b.name.toLowerCase().startsWith(q)-a.name.toLowerCase().startsWith(q))||(b.degree-a.degree));
+ if(!hits.length)return;sel=hits[0];view.x=gv.width/2-sel.x*view.k;view.y=gv.height/2-sel.y*view.k;openNote(sel)};
 async function openNote(n){$("gnotep").style.display="";$("gname").textContent=n.name;$("gnote").textContent="loading…";
  const d=await (await fetch("/api/note?path="+encodeURIComponent(n.id))).json();$("gnote").textContent=d.error||(d.text+(d.more?"\n…":""))}
 addEventListener("keydown",e=>{if(e.key==="Escape"&&$("graphview").classList.contains("on"))showGraph(false)});
