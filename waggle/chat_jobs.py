@@ -42,6 +42,10 @@ def start(chat, task, agent="general", hard=False, origin="", now=None):
     return jobs.enqueue(JOB_KIND, payload, idem_key=f"{JOB_KIND}:{key}", now=now), key
 
 
+def progress_key(payload):
+    return f"bg-{payload['key']}"
+
+
 def _queued_result(idem_key):
     row = store.connect().execute("SELECT id FROM outbox WHERE idem_key=?", (idem_key,)).fetchone()
     return row[0] if row else None
@@ -60,7 +64,7 @@ def run_background(payload, runner=None):
         else:
             from waggle import agents
             res = agents.run(payload.get("agent") or "general", payload["task"], session=payload["chat"],
-                             hard=bool(payload.get("hard")), timeout=1800)
+                             hard=bool(payload.get("hard")), timeout=1800, progress_key=progress_key(payload))
         from waggle.agent import approval_message
         ok = bool(getattr(res, "ok", False))
         body = (getattr(res, "text", "") or f"It didn't work: {str(getattr(res, 'error', ''))[:300]}") \
@@ -85,7 +89,8 @@ def reap(payload=None):
     keep |= chat_engine.engine_chat_keys()  # also an engine chat that has no row yet
     stopped = chat_engine.pool().reap(keep=keep)
     started = chat_engine.pool().rollover(keep=keep)  # after 4 am: today's session is ready before the first message
-    return {"stopped": stopped, "rolled": started}
+    from waggle import progress
+    return {"stopped": stopped, "rolled": started, "progress_pruned": progress.prune()}
 
 
 def prewarm(payload=None):
@@ -131,16 +136,25 @@ def register_core():
     return [JOB_KIND, REAP_KIND, PREWARM_KIND]
 
 
-def status(chat=None, limit=6):
-    """Background jobs (newest first), optionally of one chat."""
+def status(chat=None, limit=6, now=None):
+    """Background jobs (newest first), optionally of one chat. A running job carries its live progress (minutes
+    running, minutes since its last step, its last steps and the files it wrote), so a status answer can say
+    what it is doing and tell slow from stuck."""
+    from waggle import progress
+    now = store.now_or(now)
     rows = [j for j in jobs.list(kind=JOB_KIND, limit=200)
             if chat is None or (j.get("payload") or {}).get("chat") == chat][:limit]
     out = []
     for j in rows:
         p, r = j.get("payload") or {}, j.get("result") if isinstance(j.get("result"), dict) else {}
-        out.append({"job": j["id"], "task": _title(p.get("task", "")), "state": j["state"],
-                    "ok": r.get("ok"), "started": j.get("started"), "finished": j.get("finished"),
-                    "result": str(r.get("result") or j.get("error") or "")[:600]})
+        item = {"job": j["id"], "task": _title(p.get("task", "")), "state": j["state"],
+                "ok": r.get("ok"), "started": j.get("started"), "finished": j.get("finished"),
+                "result": str(r.get("result") or j.get("error") or "")[:600]}
+        if j["state"] in ("running", "queued", "pending") and j.get("started"):
+            item["running_min"] = round((now - float(j["started"])) / 60, 1)
+        if j["state"] == "running" and p.get("key"):
+            item["progress"] = progress.read(progress_key(p), now=now)
+        out.append(item)
     return out
 
 
@@ -173,7 +187,9 @@ MCP_TOOLS = [
       "parameters": {"type": "object", "properties": {"task": {"type": "string"}, "agent": {"type": "string"},
                                                       "hard": {"type": "boolean"}}, "required": ["task"]}},
      _t_background_task),
-    ({"name": "background_status", "description": "Background jobs started from this chat: status and results.",
+    ({"name": "background_status", "description": "Background jobs started from this chat: status and results; a "
+      "running job also shows minutes running, its last steps and the files it wrote so far (say these when asked "
+      "how it is going).",
       "parameters": {"type": "object", "properties": {"limit": {"type": "integer"}}, "required": []}},
      _t_background_status),
 ]

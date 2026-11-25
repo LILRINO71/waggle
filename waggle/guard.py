@@ -681,6 +681,21 @@ def _pieces(tok):
 _KEYWORDS = {"if", "elseif", "elif", "else", "while", "until", "do", "done", "then", "fi", "try", "finally", "{", "}",
              "(", ")", "foreach-object", "%", "where-object", "?", "!", "time", "begin", "process", "end"}
 _METHOD_CALL = re.compile(r"\.\s*\w+\s*\(|::\s*\w+\s*\(")
+_MEMBER_PIPES = {"foreach-object", "%"}
+_MEMBER = re.compile(r"^[A-Za-z_][\w.]*$")
+
+
+def _member_only(rest):
+    """`ForEach-Object Name` / `% Name` / `ForEach-Object -MemberName Name`: reads one property, runs nothing
+    (a method name would need -ArgumentList or a script block, which is not this)."""
+    rest = [t for t in rest if t.lower() != "-membername"]
+    return len(rest) == 1 and bool(_MEMBER.match(rest[0])) and rest[0].lower() in _READ_MEMBERS
+
+
+# Properties only: `% Delete` / `% MoveTo` would call a method, so a name not listed here is judged as a command.
+_READ_MEMBERS = {"fullname", "name", "basename", "extension", "length", "directory", "directoryname", "parent",
+                 "lastwritetime", "creationtime", "lastaccesstime", "mode", "attributes", "path", "pspath", "count",
+                 "id", "processname", "line", "linenumber", "filename", "value", "key", "source", "version"}
 
 
 def _command_tokens(tokens, quoted_first=False):
@@ -697,6 +712,8 @@ def _command_tokens(tokens, quoted_first=False):
         if t in ("for", "foreach") and len(toks) >= 3 and toks[2].lower() == "in":
             return [], True
         if t in _KEYWORDS:
+            if t in _MEMBER_PIPES and _member_only(toks[1:]):  # ForEach-Object FullName: prints a property
+                return [], True
             toks = toks[1:]
         elif len(t) > 1 and t[0] in "{(" and not t.startswith("$("):
             toks[0] = toks[0][1:]
@@ -1186,6 +1203,8 @@ def _analyze(stmts, cwd, ctx, depth=0, dialect=None):
                 if (len(piece) < 2 and not (ancestors and piece == ".")) or (
                         piece.startswith("-") and "/" not in piece and "\\" not in piece):
                     continue
+                if read and _WILD_ONLY.match(piece):  # `***/` in a sed pattern, `*` given to grep: names nothing
+                    continue
                 if vcwd is not None:
                     label = ctx.match(piece, vcwd, ancestors, cross) or (
                         _loose_name(piece) if unres and not ctx.skip_loose else None)
@@ -1221,6 +1240,9 @@ def _analyze(stmts, cwd, ctx, depth=0, dialect=None):
             if not read:
                 res.hit = res.hit or names[0]
     return res
+
+
+_WILD_ONLY = re.compile(r"^[*?./\\]+$")
 
 
 # Basenames that count on their own when the folder is unknown (cd into a variable). The later additions to

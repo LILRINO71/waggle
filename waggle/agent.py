@@ -164,8 +164,10 @@ def parse_stream(lines):
 
 
 def run(request, *, model="haiku", context="", agent_rules="", session="", cwd=None, effort="low",
-        timeout=600, tools=None, settings=None, purpose="agent", runner=None, agent_name="general"):
-    """Run one agent task to completion. `runner(cmd, input, env, cwd, timeout) -> stdout lines` is for tests."""
+        timeout=600, tools=None, settings=None, purpose="agent", runner=None, agent_name="general",
+        progress_key=None):
+    """Run one agent task to completion. `runner(cmd, input, env, cwd, timeout) -> stdout lines` is for tests.
+    Live progress (waggle/progress.py) is kept under progress_key (default: the session) while it runs."""
     s = settings or Settings.load()
     t0 = time.time()
     res = AgentResult(session=session or f"agent-{int(t0)}", model=claude_cli.MODEL_IDS.get(model, model))
@@ -186,8 +188,15 @@ def run(request, *, model="haiku", context="", agent_rules="", session="", cwd=N
     env.update(WAGGLE_SESSION=res.session, WAGGLE_AGENT=agent_name, PYTHONIOENCODING="utf-8")
     workdir = cwd or s.agent_workdir or str(Path.home() / "Claude")
     kind = None
+    from . import progress
+    tracker = progress.Tracker(progress_key or res.session)
     try:
-        lines = (runner or _run_process)(cmd, prompt, env, workdir, timeout)
+        if runner is not None:
+            lines = list(runner(cmd, prompt, env, workdir, timeout))
+            for line in lines:
+                tracker.feed(line)
+        else:
+            lines = _run_process(cmd, prompt, env, workdir, timeout, on_line=tracker.feed)
         final, steps = parse_stream(lines)
         res.steps = steps
         res.usage = final.get("usage") or {}
@@ -204,6 +213,7 @@ def run(request, *, model="haiku", context="", agent_rules="", session="", cwd=N
         res.error, kind = f"agent timed out after {timeout}s", "timeout"
     except Exception as e:
         res.error, kind = f"{type(e).__name__}: {e}", "error"
+    tracker.finish()
     res.duration_s = round(time.time() - t0, 2)
     res.approvals = policy.pending(res.session, since=t0 - 1)
     if kind == "limit":
@@ -212,15 +222,49 @@ def run(request, *, model="haiku", context="", agent_rules="", session="", cwd=N
     return res
 
 
-def _run_process(cmd, prompt, env, cwd, timeout):
+def _run_process(cmd, prompt, env, cwd, timeout, on_line=None):
+    """Run the agent process, reading its output as it comes (on_line sees each line: live progress). Raises
+    subprocess.TimeoutExpired after `timeout` seconds, with the process killed."""
+    import threading
     Path(cwd).mkdir(parents=True, exist_ok=True)
     flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-    proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True, env=env, cwd=cwd, timeout=timeout,
-                          encoding="utf-8", errors="replace", creationflags=flags)
-    out = (proc.stdout or "").splitlines()
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            env=env, cwd=cwd, encoding="utf-8", errors="replace", creationflags=flags)
+    killed = threading.Event()
+
+    def kill():
+        killed.set()
+        proc.kill()
+
+    timer = threading.Timer(timeout, kill)
+    timer.daemon = True
+    err = []
+    reader = threading.Thread(target=lambda: err.append(proc.stderr.read()), daemon=True)
+    timer.start()
+    reader.start()
+    out = []
+    try:
+        try:
+            proc.stdin.write(prompt)
+            proc.stdin.close()
+        except OSError:
+            pass
+        for line in proc.stdout:
+            out.append(line.rstrip("\r\n"))
+            if on_line:
+                try:
+                    on_line(line)
+                except Exception:
+                    pass
+        proc.wait()
+    finally:
+        timer.cancel()
+    if killed.is_set():
+        raise subprocess.TimeoutExpired(cmd, timeout)
+    reader.join(5)
     if not any('"type":"result"' in l.replace(" ", "") for l in out):
-        err = (proc.stderr or "").strip()[-500:]
-        out.append(json.dumps({"type": "result", "is_error": True, "result": err or "no output"}))
+        tail = ("".join(err)).strip()[-500:]
+        out.append(json.dumps({"type": "result", "is_error": True, "result": tail or "no output"}))
     return out
 
 

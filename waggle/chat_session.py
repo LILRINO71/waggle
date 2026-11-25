@@ -158,8 +158,23 @@ def winmcp_on(settings=None):
 
 def system_prompt(settings=None):
     """CHAT_SYSTEM plus a line for each optional tool that is offered."""
-    lines = [FTC_LINE] + ([WOLFRAM_LINE] if wolfram_on(settings) else [])
+    lines = [FTC_LINE] + ([WOLFRAM_LINE] if wolfram_on(settings) else []) + [where_line(settings)]
     return CHAT_SYSTEM + "\n" + "\n".join(lines)
+
+
+def where_line(settings=None):
+    """The real folders, said once, so a path in an old note (2026-11-25: ~/WaggleVault from a Nov 20 note) is
+    never taken for the vault and written to."""
+    from . import vault
+    try:
+        s = settings or Settings.load()
+        own, root = vault.own(s), s.vault
+        work = getattr(s, "agent_workdir", "") or str(Path.home() / "Claude")
+    except Exception:
+        return ""
+    return (f"Where things are: the owner's vault is {root}; your own notes folder in it is {own} (note paths are "
+            f"relative to it); agents and builds work under {work}. There is no other vault: a different vault path "
+            "in an older note is out of date, so never write there.")
 
 
 def mcp_config(chat, settings=None, origin="user"):

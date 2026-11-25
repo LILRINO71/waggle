@@ -261,13 +261,24 @@ def step_requirements(step):
     return [r for r in reqs if isinstance(r, dict) and r.get("text")]
 
 
+def resolve_named(rel, s):
+    """A path a step names. Absolute: as is. Relative: the first place it exists among Waggle's vault folder, the
+    folder agents work in (agent_workdir, default ~/Claude) and the home folder; when it exists nowhere, the vault
+    path (where a step that writes notes should have put it). The 2026-11-25 money objective wrote
+    `waggle-earn/research.md` under ~/Claude while the check looked only in the vault and re-ran a finished step."""
+    if ABS_PATH.fullmatch(rel):
+        return Path(rel)
+    work = Path(getattr(s, "agent_workdir", "") or (Path.home() / "Claude"))
+    cands = [vault.own(s) / rel, work / rel, Path.home() / rel]
+    return next((c for c in cands if c.exists()), cands[0])
+
+
 def _named_files(step, reqs, s):
-    """Existing files the step's text or requirements name (vault-relative paths are looked up in the vault)."""
-    root = vault.own(s)
+    """Existing files the step's text or requirements name (relative paths are looked up by resolve_named)."""
     text = f"{step['detail']}\n{step['done_when']}\n" + "\n".join(f"{r['text']} {r.get('path') or ''}" for r in reqs)
     out = []
     for rel in VAULT_PATH.findall(text) + ABS_PATH.findall(text):
-        p = Path(rel) if ABS_PATH.fullmatch(rel) else root / rel
+        p = resolve_named(rel, s)
         if p.is_file() and str(p) not in out:
             out.append(str(p))
     return out[:6]
@@ -277,10 +288,9 @@ def _judge_step(con, oid, step, reqs, s):
     """(complete, missing) for a step with a checklist: files by code, the rest by the evidence-only judge, which
     sees the files the step named and (for [content] requirements) its final output, never its report. (None, why)
     when the judge could not run: the step waits, as it does for any check that could not run."""
-    root = vault.own(s)
-    for r in reqs:  # a requirement's vault-relative path means that file inside the vault
+    for r in reqs:  # a requirement's relative path: wherever it exists (vault, agent work folder, home)
         if r.get("path") and not ABS_PATH.fullmatch(str(r["path"])):
-            r["path"] = str(root / str(r["path"]))
+            r["path"] = str(resolve_named(str(r["path"]), s))
     out = checklist.evaluate(reqs, started=step["started"] or 0, settings=s, files=_named_files(step, reqs, s),
                              deliverable=step["result"], objective=oid, undecided_as_unmet=False)
     _set_step(con, oid, step["idx"], proof=json.dumps(out["checks"]))
@@ -476,7 +486,7 @@ def artifact_facts(step, settings=None):
         if rel in seen:
             continue
         seen.add(rel)
-        p = Path(rel) if ABS_PATH.fullmatch(rel) else root / rel
+        p = resolve_named(rel, s)
         if p.exists():
             facts.append(f"{p} exists ({p.stat().st_size} bytes)")
         else:
@@ -990,6 +1000,10 @@ def status(key=None):
         obj["log"] = [dict(r) for r in con.execute("SELECT time, kind, text FROM log WHERE objective_id=? "
                                                    "ORDER BY time DESC LIMIT 12", (oid,))]
         con.close()
+        from . import progress
+        for st in obj["steps"]:  # a running step: what its agent is doing now and the files it wrote so far
+            if st["status"] == "running":
+                st["progress"] = progress.read(f"objective-{oid}")
         return obj
     rows = [dict(r) for r in con.execute(
         "SELECT o.id, o.title, o.status, o.updated, o.project, o.note_path, (SELECT COUNT(*) FROM steps s WHERE s.objective_id=o.id"
@@ -1093,7 +1107,8 @@ MCP_TOOLS = [
                      "constraints and what the deliverable is"}, "project": {"type": "string"},
                      "title": {"type": "string"}}, "required": ["goal"]}}, _t_create),
     ({"name": "objective_status", "description": "Status of one objective (by id or title words) with its steps, or "
-      "a list of recent objectives when no id is given.",
+      "a list of recent objectives when no id is given. A running step shows its live progress (minutes running, "
+      "last steps, files written so far): report those, not 'no results yet'.",
       "parameters": {"type": "object", "properties": {"id": {"type": "string"}}, "required": []}}, _t_status),
     ({"name": "objective_control", "description": "Pause, resume (also retries failed steps and can grant extra step "
       "runs), or cancel an objective.",
