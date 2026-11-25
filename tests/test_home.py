@@ -1,6 +1,7 @@
 """Waggle Home (waggle/home.py): the snapshot, who may post, and the actions. The core is always a fake."""
 import json
 import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -38,7 +39,7 @@ def test_snapshot_has_every_panel_and_is_json(settings, monkeypatch):
     monkeypatch.setattr(dashboard, "health", lambda: {"gateway": False})
     think.add_taste("Tell me when a friend has a big day.", settings)
     snap = home.state()
-    for key in ("health", "usage", "thinking", "told", "work", "night", "reminders", "taste"):
+    for key in ("health", "usage", "thinking", "told", "work", "night", "reminders", "taste", "late"):
         assert key in snap, key
     assert snap["taste"][0].startswith("Tell me when a friend") and snap["thinking"]["times"]
     json.dumps(snap, default=str)
@@ -81,7 +82,9 @@ def test_say_goes_to_the_voice_line_as_the_dashboard_client():
     def core(path, body, ctype):
         seen.update(path=path, body=json.loads(body), ctype=ctype)
         return 200, {}, json.dumps({"spoken": "Four.", "text": "2 + 2 = 4", "status": "done"}).encode()
+    before = time.time()
     out = home.say("  what is 2+2 ", post=core)
+    assert before <= out.pop("asked_at") <= time.time()
     assert out == {"ok": True, "text": "2 + 2 = 4", "spoken": "Four.", "status": "done"}
     assert seen["path"] == "/voice?reply=json&client=dash" and seen["body"] == {"text": "what is 2+2"}
     assert home.say("   ", post=core)["ok"] is False
@@ -93,7 +96,13 @@ def test_talk_passes_audio_through_and_returns_the_spoken_words():
     def core(path, body, ctype):
         assert path == "/voice?format=wav&client=dash" and ctype == "audio/webm" and body == b"abc"
         return 200, {"Content-Type": "audio/wav", "X-Waggle-Spoken": "Good%20evening%2C%20sir."}, b"RIFF"
-    assert home.talk(b"abc", "audio/webm;codecs=opus", post=core) == (200, "audio/wav", b"RIFF", "Good evening, sir.")
+    code, ctype, body, spoken, status, asked_at = home.talk(b"abc", "audio/webm;codecs=opus", post=core)
+    assert (code, ctype, body, spoken, status) == (200, "audio/wav", b"RIFF", "Good evening, sir.", "done")
+    assert asked_at > 0
+
+    def slow(path, body, ctype):
+        return 200, {"Content-Type": "audio/wav", "X-Waggle-Spoken": "Working", "X-Waggle-Status": "working"}, b"RIFF"
+    assert home.talk(b"abc", "audio/webm", post=slow)[4] == "working"
     assert home.talk(b"abc", "text/plain", post=core)[0] == 400
     assert home.talk(b"x" * (home.MAX_BODY + 1), "audio/webm", post=core)[0] == 400
 
@@ -148,3 +157,26 @@ def test_the_latest_pass_shows_what_it_thought_even_when_nothing_was_sent(settin
     shown = home.state()["thinking"]["thoughts"]
     assert ("small", "considered") in [(t["topic"], t["action"]) for t in shown]
     assert [t["topic"] for t in shown].count("trip") == 1
+
+
+def test_late_answers_are_only_the_dashboards_own_answers_after_the_holding_line(settings):
+    from waggle.core import outbox
+    meta = {"kind": "reply", "platform": "telegram", "address": "4242"}
+    now = time.time()
+    outbox.enqueue("text", "the long answer", chat="telegram:4242", idem_key="voice:t1", origin="voice",
+                   meta={**meta, "via": "dashboard", "late": True})
+    outbox.enqueue("text", "a quick answer", chat="telegram:4242", idem_key="voice:t2", origin="voice",
+                   meta={**meta, "via": "dashboard"})
+    outbox.enqueue("text", "from the phone", chat="telegram:4242", idem_key="voice:t3", origin="voice",
+                   meta={**meta, "via": "voice line", "late": True})
+    outbox.enqueue("text", "a brief", chat="telegram:4242", origin="outreach", meta={"late": True, "via": "dashboard"})
+    late = home.late_answers(time.time())
+    assert [a["text"] for a in late] == ["the long answer"] and late[0]["time"] >= now - 1 and late[0]["id"]
+    assert home.late_answers(time.time() + 7200) == []  # older than the window
+    assert home.state()["late"][0]["text"] == "the long answer"
+
+
+def test_the_page_shows_late_answers_and_keeps_waiting_after_the_holding_line():
+    page = home.page()
+    assert 'r.status==="working")waitFor(r.asked_at)' in page and "showLate(d.late)" in page
+    assert 'r.headers.get("X-Waggle-Status")==="working"' in page

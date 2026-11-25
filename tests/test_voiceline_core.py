@@ -89,6 +89,7 @@ def test_text_in_audio_out_and_the_written_answer_reaches_telegram_through_the_s
     row = wait_for(lambda: [r for r in outbox.list(limit=50) if r["origin"] == "voice" and r["state"] == "sent"],
                    what="the copy marked sent")
     assert row[0]["idem_key"] == "voice:" + headers["x-waggle-turn"]
+    assert "late" not in row[0]["meta"]  # answered in time: nothing for the Home page to add
     assert core.lines("speech.log") == ["The reminder is set, sir."]
     assert "Remind me to call Sam in ten minutes." in core.lines("prompts.log")[0]
 
@@ -115,6 +116,8 @@ def test_a_slow_turn_gets_the_holding_line_and_its_answer_goes_to_telegram(core)
     assert headers["x-waggle-status"] == "working"
     sent = wait_for(lambda: core.lines("sent.log"), timeout=60, what="the answer in Telegram")
     assert "Reminder set for ten minutes from now." in sent[0] and sent[0].split("\t")[1] == CHAT
+    row = [r for r in outbox.list(limit=50) if r["origin"] == "voice"]
+    assert row and row[0]["meta"].get("late") is True  # the Home page shows these in its chat
 
 
 def test_the_token_is_nowhere_in_the_core_logs(core):

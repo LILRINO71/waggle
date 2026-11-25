@@ -225,6 +225,8 @@ class _Run:
         meta = {"kind": "reply", "turn_id": self.rec.turn_id, "platform": "telegram",
                 "address": self.chat.partition(":")[2], "turn_origin": getattr(self, "origin", "user"),
                 "via": "voice line"}
+        if self.detached:  # the request already answered with the holding line; the Home page shows these
+            meta["late"] = True
         if self.client == "pc":
             meta["via"] = "pc voice"
             if self.detached and not self.streamed:  # only the holding line was heard: spoken on the PC if still there

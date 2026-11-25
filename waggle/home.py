@@ -2,9 +2,13 @@
 
   GET  /            this page (the older engine-room page moved to /ops)
   GET  /api/home    one JSON snapshot: what is on Waggle's mind, what it told the owner today, what it is working on,
-                    the last night shift, reminders, usage
-  POST /api/say     {"text"}  one typed turn for the owner's chat through the core's voice line (reply as JSON)
+                    the last night shift, reminders, usage, and "late": answers to this page's own questions that
+                    came after the holding line (the voice line answers "working on it" after 25 s and queues the
+                    real answer later; the page shows it in the chat when it appears here)
+  POST /api/say     {"text"}  one typed turn for the owner's chat through the core's voice line (reply as JSON,
+                    with "status" "done" or "working" and "asked_at", this machine's clock when it was sent)
   POST /api/talk    audio/*   one spoken turn; the answer comes back as WAV with the spoken words in a header
+                    (X-Waggle-Status and X-Waggle-Asked as for /api/say)
   POST /api/night   {"text"}  "accept 1", "redo 2", "reject 3 because ..." for the last night report
   POST /api/taste   {"line"}  one line in the owner's words for the note the thinking pass reads (think.TASTE_NOTE)
   POST /api/think   {}        run one thinking pass now (in the background; it shows up in the snapshot)
@@ -105,6 +109,16 @@ def _told(now):
              "status": r["status"], "kind": r["kind"]} for r in rows[-25:]][::-1]
 
 
+def late_answers(now, window_s=3600, limit=10):
+    """Answers this page asked for that came after the holding line, oldest first, in full: the voice line's
+    Telegram copies marked late and sent for the dashboard client (waggle/core/voiceline.py queue_copy)."""
+    from .core import outbox
+    rows = [r for r in outbox.list(limit=80)
+            if r.get("origin") == "voice" and (r.get("meta") or {}).get("via") == "dashboard"
+            and (r.get("meta") or {}).get("late") and (r.get("created") or 0) >= now - window_s]
+    return [{"id": r["id"], "time": r["created"], "text": r.get("body") or ""} for r in rows[:limit]][::-1]
+
+
 def _night():
     from . import nightshift
     rep = nightshift.latest_report()
@@ -143,6 +157,7 @@ def state(now=None):
             "work": _safe(_work, {"items": [], "unreadable": ["work list"]}),
             "night": _safe(_night, {"items": [], "queued": 0}),
             "reminders": _safe(lambda: _reminders(now), []),
+            "late": _safe(lambda: late_answers(now), []),
             "taste": _safe(lambda: [l.lstrip("- ").strip() for l in think.taste(s).splitlines()
                                     if l.strip().startswith("-")], [])}
 
@@ -169,6 +184,7 @@ def say(text, post=None):
     text = " ".join(str(text or "").split())
     if not text:
         return {"ok": False, "error": "nothing to send"}
+    asked_at = time.time()
     code, _, body = (post or _core)("/voice?reply=json&client=dash", json.dumps({"text": text[:4000]}).encode("utf-8"),
                                     "application/json")
     try:
@@ -178,18 +194,20 @@ def say(text, post=None):
     if code != 200:
         return {"ok": False, "error": data.get("error") or f"the core answered {code}"}
     return {"ok": True, "text": data.get("text") or "", "spoken": data.get("spoken") or "",
-            "status": data.get("status") or "done"}
+            "status": data.get("status") or "done", "asked_at": asked_at}
 
 
 def talk(audio, ctype, post=None):
-    """One spoken turn. (status, content type, body, spoken words)."""
+    """One spoken turn. (status, content type, body, spoken words, turn status, asked_at)."""
     import urllib.parse
     if not audio or len(audio) > MAX_BODY or not str(ctype or "").lower().startswith("audio/"):
-        return 400, "application/json", json.dumps({"error": "send up to 2 MB of audio"}).encode(), ""
+        return 400, "application/json", json.dumps({"error": "send up to 2 MB of audio"}).encode(), "", "error", 0.0
+    asked_at = time.time()
     code, headers, body = (post or _core)("/voice?format=wav&client=dash", audio, ctype.split(";")[0])
     low = {k.lower(): v for k, v in headers.items()}
     spoken = urllib.parse.unquote(low.get("x-waggle-spoken", ""))
-    return code, low.get("content-type", "application/json"), body, spoken
+    status = low.get("x-waggle-status", "done" if code == 200 else "error")
+    return code, low.get("content-type", "application/json"), body, spoken, status, asked_at
 
 
 def night(text):
@@ -301,6 +319,12 @@ const clock=t=>t?new Date(t*1000).toLocaleTimeString([], {hour:"numeric",minute:
 const day=t=>{const d=new Date(t*1000),n=new Date();return d.toDateString()===n.toDateString()?clock(t):d.toLocaleDateString([], {weekday:"short"})+" "+clock(t)};
 const post=(path,body,type)=>fetch(path,{method:"POST",headers:{"X-Waggle-Token":TOKEN,"Content-Type":type||"application/json"},body:type?body:JSON.stringify(body)});
 let mood="idle",level=0,busy=false;
+/* answers that come after the holding line: the ask times still waiting, and the late answers already shown */
+const waiting=[],shown=new Set();
+function rest(){waiting.length?setMood("thinking","Still working on it… the answer will show up here."):setMood("idle")}
+function waitFor(t){if(t){waiting.push(+t);waiting.sort((a,b)=>a-b)}}
+function showLate(list){for(const a of list||[]){if(shown.has(a.id))continue;const i=waiting.findIndex(t=>a.time>=t-1);if(i<0)continue;
+ shown.add(a.id);waiting.splice(i,1);bubble("w",a.text)}if(!busy&&mood==="thinking")rest()}
 function setMood(m,label){mood=m;$("mood").textContent=label||{idle:"Here when you need me.",listening:"Listening…",thinking:"Thinking…",speaking:"Speaking…"}[m]}
 function bubble(kind,text){const d=document.createElement("div");d.className="b "+kind;d.textContent=text;$("log").appendChild(d);$("log").scrollTop=1e9;return d}
 
@@ -325,9 +349,10 @@ requestAnimationFrame(draw);
 /* typing */
 $("say").onsubmit=async ev=>{ev.preventDefault();const text=$("text").value.trim();if(!text||busy)return;$("text").value="";
  bubble("me",text);busy=true;setMood("thinking");
- try{const r=await (await post("/api/say",{text})).json();bubble(r.ok?"w":"sys",r.ok?(r.text||r.spoken):("Could not send: "+r.error))}
+ try{const r=await (await post("/api/say",{text})).json();bubble(r.ok?"w":"sys",r.ok?(r.text||r.spoken):("Could not send: "+r.error));
+  if(r.ok&&r.status==="working")waitFor(r.asked_at)}
  catch(e){bubble("sys","Waggle did not answer. Is the core running?")}
- busy=false;setMood("idle");refresh()};
+ busy=false;rest();refresh()};
 
 /* talking: hold the orb or Space */
 let rec=null,chunks=[],stream=null,actx=null,an=null,buf=null,raf=0;
@@ -342,13 +367,14 @@ async function sendTalk(){const type=rec.mimeType||"audio/webm";const blob=new B
  if(blob.size<3000){setMood("idle");return}busy=true;setMood("thinking");const mine=bubble("me","🎙 …");
  try{const r=await post("/api/talk",blob,type.split(";")[0]);const spoken=decodeURIComponent(r.headers.get("X-Waggle-Spoken")||"");
   if(!r.ok){const j=await r.json().catch(()=>({}));mine.textContent="🎙 (not sent)";bubble("sys",j.error||"Waggle could not take that.")}
-  else{mine.textContent="🎙 (spoken)";bubble("w",spoken||"(answer sent to your chat)");const a=new Audio(URL.createObjectURL(await r.blob()));
+  else{mine.textContent="🎙 (spoken)";bubble("w",spoken||"(answer sent to your chat)");
+   if(r.headers.get("X-Waggle-Status")==="working")waitFor(parseFloat(r.headers.get("X-Waggle-Asked")));const a=new Audio(URL.createObjectURL(await r.blob()));
    const s2=actx.createMediaElementSource(a);const an2=actx.createAnalyser();an2.fftSize=512;const b2=new Uint8Array(512);s2.connect(an2);an2.connect(actx.destination);
    setMood("speaking");const tick=()=>{if(mood!=="speaking")return;an2.getByteTimeDomainData(b2);let s=0;for(const v of b2){const x=(v-128)/128;s+=x*x}
     level=Math.max(level,Math.min(1,Math.sqrt(s/512)*3));requestAnimationFrame(tick)};tick();
-   a.onended=()=>setMood("idle");await a.play().catch(()=>setMood("idle"));busy=false;refresh();return}}
+   a.onended=rest;await a.play().catch(rest);busy=false;refresh();return}}
  catch(e){bubble("sys","Waggle did not answer. Is the core running?")}
- busy=false;setMood("idle");refresh()}
+ busy=false;rest();refresh()}
 cv.addEventListener("pointerdown",e=>{cv.setPointerCapture(e.pointerId);startTalk()});cv.addEventListener("pointerup",stopTalk);cv.addEventListener("pointercancel",stopTalk);
 addEventListener("keydown",e=>{if(e.code==="Space"&&!e.repeat&&!/INPUT|TEXTAREA/.test(document.activeElement.tagName)){e.preventDefault();startTalk()}});
 addEventListener("keyup",e=>{if(e.code==="Space"&&rec){e.preventDefault();stopTalk()}});
@@ -378,6 +404,6 @@ function render(d){
  const u=d.usage||{};const bar=(l,p)=>p==null?"":(p=Math.round(p),`<div class="small">${l} <b>${p}%</b></div><div class="bar"><i style="width:${Math.min(100,p)}%"></i></div>`);
  $("usage").innerHTML=(bar("5-hour window",u.five_hour_pct)+bar("This week",u.week_pct)+(u.week_resets?`<div class="dim small">Week resets ${day(u.week_resets)}</div>`:""))||`<div class="empty small">No reading yet.</div>`;
 }
-async function refresh(){try{render(await (await fetch("/api/home")).json())}catch(e){}}
+async function refresh(){try{const d=await (await fetch("/api/home")).json();showLate(d.late);render(d)}catch(e){}}
 refresh();setInterval(refresh,5000);
 </script></body></html>"""

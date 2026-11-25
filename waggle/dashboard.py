@@ -206,12 +206,14 @@ class _Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(length) if length else b""
         path = self.path.split("?")[0]
         if path == "/api/talk":
-            code, ctype, data, spoken = home.talk(body, self.headers.get("Content-Type"))
+            code, ctype, data, spoken, status, asked_at = home.talk(body, self.headers.get("Content-Type"))
             import urllib.parse
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Waggle-Spoken", urllib.parse.quote(spoken))
+            self.send_header("X-Waggle-Status", status)
+            self.send_header("X-Waggle-Asked", f"{asked_at:.3f}")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
