@@ -57,7 +57,9 @@ SCREEN_READ_ONLY = {"capture", "wait", "list_apps", "list_windows", "scroll"}
 SENSITIVE_APPS = re.compile(
     r"bank|paypal|venmo|cash ?app|zelle|stripe|coinbase|robinhood|kalshi|wallet|checkout|amazon|"
     r"password|1password|bitwarden|lastpass|keychain|credential|settings|control panel|regedit|"
-    r"defender|security|mail|outlook|gmail|discord|whatsapp|messages|telegram|slack|teams|instagram", re.I)
+    r"defender|security|mail|outlook|gmail|discord|whatsapp|messages|telegram|slack|teams|instagram|"
+    # texting apps (2026-11-25: a test turn drove Phone Link to text the owner's dad; nothing was paired)
+    r"phone ?link|your ?phone|phoneexperiencehost|messenger|signal|\bsms\b|imessage", re.I)
 SECRET_TEXT = re.compile(r"\b(?:\d[ -]?){13,19}\b|passw|\bpin\b|\bcvv\b|\bssn\b|api[_ -]?key|token", re.I)
 
 

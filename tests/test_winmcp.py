@@ -332,3 +332,11 @@ def test_a_failed_map_write_removes_the_old_map_so_labels_ask(settings, monkeypa
     m.dump(types.SimpleNamespace(desktop_state=None))  # a state it cannot read
     assert not path.exists()
     assert check("Click", {"label": 1}, state=security._winmcp_state())[0] == "ask"
+
+
+def test_texting_apps_are_sensitive_windows():
+    # 2026-11-25: a test turn switched to Phone Link to text the owner's dad without a word
+    from waggle import security
+    for name in ("Phone Link", "Your Phone", "Messenger", "Signal"):
+        assert security.winmcp_check("mcp__windows-mcp__App", {"mode": "switch", "name": name})[0] == "ask", name
+    assert security.winmcp_check("mcp__windows-mcp__App", {"mode": "switch", "name": "Notepad"}) is None
