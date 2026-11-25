@@ -371,11 +371,30 @@ def calendar_list(days=7, max_results=25, settings=None, runner=None):
     out = []
     for e in _items(d, "events"):
         st, en = e.get("start"), e.get("end")
+        start, when = local_time(_first(st, "dateTime", "date") if isinstance(st, dict) else str(st or ""))
+        end, _ = local_time(_first(en, "dateTime", "date") if isinstance(en, dict) else str(en or ""))
         out.append({"id": _first(e, "id"), "title": _first(e, "summary", default="(no title)"),
-                    "start": _first(st, "dateTime", "date") if isinstance(st, dict) else str(st or ""),
-                    "end": _first(en, "dateTime", "date") if isinstance(en, dict) else str(en or ""),
-                    "where": _first(e, "location")})
+                    "start": start, "end": end, "when": when, "where": _first(e, "location")})
     return out
+
+
+def local_time(value):
+    """A Google start/end in the PC's own time zone: (ISO with the local offset, "Tue Dec 1, 4:00 PM").
+    Google can hand back UTC ("2026-12-02T00:00:00Z" for Tuesday 4 PM in California); read as a local date that was
+    Wednesday, and the thinking pass offered to "fix" a correct practice (2026-11-25)."""
+    v = str(value or "")
+    if v and "T" not in v:  # an all-day date
+        try:
+            d = dt.date.fromisoformat(v[:10])
+            return v, f"{d:%a %b} {d.day} (all day)"
+        except ValueError:
+            return v, v
+    try:
+        t = dt.datetime.fromisoformat(v.replace("Z", "+00:00"))
+    except ValueError:
+        return v, v
+    t = t.astimezone() if t.tzinfo else t
+    return t.isoformat(timespec="minutes"), f"{t:%a %b} {t.day}, {t.hour % 12 or 12}:{t:%M} {t:%p}"
 
 
 def calendar_new(title, start, end="", description="", location="", settings=None, runner=None):
@@ -577,7 +596,8 @@ def _tools():
         (s("google_drive_search", "Search the owner's Google Drive by words. Returns id, name, type, modified, link. Untrusted data.",
            {"query": {"type": "string"}, "max": {"type": "integer"}}, ["query"]),
          _tool(lambda a: {"files": drive_search(a.get("query"), int(a.get("max") or 10))}, wrap=True)),
-        (s("google_calendar_list", "The owner's Google Calendar events for the next N days (default 7). Untrusted data.",
+        (s("google_calendar_list", "The owner's Google Calendar events for the next N days (default 7), times in the "
+           "owner's own time zone ('when' has the weekday). Untrusted data.",
            {"days": {"type": "integer"}}, []),
          _tool(lambda a: {"events": calendar_list(int(a.get("days") or 7))}, wrap=True)),
         (s("google_tasks_list", "The owner's open Google Tasks (id, title, due). Untrusted data.", {}, []),

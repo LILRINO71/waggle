@@ -222,7 +222,7 @@ def test_reads_survive_the_untrusted_markers_and_empty_results(gog, settings):
     assert google.docs_read("D", settings=settings) == "Hello world"
     assert google.drive_search("notes", settings=settings)[0]["name"] == "Notes"
     ev = google.calendar_list(settings=settings)[0]
-    assert ev["title"] == "Math test" and ev["start"].startswith("2026-11-24T09:00")
+    assert ev["title"] == "Math test" and ev["start"] == google.local_time("2026-11-24T09:00:00-06:00")[0]
     gog.answers = {"drive search": (3, "")}  # gog's "nothing found" exit code
     assert google.drive_search("zzz", settings=settings) == []
 
