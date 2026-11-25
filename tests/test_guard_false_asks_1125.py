@@ -44,6 +44,22 @@ def test_sed_that_runs_commands_still_counts():
     assert guard.shell_hit(f"sed -i 's/a/b/e' \"{HERE}/waggle/policy.py\"", cwd="C:/x", shell="bash")
 
 
+def test_prose_that_mentions_waggle_is_not_an_import():
+    # the money objective's build step wrote a listing draft; its text held the step as "Waggle's code, through a
+    # script"
+    cmd = ("set -e; cd /c/Users/x/Claude/waggle-earn; P=product/easing; mkdir -p $P/plugin listing\n"
+           "cat > listing/LISTING.md <<'EOF'\nMade with help from Waggle, my assistant. A parent must approve the "
+           "listing, then rename the file and open() nothing.\nEOF\n")
+    assert guard.shell_hit(cmd, cwd="C:/Users/x/Claude", shell="bash") is None
+
+
+def test_a_script_that_imports_waggle_and_writes_still_asks():
+    for cmd in ("python - <<'PY'\nfrom waggle import guard\nopen(guard.__file__, 'w').write('')\nPY",
+                "python -c \"import waggle.policy as p; p.approve('x')\"",
+                "py -c \"__import__('waggle').config; open('x','w')\""):
+        assert guard.shell_hit(cmd, cwd="C:/Users/x", shell="bash"), cmd
+
+
 def test_wildcards_still_count_for_writers():
     assert guard.shell_hit("rm -rf ***/", cwd=HERE, shell="bash")
     assert guard.shell_hit("sed -i s/a/b/ ***/policy.py", cwd=HERE, shell="bash")

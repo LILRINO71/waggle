@@ -1296,6 +1296,8 @@ def _analyze(stmts, cwd, ctx, depth=0, dialect=None):
 
 
 _WILD_ONLY = re.compile(r"^[*?./\\]+$")
+_PY_IMPORT_WAGGLE = re.compile(r"(?:^|[;\n]|-c\s*['\"]?)\s*(?:from\s+waggle(?:\.\w+)*\s+import\b|import\s+waggle\b"
+                               r"|__import__\(\s*['\"]waggle)", re.M)
 
 
 # Basenames that count on their own when the folder is unknown (cd into a variable). The later additions to
@@ -1501,8 +1503,10 @@ def shell_hit(command, cwd=None, shell=None):
             return REASON.format("~/" + GUARD_DIR.name)
         if ".waggle" in low and re.search(r"approvals\.db|budget\.db|config\.json|holdout|/eval\b", low):
             return REASON.format("a file in the Waggle data folder")
-        if re.search(r"\b(import|from)\s+waggle|waggle\.(policy|security|agent_hook|budget|quota|guard|config)\b",
-                     low) and re.search(r"open\(|write_|__file__|shutil|\.replace\(|unlink|\.remove\(|rename|approve",
+        # an import STATEMENT (line start, after ; or -c), not prose: draft listing text saying "from Waggle ... a
+        # parent must approve" held the money objective's build step (2026-11-25)
+        if (_PY_IMPORT_WAGGLE.search(low) or re.search(
+                r"waggle\.(policy|security|agent_hook|budget|quota|guard|config)\b", low)) and re.search(r"open\(|write_|__file__|shutil|\.replace\(|unlink|\.remove\(|rename|approve",
                                         low):
             return REASON.format("Waggle's code, through a script")
     return None
