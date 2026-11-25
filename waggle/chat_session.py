@@ -174,7 +174,8 @@ def where_line(settings=None):
         return ""
     return (f"Where things are: the owner's vault is {root}; your own notes folder in it is {own} (note paths are "
             f"relative to it); agents and builds work under {work}. There is no other vault: a different vault path "
-            "in an older note is out of date, so never write there.")
+            "in an older note is out of date, so never write there. Find a note with vault_search or by its path "
+            "here, never by scanning the disk (a find over the home folder cost a turn 100 s).")
 
 
 def mcp_config(chat, settings=None, origin="user"):
