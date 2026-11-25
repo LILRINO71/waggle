@@ -46,7 +46,7 @@ VERIFY_RETRY_S = 15 * 60
 MIGRATIONS = {"objectives": (("lease_until", "REAL"), ("deferred_until", "REAL"), ("defer_reason", "TEXT"),
                              ("approval_ids", "TEXT")),
               "steps": (("interrupts", "INTEGER DEFAULT 0"), ("approved", "TEXT"), ("checklist", "TEXT"),
-                        ("proof", "TEXT"))}
+                        ("proof", "TEXT"), ("first_started", "REAL"))}
 
 
 def _db():
@@ -291,7 +291,10 @@ def _judge_step(con, oid, step, reqs, s):
     for r in reqs:  # a requirement's relative path: wherever it exists (vault, agent work folder, home)
         if r.get("path") and not ABS_PATH.fullmatch(str(r["path"])):
             r["path"] = str(resolve_named(str(r["path"]), s))
-    out = checklist.evaluate(reqs, started=step["started"] or 0, settings=s, files=_named_files(step, reqs, s),
+    # files count from the step's FIRST attempt: a retry need not rewrite what attempt 1 already wrote (2026-11-25:
+    # the money objective's listing.md failed "not written during this step" on attempt 2)
+    started = dict(step).get("first_started") or step["started"] or 0
+    out = checklist.evaluate(reqs, started=started, settings=s, files=_named_files(step, reqs, s),
                              deliverable=step["result"], objective=oid, undecided_as_unmet=False)
     _set_step(con, oid, step["idx"], proof=json.dumps(out["checks"]))
     if out["undecided"]:
@@ -399,8 +402,9 @@ def _run_step(oid, idx=None, settings=None, run_fn=None, verify_fn=None):
         con.commit()
         con.close()
         return "waiting_budget"
-    claimed = con.execute("UPDATE steps SET status='running', started=?, attempts=attempts+1 WHERE objective_id=? "
-                          "AND idx=? AND status='pending'", (now, oid, step["idx"])).rowcount
+    claimed = con.execute("UPDATE steps SET status='running', started=?, first_started=COALESCE(first_started, ?), "
+                          "attempts=attempts+1 WHERE objective_id=? AND idx=? AND status='pending'",
+                          (now, now, oid, step["idx"])).rowcount
     if not claimed:  # another worker got there first
         con.commit()
         con.close()

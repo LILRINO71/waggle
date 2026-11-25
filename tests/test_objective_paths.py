@@ -38,3 +38,44 @@ def test_a_requirement_path_in_the_work_folder_is_checked_there(settings, tmp_pa
     reqs = [{"id": "r1", "text": "research saved", "path": "waggle-earn/research.md"}]
     assert objectives._judge_step(None, "o1", step, reqs, settings) == (True, [])
     assert seen["path"] == str(made)
+
+
+def test_a_folder_requirement_passes_when_something_in_it_was_written(settings, tmp_path):
+    import time
+    from waggle import checklist
+    folder = tmp_path / "product"
+    (folder / "plugin").mkdir(parents=True)
+    started = time.time() - 60
+    req = {"id": "r1", "text": "product files exist", "path": str(folder) + "/"}
+    assert not checklist._path_result(req, started, None, settings)["ok"]       # empty folder
+    (folder / "plugin" / "Core.lua").write_text("return {}", encoding="utf-8")
+    assert checklist._path_result(req, started, None, settings)["ok"]
+    assert not checklist._path_result(req, time.time() + 60, None, settings)["ok"]  # nothing new since
+
+
+def test_a_retry_counts_files_from_the_steps_first_attempt(settings, tmp_path, monkeypatch):
+    seen = {}
+
+    def fake_evaluate(reqs, **kw):
+        seen["started"] = kw["started"]
+        return {"checks": [], "undecided": [], "proven": True, "missing": []}
+
+    monkeypatch.setattr(objectives.checklist, "evaluate", fake_evaluate)
+    monkeypatch.setattr(objectives, "_set_step", lambda *a, **k: None)
+    step = {"idx": 3, "detail": "build", "done_when": "", "started": 2000.0, "first_started": 1000.0, "result": ""}
+    objectives._judge_step(None, "o1", step, [{"id": "r1", "text": "x"}], settings)
+    assert seen["started"] == 1000.0
+    del step["first_started"]
+    objectives._judge_step(None, "o1", step, [{"id": "r1", "text": "x"}], settings)
+    assert seen["started"] == 2000.0
+
+
+def test_claiming_a_step_keeps_its_first_start(settings):
+    con = objectives._db()
+    con.execute("INSERT INTO steps (objective_id, idx, title, status) VALUES ('o9', 1, 't', 'pending')")
+    con.commit()
+    for now in (100.0, 200.0):
+        con.execute("UPDATE steps SET status='running', started=?, first_started=COALESCE(first_started, ?) "
+                    "WHERE objective_id='o9' AND idx=1", (now, now))
+    row = con.execute("SELECT started, first_started FROM steps WHERE objective_id='o9'").fetchone()
+    assert tuple(row) == (200.0, 100.0)

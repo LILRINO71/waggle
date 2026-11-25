@@ -260,6 +260,12 @@ def _path_result(req, started, roots, s):
     try:
         if roots and not any(p.resolve() == r or r in p.resolve().parents for r in roots):
             res["why"] = f"{p} is outside the write roots"
+        elif p.is_dir():  # a folder requirement: it must hold something written during the step
+            fresh = [f for f in list(p.rglob("*"))[:2000] if f.is_file() and f.stat().st_mtime >= started - 2]
+            if fresh:
+                res.update(ok=True, why=f"folder with {len(fresh)} file(s) written during this step")
+            else:
+                res["why"] = f"{p} is a folder with nothing written in it during this step"
         elif not p.is_file():
             res["why"] = f"{p} does not exist"
         elif p.stat().st_mtime < started - 2:
