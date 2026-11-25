@@ -14,7 +14,8 @@ from waggle.core import events, ledger
 
 MODULES = ["waggle.core.transports", "waggle.chat_jobs", "waggle.tick", "waggle.knowledge_core", "waggle.autonomy_core",
            "waggle.dropbox_ingest", "waggle.canary", "waggle.calendar_watch", "waggle.proposals", "waggle.learnloop",
-           "waggle.backup", "waggle.duties_core", "waggle.evals", "waggle.deadman", "waggle.nightshift"]
+           "waggle.backup", "waggle.duties_core", "waggle.evals", "waggle.deadman", "waggle.nightshift",
+           "waggle.skillscout"]
 
 MODULES += ["waggle.aw_sensor", "waggle.focus", "waggle.recipes"]  # ActivityWatch sensing (10-min poll) and focus-block nudges
 

@@ -22,11 +22,13 @@ other owner turn: this page adds no new power, only a nicer way in.
 import datetime as dt
 import hmac
 import json
+import re
 import secrets
 import threading
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 from .config import Settings
 
@@ -253,173 +255,83 @@ def think_now(runner=None):
 
 
 def page():
-    return PAGE.replace("__TOKEN__", TOKEN)
+    return page_template().replace("__TOKEN__", TOKEN)
 
 
-PAGE = r"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Waggle</title>
-<style>
-:root{--bg:#0b0d11;--panel:#141821;--panel2:#1a2030;--line:#252b3a;--text:#eceef4;--dim:#8b93a7;--honey:#f5b301;
---honey2:#ffd866;--ok:#3ddc84;--bad:#ff6b6b;--cyan:#4fd6f2;--violet:#a78bfa;--r:16px}
-*{box-sizing:border-box}html,body{height:100%}
-body{margin:0;background:radial-gradient(900px 520px at 50% -8%,#3a2d0a 0,transparent 62%),var(--bg);color:var(--text);
-font:14px/1.5 "Segoe UI Variable","Segoe UI",system-ui,sans-serif;overflow:hidden}
-.wrap{display:grid;grid-template-columns:330px minmax(380px,1fr) 350px;gap:16px;height:100vh;padding:16px}
-.col{display:flex;flex-direction:column;gap:14px;min-height:0;overflow:auto;scrollbar-width:thin}
-.card{background:linear-gradient(180deg,var(--panel),#11141b);border:1px solid var(--line);border-radius:var(--r);padding:14px 16px}
-.card h2{font-size:11.5px;letter-spacing:1px;text-transform:uppercase;color:var(--dim);margin:0 0 10px;display:flex;
-justify-content:space-between;align-items:center;gap:8px}
-.mid{display:flex;flex-direction:column;min-height:0;align-items:center}
-.top{display:flex;align-items:center;gap:10px;width:100%;padding:2px 4px 0}
-.logo{font-weight:800;font-size:19px;letter-spacing:.3px}.logo span{color:var(--honey)}
-.pills{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
-.pill{display:flex;align-items:center;gap:6px;padding:3px 10px;border-radius:99px;background:var(--panel);
-border:1px solid var(--line);font-size:12px;color:var(--dim);text-decoration:none}
-.dot{width:7px;height:7px;border-radius:50%;background:var(--dim)}.dot.ok{background:var(--ok);box-shadow:0 0 7px var(--ok)}
-.dot.bad{background:var(--bad);box-shadow:0 0 7px var(--bad)}
-#orb{width:300px;height:300px;cursor:pointer;margin-top:4px;flex:none;touch-action:none;user-select:none}
-#mood{font-size:15px;font-weight:600;margin-top:-6px}#hint{color:var(--dim);font-size:12.5px;margin-bottom:10px}
-#log{flex:1;min-height:0;width:100%;max-width:760px;overflow:auto;display:flex;flex-direction:column;gap:8px;padding:4px 6px;
-scrollbar-width:thin}
-.b{max-width:86%;padding:9px 13px;border-radius:14px;white-space:pre-wrap;word-wrap:break-word}
-.b.me{align-self:flex-end;background:#3a2f0b;border:1px solid #5a470d}
-.b.w{align-self:flex-start;background:var(--panel2);border:1px solid var(--line)}
-.b.sys{align-self:center;color:var(--dim);font-size:12.5px;background:none;padding:2px}
-form{display:flex;gap:8px;width:100%;max-width:760px;padding:10px 6px 2px}
-input[type=text],textarea{flex:1;background:var(--panel);border:1px solid var(--line);border-radius:12px;color:var(--text);
-padding:11px 14px;font:inherit;outline:none;resize:none}input[type=text]:focus,textarea:focus{border-color:var(--honey)}
-button{background:var(--honey);color:#1a1300;border:0;border-radius:12px;padding:0 16px;font:inherit;font-weight:700;
-cursor:pointer;min-height:38px}button.ghost{background:var(--panel2);color:var(--text);border:1px solid var(--line);
-font-weight:500;padding:4px 10px;min-height:0;border-radius:9px;font-size:12.5px}button:disabled{opacity:.5;cursor:default}
-.col{overflow-x:hidden}.item{padding:9px 0;border-bottom:1px solid #1e2431;overflow-wrap:anywhere}.item:last-child{border:0}
-.tag{display:inline-block;padding:1px 8px;border-radius:99px;font-size:11px;background:#232a3a;color:var(--dim);white-space:nowrap}
-.tag.text,.tag.voice{background:#3a2f0b;color:var(--honey)}.tag.evening{background:#2a1f45;color:var(--violet)}
-.tag.ok{background:#1d3324;color:var(--ok)}.tag.bad{background:#3a1c1c;color:var(--bad)}
-.dim{color:var(--dim)}.small{font-size:12.5px}.draft{margin-top:5px;padding:7px 10px;border-left:2px solid var(--honey);
-background:#1b1a12;border-radius:0 8px 8px 0;font-size:13px}
-.bar{height:8px;border-radius:99px;background:#232a3a;overflow:hidden;margin:4px 0 8px}
-.bar i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--ok),var(--honey) 70%,var(--bad));transition:width .6s}
-.empty{color:var(--dim);font-style:italic}.acts{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
-a{color:var(--cyan)}@media(max-width:1150px){body{overflow:auto}.wrap{grid-template-columns:1fr;height:auto}.col{overflow:visible}.mid{order:-1}
-#log{min-height:260px}}
-</style></head><body><div class="wrap">
-<div class="col">
- <section class="card"><h2>On my mind <button class="ghost" id="thinkbtn">Think now</button></h2>
-  <div class="small dim" id="thinkmeta"></div><div id="thoughts"></div></section>
- <section class="card"><h2>Teach me what you want to hear</h2>
-  <div id="taste"></div>
-  <form id="tasteform" style="padding:8px 0 0"><input type="text" id="tasteline" placeholder="e.g. tell me when a friend has a big day"><button>Add</button></form></section>
- <section class="card"><h2>Reminders</h2><div id="reminders"></div></section>
-</div>
-<div class="mid">
- <div class="top"><div class="logo">Wag<span>gle</span></div><div class="pills" id="health"></div></div>
- <canvas id="orb" width="600" height="600" title="Hold to talk"></canvas>
- <div id="mood">Hello.</div><div id="hint">Hold the orb or the Space key and talk. Or type below.</div>
- <div id="log"></div>
- <form id="say"><input type="text" id="text" placeholder="Ask Waggle anything, or tell it to do something" autocomplete="off"><button id="send">Send</button></form>
-</div>
-<div class="col">
- <section class="card"><h2>What I told you today</h2><div id="told"></div></section>
- <section class="card"><h2>Working on</h2><div id="work"></div></section>
- <section class="card"><h2>Night shift</h2><div id="night"></div></section>
- <section class="card"><h2>Claude allowance</h2><div id="usage"></div></section>
-</div></div>
-<script>
-const TOKEN="__TOKEN__";const $=id=>document.getElementById(id);
-const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const clock=t=>t?new Date(t*1000).toLocaleTimeString([], {hour:"numeric",minute:"2-digit"}):"";
-const day=t=>{const d=new Date(t*1000),n=new Date();return d.toDateString()===n.toDateString()?clock(t):d.toLocaleDateString([], {weekday:"short"})+" "+clock(t)};
-const post=(path,body,type)=>fetch(path,{method:"POST",headers:{"X-Waggle-Token":TOKEN,"Content-Type":type||"application/json"},body:type?body:JSON.stringify(body)});
-let mood="idle",level=0,busy=false;
-/* what reaches the chat after the fact (answers after the holding line, background job results): shown when newer
-   than the moment the page opened; "waiting" holds the ask times of questions answered with the holding line */
-const waiting=[],shown=new Set();let opened=null;
-function rest(){waiting.length?setMood("thinking","Still working on it… the answer will show up here."):setMood("idle")}
-function waitFor(t){if(t){waiting.push(+t);waiting.sort((a,b)=>a-b)}}
-function showLate(list,now){if(opened===null)opened=now||Date.now()/1000;
- for(const a of list||[]){if(shown.has(a.id)||a.time<opened-1)continue;shown.add(a.id);
-  if(a.kind==="answer"){const i=waiting.findIndex(t=>a.time>=t-1);if(i>=0)waiting.splice(i,1)}bubble("w",a.text)}
- if(!busy&&mood==="thinking")rest()}
-function setMood(m,label){mood=m;$("mood").textContent=label||{idle:"Here when you need me.",listening:"Listening…",thinking:"Thinking…",speaking:"Speaking…"}[m]}
-function bubble(kind,text){const d=document.createElement("div");d.className="b "+kind;d.textContent=text;$("log").appendChild(d);$("log").scrollTop=1e9;return d}
+# ---- the memory graph (the vault as Obsidian draws it) -------------------------------------------------------
 
-/* the orb: a honeycomb cell that breathes, listens, thinks and speaks */
-const cv=$("orb"),cx=cv.getContext("2d");let t0=performance.now();
-function hex(r,rot){cx.beginPath();for(let i=0;i<6;i++){const a=rot+i*Math.PI/3;cx[i?"lineTo":"moveTo"](300+r*Math.cos(a),300+r*Math.sin(a))}cx.closePath()}
-function draw(now){const t=(now-t0)/1000;cx.clearRect(0,0,600,600);
- const breathe=Math.sin(t*1.6)*.5+.5;let amp=mood==="listening"?level:mood==="speaking"?level:mood==="thinking"?.35+.2*Math.sin(t*6):.08*breathe;
- const glow=cx.createRadialGradient(300,300,40,300,300,290);glow.addColorStop(0,`rgba(245,179,1,${.28+amp*.5})`);glow.addColorStop(1,"rgba(245,179,1,0)");
- cx.fillStyle=glow;cx.fillRect(0,0,600,600);
- for(let i=0;i<4;i++){const r=150+i*26+amp*46*(1+i*.35)+Math.sin(t*2+i)*4;cx.lineWidth=2.2-i*.4;
-  cx.strokeStyle=`rgba(255,216,102,${(.5-i*.11)*(mood==="idle"?.55:1)})`;hex(r,(mood==="thinking"?t*(i%2?-1:1)*1.4:Math.PI/6)+i*.02);cx.stroke()}
- const g=cx.createLinearGradient(190,190,410,410);g.addColorStop(0,"#ffe58a");g.addColorStop(.5,"#f5b301");g.addColorStop(1,"#b97e00");
- cx.fillStyle=g;hex(118+amp*22+breathe*3,Math.PI/6);cx.fill();
- cx.fillStyle="rgba(26,19,0,.9)";const e=mood==="listening"?16:mood==="thinking"?6:12,b=Math.sin(t*.9)>.985?2:e;
- const m=mood==="speaking"?10+level*26:mood==="listening"?6:4;
- cx.beginPath();cx.ellipse(262,282,10,b,0,0,7);cx.ellipse(338,282,10,b,0,0,7);cx.fill();
- cx.beginPath();cx.roundRect(300-26,330,52,m,m/2);cx.fill();
- level*=.9;requestAnimationFrame(draw)}
-requestAnimationFrame(draw);
+LINK = re.compile(r"\[\[([^\]|#^]+)")
+GRAPH_MAX_NODES = 900
+_graph_cache = {"at": 0.0, "data": None}
 
-/* typing */
-$("say").onsubmit=async ev=>{ev.preventDefault();const text=$("text").value.trim();if(!text||busy)return;$("text").value="";
- bubble("me",text);busy=true;setMood("thinking");
- try{const r=await (await post("/api/say",{text})).json();bubble(r.ok?"w":"sys",r.ok?(r.text||r.spoken):("Could not send: "+r.error));
-  if(r.ok&&r.status==="working")waitFor(r.asked_at)}
- catch(e){bubble("sys","Waggle did not answer. Is the core running?")}
- busy=false;rest();refresh()};
 
-/* talking: hold the orb or Space */
-let rec=null,chunks=[],stream=null,actx=null,an=null,buf=null,raf=0;
-function meter(){if(!an)return;an.getByteTimeDomainData(buf);let s=0;for(const v of buf){const x=(v-128)/128;s+=x*x}
- level=Math.max(level,Math.min(1,Math.sqrt(s/buf.length)*3.2));raf=requestAnimationFrame(meter)}
-async function startTalk(){if(busy||rec)return;try{stream=stream||await navigator.mediaDevices.getUserMedia({audio:true})}
- catch(e){bubble("sys","The browser has no microphone permission for this page.");return}
- actx=actx||new AudioContext();const src=actx.createMediaStreamSource(stream);an=actx.createAnalyser();an.fftSize=512;buf=new Uint8Array(an.fftSize);src.connect(an);
- chunks=[];rec=new MediaRecorder(stream);rec.ondataavailable=e=>chunks.push(e.data);rec.onstop=sendTalk;rec.start();setMood("listening");meter()}
-function stopTalk(){if(rec&&rec.state!=="inactive"){rec.stop()}cancelAnimationFrame(raf);an=null}
-async function sendTalk(){const type=rec.mimeType||"audio/webm";const blob=new Blob(chunks,{type});rec=null;
- if(blob.size<3000){setMood("idle");return}busy=true;setMood("thinking");const mine=bubble("me","🎙 …");
- try{const r=await post("/api/talk",blob,type.split(";")[0]);const spoken=decodeURIComponent(r.headers.get("X-Waggle-Spoken")||"");
-  if(!r.ok){const j=await r.json().catch(()=>({}));mine.textContent="🎙 (not sent)";bubble("sys",j.error||"Waggle could not take that.")}
-  else{mine.textContent="🎙 (spoken)";bubble("w",spoken||"(answer sent to your chat)");
-   if(r.headers.get("X-Waggle-Status")==="working")waitFor(parseFloat(r.headers.get("X-Waggle-Asked")));const a=new Audio(URL.createObjectURL(await r.blob()));
-   const s2=actx.createMediaElementSource(a);const an2=actx.createAnalyser();an2.fftSize=512;const b2=new Uint8Array(512);s2.connect(an2);an2.connect(actx.destination);
-   setMood("speaking");const tick=()=>{if(mood!=="speaking")return;an2.getByteTimeDomainData(b2);let s=0;for(const v of b2){const x=(v-128)/128;s+=x*x}
-    level=Math.max(level,Math.min(1,Math.sqrt(s/512)*3));requestAnimationFrame(tick)};tick();
-   a.onended=rest;await a.play().catch(rest);busy=false;refresh();return}}
- catch(e){bubble("sys","Waggle did not answer. Is the core running?")}
- busy=false;rest();refresh()}
-cv.addEventListener("pointerdown",e=>{cv.setPointerCapture(e.pointerId);startTalk()});cv.addEventListener("pointerup",stopTalk);cv.addEventListener("pointercancel",stopTalk);
-addEventListener("keydown",e=>{if(e.code==="Space"&&!e.repeat&&!/INPUT|TEXTAREA/.test(document.activeElement.tagName)){e.preventDefault();startTalk()}});
-addEventListener("keyup",e=>{if(e.code==="Space"&&rec){e.preventDefault();stopTalk()}});
+def graph(settings=None, now=None, ttl=300):
+    """{"nodes": [{id, name, group, degree}], "links": [[i, j]], "groups": [...]} for the whole vault: one node per
+    note, one link per [[wikilink]] that resolves to another note. Groups are the top folders. Cached `ttl` s."""
+    now = now or time.time()
+    if _graph_cache["data"] is not None and now - _graph_cache["at"] < ttl:
+        return _graph_cache["data"]
+    from . import vault
+    s = settings or Settings.load()
+    base = vault.root(s).resolve()
+    notes = sorted(vault.notes(s))[:4000]
+    rel = {}
+    for p in notes:
+        try:
+            rel[p] = p.resolve().relative_to(base).as_posix()
+        except ValueError:
+            continue
+    by_name = {}
+    for p, r in rel.items():
+        by_name.setdefault(p.stem.lower(), r)
+        by_name.setdefault(r[:-3].lower(), r)
+    edges, degree = set(), {}
+    for p, r in rel.items():
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for m in LINK.finditer(text):
+            target = m.group(1).strip().replace("\\", "/").lower().removesuffix(".md")
+            t = by_name.get(target) or by_name.get(target.rsplit("/", 1)[-1])
+            if t and t != r:
+                e = tuple(sorted((r, t)))
+                if e not in edges:
+                    edges.add(e)
+                    degree[e[0]] = degree.get(e[0], 0) + 1
+                    degree[e[1]] = degree.get(e[1], 0) + 1
+    keep = sorted(rel.values(), key=lambda r: -degree.get(r, 0))[:GRAPH_MAX_NODES]
+    index = {r: i for i, r in enumerate(keep)}
+    def group_of(r):   # the top folder; inside PARA containers (01 - Areas/Identity/...) the first two levels
+        parts = r.split("/")
+        return "/".join(parts[:2]) if len(parts) >= 3 else parts[0] if len(parts) == 2 else "(top)"
+    groups = sorted({group_of(r) for r in keep})
+    data = {"nodes": [{"id": r, "name": r.rsplit("/", 1)[-1][:-3], "group": groups.index(group_of(r)),
+                       "degree": degree.get(r, 0)} for r in keep],
+            "links": [[index[a], index[b]] for a, b in edges if a in index and b in index],
+            "groups": groups, "notes": len(rel), "time": now}
+    _graph_cache.update(at=now, data=data)
+    return data
 
-/* side panels */
-$("thinkbtn").onclick=async()=>{$("thinkbtn").disabled=true;await post("/api/think",{});refresh()};
-$("tasteform").onsubmit=async ev=>{ev.preventDefault();const line=$("tasteline").value.trim();if(!line)return;$("tasteline").value="";await post("/api/taste",{line});refresh()};
-async function nightAnswer(text){const r=await (await post("/api/night",{text})).json();bubble("sys",r.text);refresh()}
-function render(d){
- const h=d.health||{};$("health").innerHTML=[["Gateway",h.gateway],["Local AI",h.ollama],["Voice",h.kokoro],["Claude",h.claude_cli]]
-  .map(([n,v])=>`<span class="pill"><span class="dot ${v?"ok":"bad"}"></span>${n}</span>`).join("")+`<a class="pill" href="/ops">engine room</a>`;
- const th=d.thinking||{};$("thinkbtn").disabled=!!th.running;$("thinkbtn").textContent=th.running?"Thinking…":"Think now";
- $("thinkmeta").innerHTML=th.error?esc(th.error):(th.enabled===false?"Thinking passes are switched off.":
-  `Passes at ${(th.times||[]).join(", ")}`+(th.last?` · last ${day(th.last.time)}${th.last.ok?"":` <span class="tag bad">${esc(th.last.note||"failed")}</span>`}`:" · none yet")+(th.next?` · next ${day(th.next)}`:""));
- const ts=th.thoughts||[];$("thoughts").innerHTML=(ts.length?ts.map(t=>`<div class="item"><span class="tag ${esc(t.action)}">${esc({text:"told you",voice:"said it",evening:"for tonight's note",none:"kept to myself",considered:"thought about it"}[t.action]||t.action)}</span>
-  <span class="dim small">${day(t.time)}</span><div>${esc(t.message)}</div>${t.draft?`<div class="draft">${esc(t.draft)}</div>`:""}
-  <div class="dim small">${esc(t.why)}${t.guard?" · "+esc(t.guard):""}</div></div>`).join(""):`<div class="empty">Nothing yet. Press "Think now" to see what I notice.</div>`)
-  +(th.questions||[]).map(q=>`<div class="item"><span class="tag">I asked</span> <span class="dim small">${day(q.time)}</span><div>${esc(q.question)}</div></div>`).join("");
- $("taste").innerHTML=(d.taste||[]).length?d.taste.map(l=>`<div class="item small">${esc(l)}</div>`).join(""):`<div class="empty small">Nothing yet. Tell me, in your own words, what is worth a message.</div>`;
- $("reminders").innerHTML=(d.reminders||[]).length?d.reminders.map(r=>`<div class="item small"><span class="dim">${day(r.due)}</span> ${esc(r.what)}</div>`).join(""):`<div class="empty small">None open.</div>`;
- $("told").innerHTML=(d.told||[]).length?d.told.map(r=>`<div class="item"><span class="dim small">${clock(r.time)} · ${esc(r.origin)}${r.status!=="sent"?" · "+esc(r.status):""}</span><div class="small">${esc(r.text)}</div></div>`).join(""):`<div class="empty">Nothing today.</div>`;
- const w=(d.work||{}).items||[];$("work").innerHTML=w.length?w.map(r=>`<div class="item small"><span class="tag">${esc(r.source)}</span> ${esc(r.title)}<div class="dim">${esc(r.state)}${r.detail?" · "+esc(r.detail):""}</div></div>`).join(""):`<div class="empty">Nothing running or queued.</div>`;
- const n=d.night||{};$("night").innerHTML=((n.items||[]).length?n.items.map(i=>`<div class="item small"><b>${i.n}.</b> ${esc(i.title)} <span class="tag ${i.status==="delivered"?"ok":"bad"}">${esc(i.status)}</span>
-  ${i.pr?`<div><a href="${esc(i.pr)}" target="_blank" rel="noopener">draft pull request</a></div>`:""}
-  ${i.answer?`<div class="dim">you said: ${esc(i.answer)}</div>`:`<div class="acts"><button class="ghost" onclick="nightAnswer('accept ${i.n}')">Accept</button><button class="ghost" onclick="nightAnswer('redo ${i.n}')">Redo</button><button class="ghost" onclick="nightAnswer('reject ${i.n}')">Reject</button></div>`}</div>`).join(""):`<div class="empty">No night report yet.</div>`)
-  +`<div class="dim small" style="margin-top:6px">${n.queued||0} task(s) queued for the next night.</div>`;
- const u=d.usage||{};const bar=(l,p)=>p==null?"":(p=Math.round(p),`<div class="small">${l} <b>${p}%</b></div><div class="bar"><i style="width:${Math.min(100,p)}%"></i></div>`);
- $("usage").innerHTML=(bar("5-hour window",u.five_hour_pct)+bar("This week",u.week_pct)+(u.week_resets?`<div class="dim small">Week resets ${day(u.week_resets)}</div>`:""))||`<div class="empty small">No reading yet.</div>`;
-}
-async function refresh(){try{const d=await (await fetch("/api/home")).json();showLate(d.late,d.time);render(d)}catch(e){}}
-refresh();setInterval(refresh,5000);
-</script></body></html>"""
+
+def note(rel_path, settings=None, cap=4000):
+    """The text of one vault note for the graph's side panel ({"error"} when the path is outside the vault)."""
+    from . import vault
+    s = settings or Settings.load()
+    base = vault.root(s).resolve()
+    try:
+        p = (base / str(rel_path or "")).resolve()
+        p.relative_to(base)
+    except (ValueError, OSError):
+        return {"error": "not a note in the vault"}
+    if p.suffix != ".md" or not p.is_file():
+        return {"error": "not a note in the vault"}
+    text = p.read_text(encoding="utf-8", errors="replace")
+    return {"path": rel_path, "name": p.stem, "text": text[:cap], "more": len(text) > cap}
+
+
+PAGE_FILE = Path(__file__).with_name("home_page.html")
+
+
+def page_template():
+    return PAGE_FILE.read_text(encoding="utf-8")

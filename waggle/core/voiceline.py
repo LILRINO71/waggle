@@ -175,6 +175,7 @@ class _Run:
         self.chat, self.text, self.audio_path, self.client = chat, text, audio_path, client
         self.delivery = LineDelivery(audio=want_audio, fmt=fmt, on_sentence=on_sentence)
         self.rec, self.error = None, ""
+        self.turn_id = uuid.uuid4().hex   # known before the turn ends, so a holding answer can name it
         self.done, self.lock, self.detached = threading.Event(), threading.Lock(), False
         self.streamed = False  # the PC voice already said the spoken part: a late written copy is silent
         self.thread = threading.Thread(target=self._go, daemon=True, name="waggle-voice-line")
@@ -191,6 +192,7 @@ class _Run:
             self.origin = chat_engine.marked_origin("user") if marked else "user"
             self.rec = chat_engine.handle_inbound(
                 self.chat, text, kind="voice", audio=self.audio_path, platform="telegram", origin=self.origin,
+                turn_id=self.turn_id,
                 delivery=self.delivery,
                 voice_source="" if self.audio_path else CLIENT_SOURCE.get(self.client, "phone dictation"))
         except Exception as e:  # the request answers with a spoken apology; the trace holds what there is
@@ -459,7 +461,7 @@ def _serve(headers, rfile, query, accepting, length):
             run.detached = True
     if not finished:
         log.info("voice line: not finished after %.0f s, answering with the holding line", time.time() - t0)
-        return _answer(HOLD_LINE, HOLD_LINE, as_json, "working", fmt=fmt)
+        return _answer(HOLD_LINE, HOLD_LINE, as_json, "working", run.turn_id, fmt=fmt)
     if run.rec is None:
         return _answer(ERROR_LINE, ERROR_LINE, as_json, "error", fmt=fmt)
     spoken, written = _spoken_of(run), run.written()

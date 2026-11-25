@@ -28,7 +28,7 @@ _client = bridge.Client()
 # when the chat runs lean (waggle/chat_session.py LEAN_ENV): listed by name, loaded when the model searches for it.
 # Agents without ToolSearch load every tool as before; the mark is ignored there.
 ALWAYS_LOAD = frozenset({"vault_search", "recall", "remember", "send_to_me", "remind_me", "list_reminders",
-                         "background_task", "weather", "google_doc_new", "google_doc_append", "google_event_new",
+                         "background_task", "weather", "mail_recent", "google_doc_new", "google_doc_append", "google_event_new",
                          "google_task_add", "web_read"})
 
 

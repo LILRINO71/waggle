@@ -187,6 +187,12 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(snapshot(), default=str), "application/json")
         if self.path.startswith("/api/home"):
             return self._send(200, json.dumps(home.state(), default=str), "application/json")
+        if self.path.startswith("/api/graph"):
+            return self._send(200, json.dumps(home.graph(), default=str), "application/json")
+        if self.path.startswith("/api/note"):
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            return self._send(200, json.dumps(home.note((q.get("path") or [""])[0])), "application/json")
         if self.path in ("/", "/index.html"):
             return self._send(200, home.page(), "text/html; charset=utf-8")
         if self.path in ("/ops", "/ops/"):

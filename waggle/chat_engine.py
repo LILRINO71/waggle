@@ -284,7 +284,9 @@ def unseen_news():
     news = notify.unseen()
     if not news:
         return ""
-    return "Tell the user these updates first, briefly:\n" + "\n".join(f"- {n['text']}" for n in news)
+    return ("Updates the user has not seen yet. Answer their message first and keep the answer about it; then, after "
+            "a blank line, add these as one short line each (skip one that has nothing to do with them now):\n"
+            + "\n".join(f"- {n['text']}" for n in news))
 
 
 def approvals_now(chat):

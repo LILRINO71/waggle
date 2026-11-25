@@ -102,6 +102,34 @@ def weather(args, **kw):
         return f"Weather service unavailable right now ({type(e).__name__}). Tell the user and try web_search."
 
 
+def mail_recent(args, **kw):
+    """mail_recent {days, all}: what the mail watch (IMAP + the local model, no Claude) has triaged, newest first, as
+    typed fields only (sender, subject, received, importance, what is wanted from the owner, deadline, link)."""
+    import sqlite3
+    from .config import data_path
+    days = max(1, min(int(args.get("days") or 2), 14))
+    since = time.time() - days * 86400
+    try:
+        con = sqlite3.connect(f"file:{data_path('mailwatch.db')}?mode=ro", uri=True, timeout=10)
+        con.row_factory = sqlite3.Row
+        rows = [dict(r) for r in con.execute(
+            "SELECT received, sender, subject, importance, want, deadline, url, account FROM messages "
+            "WHERE received_ts>=? ORDER BY received_ts DESC LIMIT 60", (since,))]
+        last = con.execute("SELECT MAX(time) FROM passes WHERE ok=1").fetchone()[0]
+        con.close()
+    except sqlite3.Error as e:
+        return json.dumps({"error": f"the mail watch has no records yet ({type(e).__name__})"})
+    if not args.get("all"):
+        rows = [r for r in rows if r["importance"] in ("high", "urgent", "important")
+                or (r["want"] or "").strip().lower() not in ("", "nothing", "none")]
+    out = {"days": days, "last_check": last, "messages": [{k: (str(v)[:200] if v is not None else "") for k, v in r.items()}
+                                                          for r in rows[:25]],
+           "note": "Only mail the watch kept (it skips marketing and newsletters unless all=true). 'want' is what the "
+                   "sender wants from the owner; empty or 'nothing' means no reply is needed."}
+    from . import security
+    return security.wrap_untrusted("mail_recent", json.dumps(out, ensure_ascii=False))
+
+
 def call_me_text(minutes, about):
     """Place or schedule a call to the user; returns context telling the model what happened."""
     if not call.configured():
@@ -342,6 +370,11 @@ TOOLS = [
             "'Decisions', 'Goal', 'Resources'. Do not log chit-chat.",
             {"project": {"type": "string"}, "action": {"type": "string"}, "text": {"type": "string"}},
             ["project", "action", "text"]), project_update),
+    (schema("mail_recent", "The owner's recent email as Waggle's mail watch triaged it (both accounts, no Claude): "
+            "sender, subject, when, importance, what is wanted from the owner, deadline, link. Use for ANY question "
+            "about their email ('anything I need to answer?', 'did X write?'). all=true includes low-importance mail.",
+            {"days": {"type": "integer", "description": "how far back, 1-14 (default 2)"},
+             "all": {"type": "boolean"}}, []), mail_recent),
     (schema("weather", "Get the weather forecast. Use for ANY weather question. Leave location empty to use the "
             "user's saved home city; if the result says NO_LOCATION, ask the user for their city.",
             {"location": {"type": "string", "description": "City, e.g. 'Fargo, ND'. Empty = saved home city."},

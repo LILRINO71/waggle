@@ -42,7 +42,8 @@ AGENT_COST = {"haiku": 0.06, "sonnet": 0.2, "opus": 0.8, "fable": 0.8}
 OWN_ALLOWANCE = {"mailwatch": {"stop_at": 0.92, "daily_calls": 40},
                  # 3 thinking passes a day, each at most 2 small calls: they keep running until the week is nearly
                  # used up (the general background stop, seven_day_stop_at, is for long work)
-                 "think": {"stop_at": 0.92, "daily_calls": 8, "week_stop_at": 0.97}}
+                 "think": {"stop_at": 0.92, "daily_calls": 8, "week_stop_at": 0.97},
+                 "skillscout": {"stop_at": 0.80, "daily_calls": 2}}   # one judge call a day (two on a manual run)
 
 _ctx = contextvars.ContextVar("waggle_budget_ctx", default=None)
 

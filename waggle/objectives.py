@@ -522,8 +522,32 @@ def _verify_and_record(oid, idx, s, verify_fn=None):
     con.close()
     if status == "done" and remaining == 0:
         finish(oid, settings=s)
+    elif status == "done":
+        progress_line(oid, idx, step["title"], remaining)
     _write_note(oid)
     return status
+
+
+def progress_line(oid, idx, title, remaining):
+    """A finished step of an unfinished objective: one line in tonight's evening note (no buzz), so the owner sees
+    progress between start and finish. Autonomous-loop and test objectives stay out of it (as for _tell)."""
+    if _origin(oid) in QUIET_ORIGINS:
+        return
+    try:
+        from . import initiative
+        from .origin import objective_source
+        if notify.is_dev_source(objective_source(oid)):   # developer or test objective
+            return
+        con = _db()
+        row = con.execute("SELECT title, (SELECT COUNT(*) FROM steps WHERE objective_id=?) n FROM objectives WHERE id=?",
+                          (oid, oid)).fetchone()
+        con.close()
+        if row:
+            initiative.keep_for_evening(f"objective-step:{oid}:{idx}", "objective",
+                                        f"{row['title']}: step {idx} of {row['n']} done ({title}); {remaining} to go",
+                                        now=time.time())
+    except Exception:  # noqa: BLE001 - a progress line never breaks the work
+        pass
 
 
 def _fail_or_retry(con, oid, step, why, attempts):

@@ -108,6 +108,9 @@ class Settings:
     think_times: list = field(default_factory=lambda: ["07:40", "16:15", "19:45"])  # at most 4 a day
     think_model: str = "sonnet"
     think_effort: str = "medium"
+    # Skill scout (waggle/skillscout.py): finds Agent Skills on GitHub every day and installs the useful, clean ones.
+    skillscout_enabled: bool = True
+    skillscout_model: str = "sonnet"
     topic_repeat_hours: int = 48  # the same topic is not raised again within this window
     evening_time: str = "21:00"  # the daily evening note (always sent)
     brief_catchup_hours: float = 3.0  # a missed morning brief is still sent this long after its time, never later

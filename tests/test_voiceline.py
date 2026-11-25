@@ -366,6 +366,8 @@ def test_a_turn_not_finished_in_time_gets_the_holding_line_and_then_its_answer_g
     rows = sent_copies()
     assert len(rows) == 1 and rows[0]["chat"] == CHAT and "Reminder set" in rows[0]["body"]
     assert rows[0]["body"].startswith('Heard: "SLOWTURN do the long job"')
+    held_turn = headers["x-waggle-turn"]                    # named before the turn ended
+    assert held_turn and traces.by_turn_id(held_turn) is not None   # and it is the turn that was recorded
 
 
 def test_the_holding_line_is_also_given_as_json_and_the_answer_still_goes_to_telegram_with_the_copy_off(line, monkeypatch):

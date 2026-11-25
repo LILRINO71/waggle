@@ -156,7 +156,7 @@ def write_roots(settings=None):
 
 def _new_file_anywhere(path, settings=None):
     """A Write that creates a file which does not exist yet, under the user's profile, not in a start-up location and
-    not in the vault outside Waggle's own folder (the owner's notes are theirs: Waggle writes only in `12 - Waggle`)."""
+    not in the vault outside Waggle's own folder (the owner's notes are theirs: Waggle writes only in its own folder, the setting vault_own)."""
     p = str(path or "")
     if not p or is_secret_path(p):
         return False
@@ -423,7 +423,7 @@ WAGGLE_TOOLS = {
     "send_to_me": (ALLOW, _ONLY_USER),
     # reads and status
     "vault_search": (ALLOW, _READS), "project_status": (ALLOW, _READS), "build_status": (ALLOW, _READS),
-    "waggle_status": (ALLOW, _READS), "work_status": (ALLOW, _READS), "weather": (ALLOW, _READS), "look_at_screen": (ALLOW, _READS),
+    "waggle_status": (ALLOW, _READS), "work_status": (ALLOW, _READS), "weather": (ALLOW, _READS), "mail_recent": (ALLOW, _READS), "look_at_screen": (ALLOW, _READS),
     "skill_search": (ALLOW, _READS), "skill_load": (ALLOW, _READS), "skill_list": (ALLOW, _READS),
     "skill_hub_search": (ALLOW, _READS), "recall": (ALLOW, _READS), "routine_list": (ALLOW, _READS),
     "agent_list": (ALLOW, _READS), "agent_status": (ALLOW, _READS), "jobs_list": (ALLOW, _READS),

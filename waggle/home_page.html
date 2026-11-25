@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Waggle</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#120507;--bg2:#1c080b;--grid:rgba(255,70,40,.06);--red:#ff3d1f;--red2:#ff6a3d;--redd:#8a1e12;--cyan:#38d4ff;
+--cyan2:#7fe6ff;--text:#f3e6e2;--dim:#a8817a;--line:rgba(255,80,50,.28);--ok:#46f2a4;--bad:#ff3d1f;--hud:"Share Tech Mono",Consolas,monospace;
+--disp:"Orbitron","Share Tech Mono",Consolas,sans-serif}
+*{box-sizing:border-box}html,body{height:100%}
+body{margin:0;color:var(--text);font:13px/1.45 var(--hud);overflow:hidden;
+background:radial-gradient(1100px 700px at 50% 42%,#3a0b0c 0,transparent 60%),
+linear-gradient(var(--grid) 1px,transparent 1px) 0 0/28px 28px,linear-gradient(90deg,var(--grid) 1px,transparent 1px) 0 0/28px 28px,var(--bg)}
+body:after{content:"";position:fixed;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,rgba(0,0,0,.18) 0 1px,transparent 1px 3px);mix-blend-mode:multiply}
+.ruler{position:fixed;left:0;right:0;top:0;height:14px;background:repeating-linear-gradient(90deg,var(--line) 0 1px,transparent 1px 10px),
+repeating-linear-gradient(90deg,var(--red2) 0 1px,transparent 1px 100px);opacity:.55;pointer-events:none}
+.wrap{display:grid;grid-template-columns:340px minmax(420px,1fr) 360px;gap:14px;height:100vh;padding:22px 16px 14px}
+.col{display:flex;flex-direction:column;gap:12px;min-height:0;overflow-y:auto;overflow-x:hidden;scrollbar-width:thin;scrollbar-color:var(--redd) transparent}
+.p{position:relative;background:linear-gradient(180deg,rgba(40,10,12,.82),rgba(20,6,8,.82));border:1px solid var(--line);padding:12px 14px 12px;
+clip-path:polygon(0 0,calc(100% - 14px) 0,100% 14px,100% 100%,14px 100%,0 calc(100% - 14px))}
+.p:before{content:"";position:absolute;left:0;top:0;width:38px;height:2px;background:var(--red)}
+.p:after{content:"";position:absolute;right:0;bottom:0;width:60px;height:2px;background:var(--cyan);opacity:.7}
+.p h2{font:700 11px/1 var(--disp);letter-spacing:2.2px;color:var(--red2);margin:0 0 10px;display:flex;justify-content:space-between;align-items:center;gap:8px;text-transform:uppercase}
+.p h2 small{font:11px var(--hud);color:var(--dim);letter-spacing:.5px;text-transform:none}
+.mid{display:flex;flex-direction:column;min-height:0;align-items:center;position:relative}
+.top{display:flex;align-items:center;gap:12px;width:100%}
+.logo{font:900 20px var(--disp);letter-spacing:4px;color:var(--red);text-shadow:0 0 14px rgba(255,61,31,.6)}
+.logo span{color:var(--cyan);text-shadow:0 0 14px rgba(56,212,255,.6)}
+.tabs{display:flex;gap:6px;margin-left:12px}.tab{font:700 11px var(--disp);letter-spacing:2px;color:var(--dim);border:1px solid var(--line);padding:5px 12px;
+cursor:pointer;background:transparent}.tab.on{color:var(--bg);background:var(--red);border-color:var(--red)}
+.pills{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.pill{display:flex;align-items:center;gap:6px;padding:2px 8px;border:1px solid var(--line);font-size:11px;color:var(--dim);text-decoration:none;letter-spacing:1px;text-transform:uppercase}
+.dot{width:7px;height:7px;background:var(--dim);transform:rotate(45deg)}.dot.ok{background:var(--ok);box-shadow:0 0 8px var(--ok)}.dot.bad{background:var(--bad);box-shadow:0 0 8px var(--bad)}
+#reactor{width:min(420px,46vh);height:min(420px,46vh);cursor:pointer;flex:none;touch-action:none;user-select:none;margin-top:2px}
+.readout{display:flex;gap:26px;align-items:flex-end;margin-top:-6px}
+#mood{font:700 14px var(--disp);letter-spacing:3px;color:var(--cyan2);text-transform:uppercase;text-shadow:0 0 10px rgba(56,212,255,.5)}
+#hint{color:var(--dim);font-size:11.5px;letter-spacing:.5px;margin:2px 0 6px}
+#wave{width:100%;max-width:760px;height:34px}
+#log{flex:1;min-height:0;width:100%;max-width:780px;overflow:auto;display:flex;flex-direction:column;gap:8px;padding:6px 4px;scrollbar-width:thin;scrollbar-color:var(--redd) transparent}
+.b{max-width:88%;padding:8px 12px;white-space:pre-wrap;word-wrap:break-word;border:1px solid var(--line);font-size:13.5px;line-height:1.5}
+.b.me{align-self:flex-end;background:rgba(255,61,31,.13);border-color:rgba(255,61,31,.5);clip-path:polygon(0 0,100% 0,100% 100%,10px 100%,0 calc(100% - 10px))}
+.b.w{align-self:flex-start;background:rgba(56,212,255,.07);border-color:rgba(56,212,255,.38);clip-path:polygon(0 0,calc(100% - 10px) 0,100% 10px,100% 100%,0 100%)}
+.b.w:before{content:"WAGGLE ▸ ";color:var(--cyan);font-size:11px;letter-spacing:1px}
+.b.sys{align-self:center;color:var(--dim);font-size:12px;border:0;background:none;padding:2px}
+form{display:flex;gap:8px;width:100%;max-width:780px;padding:8px 2px 0}
+input[type=text]{flex:1;background:rgba(20,6,8,.9);border:1px solid var(--line);color:var(--text);padding:11px 14px;font:inherit;font-size:14px;outline:none}
+input[type=text]:focus{border-color:var(--cyan);box-shadow:0 0 0 1px rgba(56,212,255,.3),0 0 18px rgba(56,212,255,.15)}
+button{background:var(--red);color:#1a0402;border:0;padding:0 18px;font:700 12px var(--disp);letter-spacing:2px;cursor:pointer;min-height:38px;text-transform:uppercase;
+clip-path:polygon(8px 0,100% 0,100% calc(100% - 8px),calc(100% - 8px) 100%,0 100%,0 8px)}
+button.ghost{background:transparent;color:var(--cyan2);border:1px solid rgba(56,212,255,.45);padding:3px 10px;min-height:0;font-size:10px}
+button:disabled{opacity:.45;cursor:default}
+.item{padding:8px 0;border-bottom:1px dashed rgba(255,80,50,.18);overflow-wrap:anywhere}.item:last-child{border:0}
+.tag{display:inline-block;padding:0 6px;font-size:10.5px;letter-spacing:1px;border:1px solid var(--line);color:var(--dim);text-transform:uppercase;white-space:nowrap}
+.tag.text,.tag.voice{color:var(--red2);border-color:var(--red)}.tag.evening{color:#c59bff;border-color:#7a4fc9}.tag.considered{color:var(--cyan2);border-color:rgba(56,212,255,.5)}
+.tag.ok{color:var(--ok);border-color:var(--ok)}.tag.bad{color:var(--bad);border-color:var(--bad)}
+.dim{color:var(--dim)}.small{font-size:12px}.draft{margin-top:5px;padding:6px 9px;border-left:2px solid var(--cyan);background:rgba(56,212,255,.06);font-size:12.5px}
+.bar{height:8px;background:rgba(255,80,50,.1);border:1px solid var(--line);margin:4px 0 8px;position:relative;overflow:hidden}
+.bar i{display:block;height:100%;background:repeating-linear-gradient(90deg,var(--red) 0 6px,transparent 6px 8px);box-shadow:0 0 10px var(--red);transition:width .6s}
+.bar.c i{background:repeating-linear-gradient(90deg,var(--cyan) 0 6px,transparent 6px 8px);box-shadow:0 0 10px var(--cyan)}
+.empty{color:var(--dim);font-style:italic}.acts{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
+a{color:var(--cyan2)}
+.clock{font:700 34px/1 var(--disp);color:var(--red);text-shadow:0 0 16px rgba(255,61,31,.55);letter-spacing:2px}
+.clock2{font:15px var(--hud);color:var(--red2);letter-spacing:2px;margin-top:4px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}.stat{border:1px solid var(--line);padding:6px 8px}
+.stat b{display:block;font:700 18px var(--disp);color:var(--cyan2)}.stat span{font-size:10px;letter-spacing:1px;color:var(--dim);text-transform:uppercase}
+canvas.spark{width:100%;height:46px;display:block}
+#graphview{position:fixed;inset:0;display:none;background:radial-gradient(1000px 700px at 50% 50%,#22080a 0,#0d0305 70%);z-index:5}
+#graphview.on{display:block}#gcv{position:absolute;inset:0;width:100%;height:100%;cursor:grab}
+.gside{position:absolute;left:16px;top:22px;bottom:16px;width:300px;display:flex;flex-direction:column;gap:12px;z-index:2;pointer-events:none}
+.gside .p{pointer-events:auto}.gtop{position:absolute;right:16px;top:22px;display:flex;gap:8px;z-index:2;align-items:center}
+#gsearch{width:230px;padding:7px 10px;font-size:12.5px}
+.legend div{display:flex;align-items:center;gap:8px;padding:3px 0;cursor:pointer;font-size:12px}.legend i{width:9px;height:9px;border-radius:50%;display:inline-block}
+.legend div.off{opacity:.35}
+#gnote{max-height:46vh;overflow:auto;white-space:pre-wrap;font-size:12px;color:#e9d8d3;scrollbar-width:thin}
+@media(max-width:1180px){body{overflow:auto}.wrap{grid-template-columns:1fr;height:auto}.col{overflow:visible}.mid{order:-1}#log{min-height:260px}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style></head><body><div class="ruler"></div>
+<div class="wrap">
+<div class="col">
+ <section class="p"><h2>Chronometer <small id="since"></small></h2>
+  <div class="clock" id="clk">--:--</div><div class="clock2" id="clkd"></div>
+  <div class="stats"><div class="stat"><b id="st-told">0</b><span>told today</span></div><div class="stat"><b id="st-work">0</b><span>in progress</span></div><div class="stat"><b id="st-rem">0</b><span>reminders</span></div></div>
+ </section>
+ <section class="p"><h2>On my mind <button class="ghost" id="thinkbtn">Think now</button></h2>
+  <div class="small dim" id="thinkmeta"></div><div id="thoughts"></div></section>
+ <section class="p"><h2>Teach me</h2>
+  <div id="taste"></div>
+  <form id="tasteform" style="padding:8px 0 0"><input type="text" id="tasteline" placeholder="what is worth a message, in your words"><button>Add</button></form></section>
+ <section class="p"><h2>Reminders</h2><div id="reminders"></div></section>
+</div>
+<div class="mid">
+ <div class="top"><div class="logo">WAG<span>GLE</span></div>
+  <div class="tabs"><button class="tab on" id="tab-cmd">Command</button><button class="tab" id="tab-mem">Memory</button></div>
+  <div class="pills" id="health"></div></div>
+ <canvas id="reactor" width="840" height="840" title="Hold to talk"></canvas>
+ <div class="readout"><div id="mood">Standing by</div></div>
+ <div id="hint">HOLD THE CORE OR [SPACE] TO TALK · OR TYPE BELOW</div>
+ <canvas id="wave" width="1520" height="68"></canvas>
+ <div id="log"></div>
+ <form id="say"><input type="text" id="text" placeholder="> ask Waggle anything, or tell it to do something" autocomplete="off"><button id="send">Send</button></form>
+</div>
+<div class="col">
+ <section class="p"><h2>Transmissions today <small id="told-n"></small></h2><div id="told"></div></section>
+ <section class="p"><h2>Operations</h2><div id="work"></div></section>
+ <section class="p"><h2>Night shift</h2><div id="night"></div></section>
+ <section class="p"><h2>Power <small>Claude allowance</small></h2><div id="usage"></div><canvas class="spark" id="spark" width="660" height="92"></canvas></section>
+</div></div>
+
+<div id="graphview"><canvas id="gcv"></canvas>
+ <div class="gside">
+  <section class="p"><h2>Memory graph <small id="gcount"></small></h2><div class="legend" id="legend"></div></section>
+  <section class="p" id="gnotep" style="display:none"><h2><span id="gname"></span><button class="ghost" id="gclose">Close</button></h2><div id="gnote"></div></section>
+ </div>
+ <div class="gtop"><input type="text" id="gsearch" placeholder="> find a note"><button class="ghost" id="gback">Back to command</button></div>
+</div>
+
+<script>
+const TOKEN="__TOKEN__";const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const clock=t=>t?new Date(t*1000).toLocaleTimeString([], {hour:"numeric",minute:"2-digit"}):"";
+const day=t=>{const d=new Date(t*1000),n=new Date();return d.toDateString()===n.toDateString()?clock(t):d.toLocaleDateString([], {weekday:"short"})+" "+clock(t)};
+const post=(path,body,type)=>fetch(path,{method:"POST",headers:{"X-Waggle-Token":TOKEN,"Content-Type":type||"application/json"},body:type?body:JSON.stringify(body)});
+const RED=[255,61,31],CYAN=[56,212,255];const rgba=(c,a)=>`rgba(${c[0]},${c[1]},${c[2]},${a})`;
+let mood="idle",level=0,busy=false,weekPct=null,fivePct=null,openedAt=Date.now();
+const LABEL={idle:"Standing by",listening:"Listening",thinking:"Processing",speaking:"Transmitting"};
+/* answers that reach the chat after the fact (after the holding line) and background job results */
+const waiting=[],shown=new Set();let opened=null;
+function rest(){waiting.length?setMood("thinking","Working · answer will land here"):setMood("idle")}
+function waitFor(t){if(t){waiting.push(+t);waiting.sort((a,b)=>a-b)}}
+function showLate(list,now){if(opened===null)opened=now||Date.now()/1000;
+ for(const a of list||[]){if(shown.has(a.id)||a.time<opened-1)continue;shown.add(a.id);
+  if(a.kind==="answer"){const i=waiting.findIndex(t=>a.time>=t-1);if(i>=0)waiting.splice(i,1)}bubble("w",a.text)}
+ if(!busy&&mood==="thinking")rest()}
+function setMood(m,label){mood=m;$("mood").textContent=label||LABEL[m]}
+function bubble(kind,text){const d=document.createElement("div");d.className="b "+kind;d.textContent=text;$("log").appendChild(d);$("log").scrollTop=1e9;return d}
+
+/* the reactor: concentric HUD rings around a red core; arcs show the week and 5-hour allowance */
+const cv=$("reactor"),cx=cv.getContext("2d");const W=840,C=420;let t0=performance.now();
+function arc(r,a0,a1,w,col,glow){cx.beginPath();cx.arc(C,C,r,a0,a1);cx.lineWidth=w;cx.strokeStyle=col;cx.shadowBlur=glow||0;cx.shadowColor=col;cx.stroke();cx.shadowBlur=0}
+function ticks(r,n,len,rot,col,every){for(let i=0;i<n;i++){const a=rot+i*2*Math.PI/n;const L=(every&&i%every===0)?len*2:len;
+ cx.beginPath();cx.moveTo(C+r*Math.cos(a),C+r*Math.sin(a));cx.lineTo(C+(r+L)*Math.cos(a),C+(r+L)*Math.sin(a));cx.strokeStyle=col;cx.lineWidth=2;cx.stroke()}}
+function draw(now){const t=(now-t0)/1000;cx.clearRect(0,0,W,W);
+ const busyish=mood==="thinking",amp=mood==="listening"||mood==="speaking"?level:busyish?.4+.2*Math.sin(t*5):.06+.04*Math.sin(t*1.4);
+ const g=cx.createRadialGradient(C,C,10,C,C,400);g.addColorStop(0,rgba(RED,.35+amp*.4));g.addColorStop(.45,rgba(RED,.08));g.addColorStop(1,"rgba(0,0,0,0)");cx.fillStyle=g;cx.fillRect(0,0,W,W);
+ ticks(380,120,6,t*.02,rgba(RED,.45),10);
+ arc(352,0,2*Math.PI,1.5,rgba(RED,.35));
+ const wk=(weekPct??0)/100,fv=(fivePct??0)/100;
+ arc(336,-Math.PI/2,-Math.PI/2+2*Math.PI*wk,10,rgba(RED,.9),18);arc(336,-Math.PI/2+2*Math.PI*wk,1.5*Math.PI,10,rgba(RED,.12));
+ arc(318,-Math.PI/2,-Math.PI/2+2*Math.PI*fv,6,rgba(CYAN,.9),14);arc(318,-Math.PI/2+2*Math.PI*fv,1.5*Math.PI,6,rgba(CYAN,.1));
+ const spin=t*(busyish?1.6:.35);
+ for(let i=0;i<24;i++){const a0=spin+i*2*Math.PI/24;const on=(i%3!==0);arc(286,a0,a0+2*Math.PI/24*.62,14,rgba(RED,on?.75:.2),on?8:0)}
+ for(let i=0;i<3;i++){const a0=-spin*1.3+i*2*Math.PI/3;arc(250,a0,a0+1.4,4,rgba(CYAN,.85),12)}
+ ticks(214,60,5,-t*.15,rgba(CYAN,.5),5);
+ cx.setLineDash([4,7]);arc(196,0,2*Math.PI,1.2,rgba(RED,.5));cx.setLineDash([]);
+ for(let i=0;i<4;i++){const a=Math.PI/4+i*Math.PI/2+Math.sin(t*.6)*.04;cx.beginPath();cx.moveTo(C+60*Math.cos(a),C+60*Math.sin(a));cx.lineTo(C+190*Math.cos(a),C+190*Math.sin(a));cx.strokeStyle=rgba(RED,.25);cx.lineWidth=1;cx.stroke()}
+ const R=118+amp*40+Math.sin(t*2)*3;const core=cx.createRadialGradient(C,C,8,C,C,R);core.addColorStop(0,"#ffd0b8");core.addColorStop(.25,"#ff6a3d");core.addColorStop(.75,"#d42a10");core.addColorStop(1,"rgba(160,20,8,.0)");
+ cx.fillStyle=core;cx.shadowBlur=40;cx.shadowColor=rgba(RED,.9);cx.beginPath();cx.arc(C,C,R,0,2*Math.PI);cx.fill();cx.shadowBlur=0;
+ arc(R*.62,0,2*Math.PI,2,"rgba(255,220,200,.55)");
+ cx.save();cx.translate(C,C);cx.rotate(t*.5);cx.strokeStyle="rgba(255,230,215,.5)";cx.lineWidth=1.4;cx.beginPath();cx.moveTo(-R*.55,0);cx.lineTo(R*.55,0);cx.moveTo(0,-R*.55);cx.lineTo(0,R*.55);cx.stroke();cx.restore();
+ cx.font="600 15px 'Share Tech Mono',monospace";cx.fillStyle=rgba(RED,.9);cx.textAlign="center";
+ if(weekPct!=null)cx.fillText(`WEEK ${Math.round(weekPct)}%`,C,C-344+30);cx.fillStyle=rgba(CYAN,.9);if(fivePct!=null)cx.fillText(`5H ${Math.round(fivePct)}%`,C,C+318+24-48);
+ level*=.9;drawWave(t);requestAnimationFrame(draw)}
+/* the voice waveform under the reactor */
+const wv=$("wave"),wx=wv.getContext("2d");const bars=new Array(76).fill(0);
+function drawWave(t){wx.clearRect(0,0,1520,68);for(let i=0;i<bars.length;i++){const live=mood==="listening"||mood==="speaking";
+ const target=live?Math.min(1,level*(0.6+0.8*Math.abs(Math.sin(i*1.7+t*9)))):(mood==="thinking"?.25+.2*Math.sin(i*.5+t*4):.05+.04*Math.sin(i*.4+t*2));
+ bars[i]+= (target-bars[i])*.35;const h=Math.max(2,bars[i]*60),x=i*20+4;wx.fillStyle=rgba(i%9===0?RED:CYAN,.85);wx.fillRect(x,34-h/2,12,h)}}
+requestAnimationFrame(draw);
+
+/* clock */
+function tickClock(){const d=new Date();$("clk").textContent=d.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false});
+ $("clkd").textContent=d.toLocaleDateString([], {weekday:"short",year:"numeric",month:"short",day:"2-digit"}).toUpperCase();
+ const s=Math.floor((Date.now()-openedAt)/1000);$("since").textContent=`session ${String(Math.floor(s/3600)).padStart(2,"0")}:${String(Math.floor(s/60)%60).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`}
+setInterval(tickClock,1000);tickClock();
+
+/* typing */
+$("say").onsubmit=async ev=>{ev.preventDefault();const text=$("text").value.trim();if(!text||busy)return;$("text").value="";
+ bubble("me",text);busy=true;setMood("thinking");
+ try{const r=await (await post("/api/say",{text})).json();bubble(r.ok?"w":"sys",r.ok?(r.text||r.spoken):("Could not send: "+r.error));
+  if(r.ok&&r.status==="working")waitFor(r.asked_at)}
+ catch(e){bubble("sys","Waggle did not answer. Is the core running?")}
+ busy=false;rest();refresh()};
+
+/* talking: hold the core or Space */
+let rec=null,chunks=[],stream=null,actx=null,an=null,buf=null,raf=0;
+function meter(){if(!an)return;an.getByteTimeDomainData(buf);let s=0;for(const v of buf){const x=(v-128)/128;s+=x*x}
+ level=Math.max(level,Math.min(1,Math.sqrt(s/buf.length)*3.2));raf=requestAnimationFrame(meter)}
+async function startTalk(){if(busy||rec)return;try{stream=stream||await navigator.mediaDevices.getUserMedia({audio:true})}
+ catch(e){bubble("sys","The browser has no microphone permission for this page.");return}
+ actx=actx||new AudioContext();const src=actx.createMediaStreamSource(stream);an=actx.createAnalyser();an.fftSize=512;buf=new Uint8Array(an.fftSize);src.connect(an);
+ chunks=[];rec=new MediaRecorder(stream);rec.ondataavailable=e=>chunks.push(e.data);rec.onstop=sendTalk;rec.start();setMood("listening");meter()}
+function stopTalk(){if(rec&&rec.state!=="inactive"){rec.stop()}cancelAnimationFrame(raf);an=null}
+async function sendTalk(){const type=rec.mimeType||"audio/webm";const blob=new Blob(chunks,{type});rec=null;
+ if(blob.size<3000){setMood("idle");return}busy=true;setMood("thinking");const mine=bubble("me","🎙 …");
+ try{const r=await post("/api/talk",blob,type.split(";")[0]);const spoken=decodeURIComponent(r.headers.get("X-Waggle-Spoken")||"");
+  if(!r.ok){const j=await r.json().catch(()=>({}));mine.textContent="🎙 (not sent)";bubble("sys",j.error||"Waggle could not take that.")}
+  else{mine.textContent="🎙 (spoken)";bubble("w",spoken||"(answer sent to your chat)");
+   if(r.headers.get("X-Waggle-Status")==="working")waitFor(parseFloat(r.headers.get("X-Waggle-Asked")));const a=new Audio(URL.createObjectURL(await r.blob()));
+   const s2=actx.createMediaElementSource(a);const an2=actx.createAnalyser();an2.fftSize=512;const b2=new Uint8Array(512);s2.connect(an2);an2.connect(actx.destination);
+   setMood("speaking");const tick=()=>{if(mood!=="speaking")return;an2.getByteTimeDomainData(b2);let s=0;for(const v of b2){const x=(v-128)/128;s+=x*x}
+    level=Math.max(level,Math.min(1,Math.sqrt(s/512)*3));requestAnimationFrame(tick)};tick();
+   a.onended=rest;await a.play().catch(rest);busy=false;refresh();return}}
+ catch(e){bubble("sys","Waggle did not answer. Is the core running?")}
+ busy=false;rest();refresh()}
+cv.addEventListener("pointerdown",e=>{cv.setPointerCapture(e.pointerId);startTalk()});cv.addEventListener("pointerup",stopTalk);cv.addEventListener("pointercancel",stopTalk);
+addEventListener("keydown",e=>{if(e.code==="Space"&&!e.repeat&&!/INPUT|TEXTAREA/.test(document.activeElement.tagName)&&!$("graphview").classList.contains("on")){e.preventDefault();startTalk()}});
+addEventListener("keyup",e=>{if(e.code==="Space"&&rec){e.preventDefault();stopTalk()}});
+
+/* side panels */
+$("thinkbtn").onclick=async()=>{$("thinkbtn").disabled=true;await post("/api/think",{});refresh()};
+$("tasteform").onsubmit=async ev=>{ev.preventDefault();const line=$("tasteline").value.trim();if(!line)return;$("tasteline").value="";await post("/api/taste",{line});refresh()};
+async function nightAnswer(text){const r=await (await post("/api/night",{text})).json();bubble("sys",r.text);refresh()}
+const usageHist=[];
+function spark(){const c=$("spark"),x=c.getContext("2d");x.clearRect(0,0,660,92);x.strokeStyle=rgba(RED,.18);for(let i=0;i<=4;i++){x.beginPath();x.moveTo(0,i*23);x.lineTo(660,i*23);x.stroke()}
+ const pts=usageHist.slice(-60);if(pts.length<2)return;x.beginPath();pts.forEach((p,i)=>{const X=i*(660/59),Y=90-(p/100)*88;i?x.lineTo(X,Y):x.moveTo(X,Y)});
+ x.strokeStyle=rgba(CYAN,.95);x.lineWidth=2;x.shadowBlur=10;x.shadowColor=rgba(CYAN,1);x.stroke();x.shadowBlur=0}
+function render(d){
+ const h=d.health||{};$("health").innerHTML=[["Gateway",h.gateway],["Local AI",h.ollama],["Voice",h.kokoro],["Claude",h.claude_cli]]
+  .map(([n,v])=>`<span class="pill"><span class="dot ${v?"ok":"bad"}"></span>${n}</span>`).join("")+`<a class="pill" href="/ops">engine room</a>`;
+ const th=d.thinking||{};$("thinkbtn").disabled=!!th.running;$("thinkbtn").textContent=th.running?"Thinking…":"Think now";
+ $("thinkmeta").innerHTML=th.error?esc(th.error):(th.enabled===false?"Thinking passes are switched off.":
+  `Passes ${(th.times||[]).join(" · ")}`+(th.last?` · last ${day(th.last.time)}${th.last.ok?"":` <span class="tag bad">${esc(th.last.note||"failed")}</span>`}`:" · none yet")+(th.next?` · next ${day(th.next)}`:""));
+ const ts=th.thoughts||[];$("thoughts").innerHTML=(ts.length?ts.map(t=>`<div class="item"><span class="tag ${esc(t.action)}">${esc({text:"told you",voice:"said it",evening:"tonight's note",none:"kept quiet",considered:"considered"}[t.action]||t.action)}</span>
+  <span class="dim small">${day(t.time)}</span><div>${esc(t.message)}</div>${t.draft?`<div class="draft">${esc(t.draft)}</div>`:""}
+  <div class="dim small">${esc(t.why)}${t.guard?" · "+esc(t.guard):""}</div></div>`).join(""):`<div class="empty">Nothing yet. Press "Think now" to see what I notice.</div>`)
+  +(th.questions||[]).map(q=>`<div class="item"><span class="tag">I asked</span> <span class="dim small">${day(q.time)}</span><div>${esc(q.question)}</div></div>`).join("");
+ $("taste").innerHTML=(d.taste||[]).length?d.taste.map(l=>`<div class="item small">${esc(l)}</div>`).join(""):`<div class="empty small">Nothing yet. Tell me, in your own words, what is worth a message.</div>`;
+ const rem=d.reminders||[];$("reminders").innerHTML=rem.length?rem.map(r=>`<div class="item small"><span class="tag">${day(r.due)}</span> ${esc(r.what)}</div>`).join(""):`<div class="empty small">None open.</div>`;
+ const told=d.told||[];$("told-n").textContent=told.length?`${told.length} sent`:"";
+ $("told").innerHTML=told.length?told.map(r=>`<div class="item"><span class="dim small">${clock(r.time)} · ${esc(r.origin)}${r.status!=="sent"?" · "+esc(r.status):""}</span><div class="small">${esc(r.text)}</div></div>`).join(""):`<div class="empty">Nothing today.</div>`;
+ const w=(d.work||{}).items||[];$("work").innerHTML=w.length?w.map(r=>`<div class="item small"><span class="tag">${esc(r.source)}</span> ${esc(r.title)}<div class="dim">${esc(r.state)}${r.detail?" · "+esc(r.detail):""}</div></div>`).join(""):`<div class="empty">Nothing running or queued.</div>`;
+ $("st-told").textContent=told.length;$("st-work").textContent=w.filter(r=>/running|working|active|planning|queued/.test(r.state||"")).length;$("st-rem").textContent=rem.length;
+ const n=d.night||{};$("night").innerHTML=((n.items||[]).length?n.items.map(i=>`<div class="item small"><b>${i.n}.</b> ${esc(i.title)} <span class="tag ${i.status==="delivered"?"ok":"bad"}">${esc(i.status)}</span>
+  ${i.pr?`<div><a href="${esc(i.pr)}" target="_blank" rel="noopener">draft pull request</a></div>`:""}
+  ${i.answer?`<div class="dim">you said: ${esc(i.answer)}</div>`:`<div class="acts"><button class="ghost" onclick="nightAnswer('accept ${i.n}')">Accept</button><button class="ghost" onclick="nightAnswer('redo ${i.n}')">Redo</button><button class="ghost" onclick="nightAnswer('reject ${i.n}')">Reject</button></div>`}</div>`).join(""):`<div class="empty">No night report yet.</div>`)
+  +`<div class="dim small" style="margin-top:6px">${n.queued||0} task(s) queued for the next night.</div>`;
+ const u=d.usage||{};weekPct=u.week_pct??null;fivePct=u.five_hour_pct??null;if(fivePct!=null)usageHist.push(fivePct);
+ const bar=(l,p,c)=>p==null?"":(p=Math.round(p),`<div class="small">${l} <b>${p}%</b></div><div class="bar ${c||""}"><i style="width:${Math.min(100,p)}%"></i></div>`);
+ $("usage").innerHTML=(bar("Week",u.week_pct)+bar("5-hour window",u.five_hour_pct,"c")+(u.week_resets?`<div class="dim small">Week resets ${day(u.week_resets)}</div>`:""))||`<div class="empty small">No reading yet.</div>`;spark();
+}
+async function refresh(){try{const d=await (await fetch("/api/home")).json();showLate(d.late,d.time);render(d)}catch(e){}}
+refresh();setInterval(refresh,5000);
+
+/* ---- memory graph: the vault as a force-directed graph (Obsidian style) ---- */
+const PALETTE=["#ff3d1f","#38d4ff","#ffb020","#46f2a4","#c59bff","#ff7ab8","#7fe6ff","#f5e663","#ff8a50","#9aa7ff","#5ef0d0","#e0e0e0","#ff5470","#b6ff5c"];
+const gv=$("gcv"),gx=gv.getContext("2d");let G=null,view={x:0,y:0,k:1},drag=null,hover=null,sel=null,hidden=new Set(),alpha=0,gAnim=0,query="";
+function showGraph(on){$("graphview").classList.toggle("on",on);$("tab-mem").classList.toggle("on",on);$("tab-cmd").classList.toggle("on",!on);if(on){loadGraph()}else cancelAnimationFrame(gAnim)}
+$("tab-mem").onclick=()=>showGraph(true);$("tab-cmd").onclick=()=>showGraph(false);$("gback").onclick=()=>showGraph(false);
+$("gclose").onclick=()=>{sel=null;$("gnotep").style.display="none"};
+function fit(){gv.width=innerWidth*devicePixelRatio;gv.height=innerHeight*devicePixelRatio}addEventListener("resize",fit);
+async function loadGraph(){fit();if(!G){const d=await (await fetch("/api/graph")).json();
+  const n=d.nodes.map((v,i)=>({...v,x:Math.cos(i*2.4)*Math.sqrt(i)*18,y:Math.sin(i*2.4)*Math.sqrt(i)*18,vx:0,vy:0,r:2.4+Math.sqrt(v.degree||0)*1.9}));
+  G={nodes:n,links:d.links.map(([a,b])=>({s:n[a],t:n[b]})),groups:d.groups};
+  $("gcount").textContent=`${n.length} notes · ${G.links.length} links`;
+  $("legend").innerHTML=d.groups.map((g,i)=>`<div data-g="${i}"><i style="background:${PALETTE[i%PALETTE.length]};box-shadow:0 0 8px ${PALETTE[i%PALETTE.length]}"></i>${esc(g)}</div>`).join("");
+  for(const el of $("legend").children)el.onclick=()=>{const g=+el.dataset.g;hidden.has(g)?hidden.delete(g):hidden.add(g);el.classList.toggle("off");alpha=Math.max(alpha,.3)};
+  view={x:gv.width/2+150*devicePixelRatio,y:gv.height/2,k:devicePixelRatio*.55};alpha=1}
+ cancelAnimationFrame(gAnim);gLoop()}
+function step(){const N=G.nodes.filter(n=>!hidden.has(n.group));const L=G.links.filter(l=>!hidden.has(l.s.group)&&!hidden.has(l.t.group));
+ for(let i=0;i<N.length;i++){const a=N[i];for(let j=i+1;j<N.length;j++){const b=N[j];let dx=a.x-b.x,dy=a.y-b.y,d2=dx*dx+dy*dy+.01;if(d2>90000)continue;
+  const f=420*alpha/d2;a.vx+=dx*f;a.vy+=dy*f;b.vx-=dx*f;b.vy-=dy*f}}
+ for(const l of L){const dx=l.t.x-l.s.x,dy=l.t.y-l.s.y,d=Math.sqrt(dx*dx+dy*dy)+.01,f=(d-46)*.035*alpha;const fx=dx/d*f,fy=dy/d*f;l.s.vx+=fx;l.s.vy+=fy;l.t.vx-=fx;l.t.vy-=fy}
+ for(const n of N){n.vx-=n.x*.006*alpha;n.vy-=n.y*.006*alpha;if(n===drag?.node)continue;n.x+=n.vx*=.55;n.y+=n.vy*=.55}
+ alpha=Math.max(0,alpha*.992-.0005)}
+function gLoop(){if(alpha>0)step();gdraw();gAnim=requestAnimationFrame(gLoop)}
+function gdraw(){const W=gv.width,H=gv.height;gx.setTransform(1,0,0,1,0,0);gx.clearRect(0,0,W,H);gx.setTransform(view.k,0,0,view.k,view.x,view.y);
+ const focus=sel||hover;const nb=new Set();if(focus)for(const l of G.links){if(l.s===focus)nb.add(l.t);if(l.t===focus)nb.add(l.s)}
+ gx.lineWidth=.6/view.k*devicePixelRatio;for(const l of G.links){if(hidden.has(l.s.group)||hidden.has(l.t.group))continue;const hot=focus&&(l.s===focus||l.t===focus);
+  gx.strokeStyle=hot?"rgba(255,140,90,.85)":focus?"rgba(180,120,110,.06)":"rgba(200,150,140,.16)";gx.beginPath();gx.moveTo(l.s.x,l.s.y);gx.lineTo(l.t.x,l.t.y);gx.stroke()}
+ const q=query.toLowerCase();
+ for(const n of G.nodes){if(hidden.has(n.group))continue;const col=PALETTE[n.group%PALETTE.length];const dimmed=(focus&&n!==focus&&!nb.has(n))||(q&&!n.name.toLowerCase().includes(q));
+  gx.globalAlpha=dimmed?.18:1;gx.fillStyle=col;gx.shadowBlur=dimmed?0:(n===focus?24:8);gx.shadowColor=col;gx.beginPath();gx.arc(n.x,n.y,n.r*(n===focus?1.6:1),0,7);gx.fill()}
+ gx.shadowBlur=0;gx.globalAlpha=1;gx.fillStyle="#f3e6e2";gx.font=`${11/view.k*devicePixelRatio}px 'Share Tech Mono',monospace`;gx.textAlign="center";
+ for(const n of G.nodes){if(hidden.has(n.group))continue;const show=n===focus||nb.has(n)||(q&&n.name.toLowerCase().includes(q))||(view.k>2.2*devicePixelRatio&&n.degree>1)||n.degree>12;
+  if(show)gx.fillText(n.name.slice(0,34),n.x,n.y-n.r-4/view.k)}}
+function toWorld(e){const r=gv.getBoundingClientRect(),px=(e.clientX-r.left)*devicePixelRatio,py=(e.clientY-r.top)*devicePixelRatio;return{x:(px-view.x)/view.k,y:(py-view.y)/view.k,px,py}}
+function pick(w){let best=null,bd=1e9;for(const n of G.nodes){if(hidden.has(n.group))continue;const d=(n.x-w.x)**2+(n.y-w.y)**2;if(d<bd&&d<(n.r+6/view.k)**2){bd=d;best=n}}return best}
+gv.addEventListener("pointerdown",e=>{if(!G)return;const w=toWorld(e);const n=pick(w);gv.setPointerCapture(e.pointerId);drag=n?{node:n,moved:false}:{pan:true,px:w.px,py:w.py,vx:view.x,vy:view.y,moved:false}});
+gv.addEventListener("pointermove",e=>{if(!G)return;const w=toWorld(e);if(!drag){hover=pick(w);gv.style.cursor=hover?"pointer":"grab";return}
+ drag.moved=true;if(drag.node){drag.node.x=w.x;drag.node.y=w.y;alpha=Math.max(alpha,.25)}else{view.x=drag.vx+(w.px-drag.px);view.y=drag.vy+(w.py-drag.py)}});
+gv.addEventListener("pointerup",async e=>{if(drag&&drag.node&&!drag.moved){sel=drag.node;openNote(sel)}drag=null});
+gv.addEventListener("wheel",e=>{e.preventDefault();const w=toWorld(e),f=Math.exp(-e.deltaY*.0015);view.k*=f;view.x=w.px-w.x*view.k;view.y=w.py-w.y*view.k},{passive:false});
+$("gsearch").oninput=e=>{query=e.target.value.trim()};
+async function openNote(n){$("gnotep").style.display="";$("gname").textContent=n.name;$("gnote").textContent="loading…";
+ const d=await (await fetch("/api/note?path="+encodeURIComponent(n.id))).json();$("gnote").textContent=d.error||(d.text+(d.more?"\n…":""))}
+addEventListener("keydown",e=>{if(e.key==="Escape"&&$("graphview").classList.contains("on"))showGraph(false)});
+</script></body></html>
