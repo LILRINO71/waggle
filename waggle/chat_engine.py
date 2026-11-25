@@ -303,6 +303,7 @@ def approvals_now(chat):
 # ---- approvals ----------------------------------------------------------------------------------------------
 
 APPROVAL_CMD = re.compile(r"^\s*(approve|allow|ok|yes|deny|reject|refuse|no)\s+#?([A-Za-z0-9]{4})\s*[.!]*\s*$", re.I)
+LEADING_APPROVAL = re.compile(r"^\s*(approve|allow|deny|reject|refuse)\s+#?([A-Za-z0-9]{4})\b[\s.,;:!-]+\S", re.I)
 YES = re.compile(r"^\s*(y|yes|yeah|yep|yup|sure|ok(ay)?|go ahead|do it|approved?|confirm(ed)?|allow( it)?)"
                  r"([\s,!.]+(do it|go ahead|please|you can|approved?))*[\s!.]*$", re.I)
 
@@ -399,6 +400,20 @@ def approval_preflight(chat, text, prev_msg_at=0.0, heard_unsure=False):
         if sess == chat:
             return "note", f"The user approved: {item['summary']}. Do exactly that now (it is allowed once) and finish."
         return "reply", f"Approved once: {item['summary']}. It will be allowed the next time exactly that action runs."
+    lead = LEADING_APPROVAL.match(text or "")
+    item = policy.get(lead.group(2)) if lead else None
+    if item and item["state"] == "pending" and item["expires"] > time.time():
+        # "deny JPVE. ok push the branch" (2026-11-25): a no is always safe, so it counts and the rest goes on;
+        # a yes inside a longer message grants nothing (an approval is a message of its own) and is said so
+        if lead.group(1).lower() in ("deny", "reject", "refuse"):
+            policy.deny(item["id"])
+            if (item.get("session") or "").startswith("objective-"):
+                objectives.settle_approvals()
+            return "note", (f"Done before this turn: the user denied {item['code']} ({item['summary']}); it won't "
+                            "run. Say that in a few words, then answer the rest of their message.")
+        return "note", (f"Their message starts with \"approve {item['code']}\" but has more after it, so nothing was "
+                        f"approved: an approval counts only as a message on its own. Say so in one line (reply "
+                        f"\"approve {item['code']}\" alone to allow it), then answer the rest.")
     if is_no(text):
         mine = [p for p in policy.pending(chat) if p.get("session") == chat]
         if not mine:

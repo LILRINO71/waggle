@@ -40,6 +40,22 @@ def test_deny_unknown_and_used_codes_answer_directly():
     assert kind == "reply" and "don't have an approval" in text
 
 
+def test_a_deny_at_the_start_of_a_longer_message_counts_and_the_rest_goes_on():
+    # "deny JPVE. ok push the branch" left JPVE pending without a word (2026-11-25 robotics test)
+    aid = policy.request_approval("Bash", {"command": "rm ../pr12-port.py"}, "deleting files", session="bg-chat")
+    code = policy.get(aid)["code"]
+    kind, text = chat_engine.approval_preflight("telegram:5", f"deny {code}. ok push the branch, dont touch the pr")
+    assert kind == "note" and policy.get(aid)["state"] == "denied" and "answer the rest" in text
+
+
+def test_an_approve_inside_a_longer_message_grants_nothing_and_says_so():
+    aid = policy.request_approval("Bash", {"command": "git push"}, "pushing", session="telegram:5")
+    code = policy.get(aid)["code"]
+    kind, text = chat_engine.approval_preflight("telegram:5", f"approve {code} and also tell me the score")
+    assert kind == "note" and "nothing was approved" in text and policy.get(aid)["state"] == "pending"
+    assert chat_engine.approval_preflight("telegram:5", "deny this, then go home") is None  # not a code
+
+
 def test_plain_yes_grants_this_chats_pending_and_nothing_else():
     assert chat_engine.approval_preflight("telegram:5", "yes") is None
     assert chat_engine.approval_preflight("telegram:5", "yes please tell me more about it") is None

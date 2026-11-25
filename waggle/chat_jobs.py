@@ -42,6 +42,14 @@ def start(chat, task, agent="general", hard=False, origin="", now=None):
     return jobs.enqueue(JOB_KIND, payload, idem_key=f"{JOB_KIND}:{key}", now=now), key
 
 
+# 2026-11-25: a finished PR refresh reached the phone as "That was the command that hung on my stray cat..." and
+# the plain report came only when the owner asked "so is it done?"
+REPORT_RULE = ("\n\nYour last message is posted as-is to the owner's phone as this job's report. Start with one plain "
+               "line: done, partly done or not done. Then what changed and where (links, branch, files) and what is "
+               "left for them. No story of your process, no shell commands. Delete scratch files you made yourself "
+               "before you finish only if that needs no approval; otherwise leave them and list them.")
+
+
 def progress_key(payload):
     return f"bg-{payload['key']}"
 
@@ -63,7 +71,7 @@ def run_background(payload, runner=None):
             res = runner(payload)
         else:
             from waggle import agents
-            res = agents.run(payload.get("agent") or "general", payload["task"], session=payload["chat"],
+            res = agents.run(payload.get("agent") or "general", payload["task"] + REPORT_RULE, session=payload["chat"],
                              hard=bool(payload.get("hard")), timeout=1800, progress_key=progress_key(payload))
         from waggle.agent import approval_message
         ok = bool(getattr(res, "ok", False))
