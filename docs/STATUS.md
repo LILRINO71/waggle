@@ -350,3 +350,14 @@ canary 2.2 s. Checked on live afterwards:
 - The owner's two lines are in `12 - Waggle/Me/Proactive.md`.
 - Not done: no thought has reached the owner's phone yet (first scheduled pass Tue 07:40); the orb's microphone
   path was not driven with real speech; nobody has pressed Accept / Redo / Reject on a real night report.
+
+**Home page: slow answers and job results now show in its chat (2026-11-25, live ffef25a).** The owner asked a long
+question on Home; after the voice line's 25 s hold the page showed "Working on it" and the real answer went only to
+Telegram, so it looked stuck. Now the voice line marks those copies `meta.late` (`voiceline.queue_copy`),
+`/api/home` carries `late` (late dashboard answers plus background job results in the owner's chat,
+`home.late_answers`), and the page shows anything newer than the moment it was opened, keeping the orb on
+"Still working on it" until a held answer arrives. Full suite 4,123 passed (twice, 1b95b45 then ffef25a);
+`tools/deploy.ps1` both times, code-path canary 2.2 s. Checked live: a test-marked "as a background job" question
+typed on Home got "I'm on it", and the job's result appeared in the Home chat about 25 s later with no reload.
+- Not driven live: a held answer (two test questions both finished under 25 s); covered by
+  `tests/test_voiceline_core.py` (a real core, `meta.late` on the slow turn only) and `tests/test_home.py`.
