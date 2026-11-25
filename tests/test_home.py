@@ -159,8 +159,9 @@ def test_the_latest_pass_shows_what_it_thought_even_when_nothing_was_sent(settin
     assert [t["topic"] for t in shown].count("trip") == 1
 
 
-def test_late_answers_are_only_the_dashboards_own_answers_after_the_holding_line(settings):
-    from waggle.core import outbox
+def test_late_answers_are_late_dashboard_answers_and_job_results_in_the_owners_chat(settings, monkeypatch):
+    from waggle.core import outbox, voiceline
+    monkeypatch.setattr(voiceline, "owner_chat", lambda: "telegram:4242")
     meta = {"kind": "reply", "platform": "telegram", "address": "4242"}
     now = time.time()
     outbox.enqueue("text", "the long answer", chat="telegram:4242", idem_key="voice:t1", origin="voice",
@@ -170,13 +171,20 @@ def test_late_answers_are_only_the_dashboards_own_answers_after_the_holding_line
     outbox.enqueue("text", "from the phone", chat="telegram:4242", idem_key="voice:t3", origin="voice",
                    meta={**meta, "via": "voice line", "late": True})
     outbox.enqueue("text", "a brief", chat="telegram:4242", origin="outreach", meta={"late": True, "via": "dashboard"})
+    outbox.enqueue("text", "Background job done: the table", chat="telegram:4242", idem_key="chat.bg:k1",
+                   origin="background", meta={"kind": "background", "job_key": "k1", "ok": True})
+    outbox.enqueue("text", "someone else's job", chat="telegram:999", idem_key="chat.bg:k2", origin="background",
+                   meta={"kind": "background", "job_key": "k2", "ok": True})
     late = home.late_answers(time.time())
-    assert [a["text"] for a in late] == ["the long answer"] and late[0]["time"] >= now - 1 and late[0]["id"]
+    assert [(a["kind"], a["text"]) for a in late] == [("answer", "the long answer"),
+                                                       ("job", "Background job done: the table")]
+    assert late[0]["time"] >= now - 1 and late[0]["id"]
     assert home.late_answers(time.time() + 7200) == []  # older than the window
-    assert home.state()["late"][0]["text"] == "the long answer"
+    assert [a["text"] for a in home.state()["late"]][-1] == "Background job done: the table"
 
 
 def test_the_page_shows_late_answers_and_keeps_waiting_after_the_holding_line():
     page = home.page()
-    assert 'r.status==="working")waitFor(r.asked_at)' in page and "showLate(d.late)" in page
+    assert 'r.status==="working")waitFor(r.asked_at)' in page and "showLate(d.late,d.time)" in page
+    assert "a.time<opened-1" in page  # only what arrived after the page was opened
     assert 'r.headers.get("X-Waggle-Status")==="working"' in page

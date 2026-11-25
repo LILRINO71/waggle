@@ -2,9 +2,9 @@
 
   GET  /            this page (the older engine-room page moved to /ops)
   GET  /api/home    one JSON snapshot: what is on Waggle's mind, what it told the owner today, what it is working on,
-                    the last night shift, reminders, usage, and "late": answers to this page's own questions that
-                    came after the holding line (the voice line answers "working on it" after 25 s and queues the
-                    real answer later; the page shows it in the chat when it appears here)
+                    the last night shift, reminders, usage, and "late": what reached the owner's chat after the
+                    fact (answers to this page's questions that came after the voice line's 25 s holding line, and
+                    background job results); the page shows each one in its chat if it is newer than the page
   POST /api/say     {"text"}  one typed turn for the owner's chat through the core's voice line (reply as JSON,
                     with "status" "done" or "working" and "asked_at", this machine's clock when it was sent)
   POST /api/talk    audio/*   one spoken turn; the answer comes back as WAV with the spoken words in a header
@@ -110,13 +110,26 @@ def _told(now):
 
 
 def late_answers(now, window_s=3600, limit=10):
-    """Answers this page asked for that came after the holding line, oldest first, in full: the voice line's
-    Telegram copies marked late and sent for the dashboard client (waggle/core/voiceline.py queue_copy)."""
-    from .core import outbox
-    rows = [r for r in outbox.list(limit=80)
-            if r.get("origin") == "voice" and (r.get("meta") or {}).get("via") == "dashboard"
-            and (r.get("meta") or {}).get("late") and (r.get("created") or 0) >= now - window_s]
-    return [{"id": r["id"], "time": r["created"], "text": r.get("body") or ""} for r in rows[:limit]][::-1]
+    """What reached the owner's chat after the fact, oldest first, in full, for the page's own chat (which is the
+    same conversation as Telegram): answers to this page's questions that came after the holding line (the voice
+    line's copies marked late, waggle/core/voiceline.py queue_copy), kind "answer", and background job results
+    in the owner's chat (waggle/chat_jobs.py run_background), kind "job". The page shows only what is newer than
+    the moment it was opened."""
+    from .core import outbox, voiceline
+    owner = voiceline.owner_chat()
+    out = []
+    for r in outbox.list(limit=80):
+        meta = r.get("meta") or {}
+        if (r.get("created") or 0) < now - window_s or r.get("state") == "failed":
+            continue
+        if r.get("origin") == "voice" and meta.get("via") == "dashboard" and meta.get("late"):
+            kind = "answer"
+        elif r.get("origin") == "background" and owner and r.get("chat") == owner:
+            kind = "job"
+        else:
+            continue
+        out.append({"id": r["id"], "time": r["created"], "kind": kind, "text": r.get("body") or ""})
+    return out[:limit][::-1]
 
 
 def _night():
@@ -319,12 +332,15 @@ const clock=t=>t?new Date(t*1000).toLocaleTimeString([], {hour:"numeric",minute:
 const day=t=>{const d=new Date(t*1000),n=new Date();return d.toDateString()===n.toDateString()?clock(t):d.toLocaleDateString([], {weekday:"short"})+" "+clock(t)};
 const post=(path,body,type)=>fetch(path,{method:"POST",headers:{"X-Waggle-Token":TOKEN,"Content-Type":type||"application/json"},body:type?body:JSON.stringify(body)});
 let mood="idle",level=0,busy=false;
-/* answers that come after the holding line: the ask times still waiting, and the late answers already shown */
-const waiting=[],shown=new Set();
+/* what reaches the chat after the fact (answers after the holding line, background job results): shown when newer
+   than the moment the page opened; "waiting" holds the ask times of questions answered with the holding line */
+const waiting=[],shown=new Set();let opened=null;
 function rest(){waiting.length?setMood("thinking","Still working on it… the answer will show up here."):setMood("idle")}
 function waitFor(t){if(t){waiting.push(+t);waiting.sort((a,b)=>a-b)}}
-function showLate(list){for(const a of list||[]){if(shown.has(a.id))continue;const i=waiting.findIndex(t=>a.time>=t-1);if(i<0)continue;
- shown.add(a.id);waiting.splice(i,1);bubble("w",a.text)}if(!busy&&mood==="thinking")rest()}
+function showLate(list,now){if(opened===null)opened=now||Date.now()/1000;
+ for(const a of list||[]){if(shown.has(a.id)||a.time<opened-1)continue;shown.add(a.id);
+  if(a.kind==="answer"){const i=waiting.findIndex(t=>a.time>=t-1);if(i>=0)waiting.splice(i,1)}bubble("w",a.text)}
+ if(!busy&&mood==="thinking")rest()}
 function setMood(m,label){mood=m;$("mood").textContent=label||{idle:"Here when you need me.",listening:"Listening…",thinking:"Thinking…",speaking:"Speaking…"}[m]}
 function bubble(kind,text){const d=document.createElement("div");d.className="b "+kind;d.textContent=text;$("log").appendChild(d);$("log").scrollTop=1e9;return d}
 
@@ -404,6 +420,6 @@ function render(d){
  const u=d.usage||{};const bar=(l,p)=>p==null?"":(p=Math.round(p),`<div class="small">${l} <b>${p}%</b></div><div class="bar"><i style="width:${Math.min(100,p)}%"></i></div>`);
  $("usage").innerHTML=(bar("5-hour window",u.five_hour_pct)+bar("This week",u.week_pct)+(u.week_resets?`<div class="dim small">Week resets ${day(u.week_resets)}</div>`:""))||`<div class="empty small">No reading yet.</div>`;
 }
-async function refresh(){try{const d=await (await fetch("/api/home")).json();showLate(d.late);render(d)}catch(e){}}
+async function refresh(){try{const d=await (await fetch("/api/home")).json();showLate(d.late,d.time);render(d)}catch(e){}}
 refresh();setInterval(refresh,5000);
 </script></body></html>"""
