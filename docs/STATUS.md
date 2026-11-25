@@ -361,3 +361,27 @@ Telegram, so it looked stuck. Now the voice line marks those copies `meta.late` 
 typed on Home got "I'm on it", and the job's result appeared in the Home chat about 25 s later with no reload.
 - Not driven live: a held answer (two test questions both finished under 25 s); covered by
   `tests/test_voiceline_core.py` (a real core, `meta.late` on the slow turn only) and `tests/test_home.py`.
+
+**Long real-use tests and the fixes they forced (2026-11-25, live ad5c9c3).** The owner asked to "test this project to
+hell and back" with real projects and to start the main test ("make money"). Two harnesses: `tools/scenarios.py`
+(11 long scenarios, Sonnet judge, live voice line, canary-marked) and a 5-project workflow where Sonnet drivers played
+the owner through `tools/say.py` and checked every claim against the real files, databases and GitHub.
+- Real results: a stoichiometry app built and published by a background job; the money objective (9b763f92) did real
+  research (16 platforms, 41 terms pages), built a DXF plate generator with 32 tests and a listing draft, and gave an
+  honest estimate (most likely $0, best case $15-45 in month one); a college tracker note with sourced deadlines and a
+  reminder that fired; PR #12 of ftc-simbench-pro refreshed on branch refresh/pr12-2026-11-25 (PR untouched); a full
+  school day with every turn under 11 s.
+- Fixed (each with tests): live job progress (`waggle/progress.py`, shown by background_status and objective_status),
+  step checks that find files in the agent work folder (`objectives.resolve_named`), the chat prompt naming the real
+  vault, own and work folders (stray writes to the retired ~/WaggleVault, a home-folder `find` that cost 100 s),
+  guard false asks (sed scripts parsed instead of pattern-matched, `ForEach-Object Name`, prose mentioning Waggle no
+  longer counts as an import), a leading "deny CODE" in a longer message counts, approvals stay out of unrelated
+  answers, background reports start with done / not done, unseen news after the answer, `mail_recent`, objective
+  progress lines for the evening note, calendar tool in local time, Home search Enter opens a note, test turns hidden
+  from Home's Transmissions.
+- Also new: the HUD Home with a Memory graph, the GitHub skill scout (daily 03:20; today's judge allowance was spent on
+  dry runs, so the first real installs come tonight), and the vault in PARA folders (`tools/vault_para.py`, Waggle's
+  folder is now `01 - Areas/Waggle`; undo manifest in WaggleBackups\vault-para-20261125-143805).
+- Open: the money objective's step 3 waits on approval 7AP9 (a false ask the guard no longer makes; the owner decides);
+  the chat under-reports reminder delivery (no tool reads the outbox state); an "approve CODE" inside a longer message
+  still grants nothing by design; the money plan needs a parent account for any payout.
