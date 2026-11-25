@@ -19,6 +19,19 @@ phone, clock, memory) and first-party Claude the brain and worker; no new work o
 self-improvement loop. The owner's final test for "built": they ask it to make money by itself (they set up
 payments); that runs through the night-shift worker under the money goal's rules ($0, lawful, honest).
 
+**2026-11-25, long real-use tests and the money test.** `tools/scenarios.py` runs 11 long scenarios
+(`bench/scenarios.json`) through the live voice line with a Sonnet judge (`[waggle-test]` mark = canary origin;
+`tools/say.py` sends one turn). The scenarios share one live chat, so a turn may rightly know earlier test turns. Real
+projects driven through Waggle: the money objective 9b763f92 (research in `~/Claude/waggle-earn`, a DXF plate
+generator in `~/plate-generator`, honest $0-45 estimate), a stoichiometry app (published by job 7543). Faults found and
+fixed: the step check looked only in the vault (`objectives.resolve_named`), job status had no progress
+(`waggle/progress.py`: agents stream their steps; background_status / objective_status show minutes, last steps,
+files), stray writes to the retired `~/WaggleVault` (the chat prompt now names the real folders), read-only guard
+asks, unseen news before the answer, no mail tool (`mail_recent`), objective progress lines for the evening note.
+New the same day: the HUD Home with a Memory graph (`waggle/home_page.html`, `/api/graph`), the GitHub skill scout
+(`waggle/skillscout.py`, daily 03:20, installs vetted instruction-only skills to `~/.hermes/skills/found/`), and
+`tools/vault_para.py` (the vault's PARA layout, reversible with `--undo`; moves Waggle's folder to `01 - Areas/Waggle`).
+
 ## What is live
 
 The live checkout is `main`. Merging to `main` is a deploy: scheduled scripts and the tool hook run straight
