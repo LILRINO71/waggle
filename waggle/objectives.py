@@ -986,6 +986,12 @@ def resume_after_approval(session, granted=None):
     return oid
 
 
+# What the owner hears and when, so "how will I know it's working?" has a true answer (2026-11-25 scenarios)
+REPORTING = ("Each finished step goes into that evening's note (one line: step N of M done, what is left). A step "
+             "that needs the owner's OK waits with an approval code shown in chat. When every step is done, the "
+             "final report goes to the owner's phone. objective_status shows live progress any time.")
+
+
 def status(key=None):
     con = _db()
     if key:
@@ -1000,6 +1006,7 @@ def status(key=None):
         obj["log"] = [dict(r) for r in con.execute("SELECT time, kind, text FROM log WHERE objective_id=? "
                                                    "ORDER BY time DESC LIMIT 12", (oid,))]
         con.close()
+        obj["reporting"] = REPORTING
         from . import progress
         for st in obj["steps"]:  # a running step: what its agent is doing now and the files it wrote so far
             if st["status"] == "running":
