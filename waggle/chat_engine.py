@@ -294,7 +294,10 @@ def approvals_now(chat):
     open_ = policy.pending(chat)
     if not open_:
         return ""
-    return "Approvals still open for this chat: " + "; ".join(f"{a['code']} ({a['reason']})" for a in open_)
+    # 2026-11-25: a college question got two approval codes for other work at the top of its answer
+    return ("Approvals still open for this chat (the user was already asked; bring one up only when their message is "
+            "about it or it blocks what they ask now, never as an opener to an answer about something else): "
+            + "; ".join(f"{a['code']} ({a['reason']})" for a in open_))
 
 
 # ---- approvals ----------------------------------------------------------------------------------------------

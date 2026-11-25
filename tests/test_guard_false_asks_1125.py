@@ -26,6 +26,24 @@ def test_calling_a_method_through_foreach_still_asks():
         assert guard.shell_hit(f'Get-ChildItem "{HERE}/waggle" -Recurse | {tail}', cwd="C:/x", shell="powershell")
 
 
+def test_an_in_place_sed_on_a_vault_note_is_not_a_command_runner():
+    # the college tracker: a substitution whose text has words like "schools section" was read as s///e
+    cmd = ("sed -i 's/^Dates below are the usual yearly windows.*$/The Target schools section was checked online. "
+           "Everything below it is from general knowledge: confirm it./' "
+           "\"/c/Users/x/PersonalIntelligenceVault/12 - Waggle/Goals/College Application Tracker.md\"")
+    assert guard.shell_hit(cmd, cwd="C:/x", shell="bash") is None
+    for ok in (["-i", "s/a/b/g", "f.md"], ["-i.bak", "-e", "1i # title", "f.md"], ["s/a/b/w out.txt", "f"],
+               ["--in-place=.orig", "/x/d", "f"]):
+        assert not guard._runs_commands("sed", ok), ok
+
+
+def test_sed_that_runs_commands_still_counts():
+    for bad in (["s/a/b/e", "f"], ["1e rm -rf /", "f"], ["-e", "s/x/y/;e date", "f"], ["-f", "prog.sed", "f"],
+                ["--file=prog.sed", "f"], ["-n", "s/x/y/ep", "f"]):
+        assert guard._runs_commands("sed", bad), bad
+    assert guard.shell_hit(f"sed -i 's/a/b/e' \"{HERE}/waggle/policy.py\"", cwd="C:/x", shell="bash")
+
+
 def test_wildcards_still_count_for_writers():
     assert guard.shell_hit("rm -rf ***/", cwd=HERE, shell="bash")
     assert guard.shell_hit("sed -i s/a/b/ ***/policy.py", cwd=HERE, shell="bash")

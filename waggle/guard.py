@@ -788,9 +788,10 @@ _SED_LONG = {"--quiet", "--silent", "--regexp-extended", "--posix", "--debug", "
              "--null-data", "--sandbox"}
 
 
-def _sed_script_ok(sc):
+def _sed_script_ok(sc, writes=False):
     """A sed script that only prints: addresses, then p P l = n N d D g G h H x z q Q b t T : { } # and s/y with
-    printing-only flags. w W e r R a i c, s///w and s///e (and anything not understood) are not."""
+    printing-only flags. w W e r R a i c, s///w and s///e (and anything not understood) are not.
+    writes=True asks only "runs no command": a i c r R w W and s///w are then fine, e and s///e never are."""
     i, n = 0, len(sc)
 
     def ws(i):
@@ -850,6 +851,10 @@ def _sed_script_ok(sc):
             while i < n and sc[i] not in ";\n":
                 i += 1
             continue
+        if writes and c in "aicrRwW":  # text or a file name, to the end of the line
+            while i < n and sc[i] != "\n":
+                i += 1
+            continue
         if c in "sy":
             if i >= n:
                 return False
@@ -861,11 +866,59 @@ def _sed_script_ok(sc):
             flags = ""
             while i < n and sc[i].isalnum():
                 flags += sc[i]
+                if writes and sc[i] == "w":  # s///w FILE: the rest of the line is the file name
+                    break
                 i += 1
+            if writes and flags.endswith("w"):
+                while i < n and sc[i] != "\n":
+                    i += 1
+                flags = flags[:-1]
             if c == "s" and set(flags) - set("gpiImM0123456789"):
                 return False
             continue
         return False
+
+
+def _sed_scripts(rest):
+    """The scripts a sed command runs, in place (-i) or not; None when one comes from a file (-f) or the
+    arguments are not understood."""
+    scripts, i, explicit = [], 0, False
+    while i < len(rest):
+        t = rest[i]
+        if t in ("-e", "--expression"):
+            scripts.append(rest[i + 1] if i + 1 < len(rest) else "")
+            explicit, i = True, i + 2
+            continue
+        if t.startswith("--expression="):
+            scripts.append(t.split("=", 1)[1])
+            explicit, i = True, i + 1
+            continue
+        if t.startswith("--"):
+            if t == "--in-place" or t.startswith("--in-place=") or t in _SED_LONG or t.startswith("--line-length"):
+                i += 1
+                continue
+            return None  # --file and anything unknown
+        if t.startswith("-") and len(t) > 1:
+            flags, step = t[1:], 1
+            for k, ch in enumerate(flags):
+                if ch in "nrEsuz":
+                    continue
+                if ch == "i":  # -i or -iSUFFIX: the rest of the token is the backup suffix
+                    break
+                if ch in "el":
+                    tail = flags[k + 1:]
+                    if ch == "e":
+                        scripts.append(tail or (rest[i + 1] if i + 1 < len(rest) else ""))
+                        explicit = True
+                    step = 1 if tail else 2
+                    break
+                return None  # -f (script file), unknown
+            i += step
+            continue
+        if not explicit and not scripts:
+            scripts.append(t)
+        i += 1
+    return scripts or None
 
 
 def _sed_read(rest):
@@ -981,9 +1034,9 @@ def _runs_commands(verb, rest):
     """sed's e command or s///e flag and awk's system() or | run commands the guard cannot see (built from the
     input), so they ask whatever they name."""
     text = " ".join(rest)
-    if verb in ("sed", "gsed"):
-        return bool(re.search(r"(^|[\s;{}0-9$/!])e(\s|;|$)", text) or re.search(r"\bs(\S).*?\1.*?\1[gpiImMw0-9]*e",
-                                                                                   text))
+    if verb in ("sed", "gsed"):  # parsed, not pattern-matched: "s/x/schools section/" ran nothing (2026-11-25)
+        scripts = _sed_scripts(rest)
+        return scripts is None or not all(_sed_script_ok(x, writes=True) for x in scripts)
     if verb in ("awk", "gawk", "mawk", "nawk"):
         p = _AWK_STRING.sub('""', text)
         return bool(re.search(r"\bsystem\s*\(", p) or "|" in p.replace("||", ""))
