@@ -48,6 +48,18 @@ work): use `python -m pytest -q -p no:cacheprovider` alone as the evidence until
 test runs or a preview server while a full run is going. New project the owner wants to build WITH Waggle: Land
 Planner (vault note `Projects/Land Planner`, folder `~/Claude/land-planner`, data tool `tools/menifee.py`).
 
+**2026-11-25 night, Fable 5.2 at high effort (live ab49c7d).** The owner set `chat_model` fable, `job_model` fable,
+`chat_effort` high, `job_effort` high (new settings; an Effort picker sits beside Brain and Jobs on Home; job model
+and effort also reach objective steps and `start_build`). Two faults only the live system showed, both fixed: the
+live pool hands every session one Settings object from the core's start, so a later choice was never seen
+(`follow_config=True` in `chat_engine.pool`), and `main_model` named the session's biggest user, not the model of
+the turn. To prove which model answered, read the session file under
+`~/.claude/projects/C--Users-hiheo--waggle-chat-home/` and the claude.exe command line, not the trace label alone.
+The first job on Fable high (8706, the Land Planner app) did all its work and then died at the 1800 s job limit in
+`chat_jobs.run_background` before it committed; it also stopped twice on guard false asks (a .bat edit read as "a
+secrets file", curl to 127.0.0.1 read as "sending data to a website"). Both are OPEN: give long builds as several
+smaller jobs until the limit and the false asks are dealt with. Never deploy while a job is running.
+
 ## What is live
 
 The live checkout is `main`. Merging to `main` is a deploy: scheduled scripts and the tool hook run straight
