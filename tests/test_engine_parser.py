@@ -163,3 +163,17 @@ def test_real_tool_turn_recorded_from_claude_code_2_1():
     assert p.steps == [{"tool": "Glob", "id": p.steps[0]["id"], "input": '{"pattern": "*.txt"}', "ok": True,
                         "denied": False, "result": "alpha.txt\nbeta.txt\ngamma.txt"}]
     assert p.error() is None and p.main_model() == "claude-haiku-5-5" and len(seen) == 5
+
+
+def test_the_model_of_a_turn_is_the_one_on_its_own_messages_not_the_sessions_biggest_user():
+    p = StreamParser()
+    said = {"type": "assistant", "session_id": "s1", "parent_tool_use_id": None,
+            "message": {"id": "m9", "role": "assistant", "model": "claude-fable-5-2",
+                        "content": [{"type": "text", "text": "three"}]}}
+    result = ev_result("s1", "three")
+    result["modelUsage"] = {"claude-sonnet-5-5": {"outputTokens": 9000}, "claude-fable-5-2": {"outputTokens": 40}}
+    assert feed_all(p, [ev_init("s1", "claude-fable-5-2"), said, result])
+    assert p.main_model() == "claude-fable-5-2"
+    synthetic = StreamParser()
+    feed_all(synthetic, [{**said, "message": {**said["message"], "model": "<synthetic>"}}, result])
+    assert synthetic.main_model() == "claude-sonnet-5-5"  # no real name on the message: the old rule

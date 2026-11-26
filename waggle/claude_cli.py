@@ -291,6 +291,7 @@ class StreamParser:
         self.result, self.session_id, self.first_text_at, self.rate_limit, self.model = None, "", None, None, ""
         self.garbage, self._buf, self._msg_id = 0, "", None
         self._open = False  # a text block is being streamed
+        self.turn_model = ""  # the model named on this turn's own assistant messages
 
     @property
     def text(self):
@@ -340,6 +341,8 @@ class StreamParser:
             self._stream_event(ev)
         elif t == "assistant":
             msg = ev.get("message") or {}
+            if isinstance(msg.get("model"), str) and msg["model"] and not msg["model"].startswith("<"):
+                self.turn_model = msg["model"]
             streamed = msg.get("id") is not None and msg.get("id") in self._streamed
             for block in msg.get("content") or []:
                 if not isinstance(block, dict):
@@ -424,6 +427,11 @@ class StreamParser:
         return None
 
     def main_model(self):
+        """The model that wrote this turn. The result's modelUsage counts the whole session, so after the owner
+        changes the model it kept naming the old one (live 2026-11-25: Fable answered, the record said Sonnet);
+        the turn's own assistant messages say who wrote them."""
+        if self.turn_model:
+            return self.turn_model
         per = (self.result or {}).get("modelUsage") or {}
         if isinstance(per, dict) and per:
             return max(per, key=lambda k: (per[k] or {}).get("outputTokens", 0))

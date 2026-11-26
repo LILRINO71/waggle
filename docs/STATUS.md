@@ -442,3 +442,9 @@ that a model or agent they name is used and remembered.
   builds the session the way the core does. Plain pytest alone: 4,184 passed, 6 skipped, 4 xfailed in 616 s.
   (So the earlier line "a running chat process moves to the new model on the next message" was true only in a
   unit test until this fix.)
+- And the label: the live session's own record showed Fable writing the answers while Waggle's trace and the Home
+  page said Sonnet. `StreamParser.main_model` took the model with the most output in the result's `modelUsage`,
+  which counts the whole session. It now takes the model named on the turn's own assistant messages. Plain pytest
+  alone: 4,185 passed, 6 skipped, 4 xfailed in 623 s. Proven live before this fix by the session file
+  (`~/.claude/projects/C--Users-hiheo--waggle-chat-home/<session>.jsonl`): fable, sonnet, fable as the setting was
+  flipped, and the chat process ran `--model claude-fable-5-2 --effort high`.
