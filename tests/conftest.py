@@ -1,3 +1,11 @@
+import os
+import tempfile
+
+# Before any waggle module is imported: its default home is a throwaway folder for the whole run, so nothing pytest
+# collects or imports (a manual script named on the command line, module-level code) can write the real ~/.waggle.
+# 2026-11-26 tests/real_voice_check.py, imported at collection, overwrote the live config.json.
+os.environ["WAGGLE_HOME"] = tempfile.mkdtemp(prefix="waggle-pytest-home-")
+
 import pytest
 
 import waggle.config as config

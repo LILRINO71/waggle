@@ -39,6 +39,9 @@ Read this first, then `overnight/REBUILD_PLAN.md` (the governing plan) and `over
   yes" at 15:13). That contradicts full trust; decide with the owner whether proposals merge themselves after a green
   suite. Speed (from session "Wago performance"): tool turns median 14.6 s vs 2.6 s without tools, about 5.6 s per
   tool step; 12 of 47 tool turns begin with a ToolSearch for Waggle's own tools; ttfw_s equals total_s on every row.
+- Land Planner session (reported to me): no Waggle code touched. v2.1.1 and v2.2.0 are on origin/main of
+  LILRINO71/land-planner (113d849, e4b9641, 0d6b7ef); its handoff is the vault note `Projects/Land Planner.md`. The
+  explainer video at `Claude\land-planner-video` is PRIVATE by the owner's instruction and local only: never push it.
 
 **2026-11-26, the "What Is Waggle?" presentation (session "Waggle story"; no Waggle code changed).** For the owner's
 dad, who works in IT: an 11-scene animated page on what Waggle is, why, how one voice note travels through it, the

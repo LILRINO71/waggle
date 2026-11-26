@@ -48,6 +48,7 @@ def world(tmp_path, monkeypatch):
     (repo / "notes.txt").write_text("n", encoding="utf-8")
     monkeypatch.setenv("USERPROFILE", str(user))
     monkeypatch.setenv("HOME", str(user))
+    monkeypatch.delenv("WAGGLE_HOME", raising=False)  # the hook's untrusted audit falls back to <home>/.waggle here
     gdir = user / ".waggle-guard"
     monkeypatch.setattr(guard, "PACKAGE_ROOT", repo)
     monkeypatch.setattr(guard, "USER_HOME", user)

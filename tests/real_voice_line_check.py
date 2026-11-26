@@ -17,6 +17,10 @@ import time
 import urllib.parse
 from pathlib import Path
 
+if __name__ != "__main__":  # imported by pytest (named on its command line): never run against a real home.
+    import pytest  # 2026-11-26 it read "-p" from pytest's argv as the home and overwrote ~/.waggle/config.json
+    pytest.skip("a manual script: run it with python, not pytest", allow_module_level=True)
+
 repo, home, out_dir = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
 texts = sys.argv[4:] or ["Remind me to stand up in ten minutes."]
 os.environ["WAGGLE_HOME"] = str(home)
