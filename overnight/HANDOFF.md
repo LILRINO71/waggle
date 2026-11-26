@@ -2,6 +2,44 @@
 
 Read this first, then `overnight/REBUILD_PLAN.md` (the governing plan) and `overnight/USER_TESTS.md`.
 
+**2026-11-25/26, session "real-use tests + money test" (c7b3a588): all live (last deploy 2df46c8), nothing unpushed.**
+- Built: `tools/scenarios.py` + `bench/scenarios.json` (11 long scenarios, Sonnet judge; all share one live chat),
+  `tools/say.py`, live job progress (`waggle/progress.py`), HUD Home + Memory graph, skill scout (03:20 daily),
+  `mail_recent`, vault PARA move (`tools/vault_para.py`, undo manifest in WaggleBackups\vault-para-20261125-143805).
+- Fixed from 5 driven real projects: verifier paths (`objectives.resolve_named`, folder requirements, retries count
+  from `steps.first_started`), real vault named in the chat prompt, guard false asks (sed parsed, import statements
+  only), leading "deny CODE", calendar in local time, Phone Link/Messenger/Signal sensitive, plain job reports.
+- Money objective 9b763f92 DONE: $4.99 Roblox plugin "Easing Curve Preview" + listing + REPORT.md, nothing published;
+  backed up to PRIVATE repos LILRINO71/waggle-earn (a773c81, devtools/ left out) and LILRINO71/plate-generator
+  (87d9eed). Owner still has to: test it in Studio, parent accepts Roblox seller terms + Stripe, approve publishing.
+- Open: chat under-reports reminder delivery (no tool reads outbox state); scenario re-run 27/31 (remaining fails
+  are a dropped detail and stale money expectations). No WIP branch: nothing unfinished.
+
+**2026-11-26 afternoon, session "Waggle permission prompts": four owner complaints fixed, one incident (all live).**
+- *Home page "I did not catch any words"* (6a95580): the page token is new on every dashboard start, so a page left open
+  through a deploy got 403 on every recording and send. The page now re-reads the token from its own address on a 403
+  and retries once (`freshToken` in `waggle/home_page.html`). Proven in the real page across a dashboard restart.
+- *The conversation never ended* (c8c3423): "All right, thank you" ran a turn, then "Yep", then another. 
+  `voice_intent.closing_phrase` makes a whole-utterance sign-off "done" (rule, before any model): the PC voice ends
+  the conversation with the closing tone, no turn. "Thanks, and remind me at five" is still a request; a bare "yep"
+  after a question is an answer. Bench label `done` (d03, d14 relabelled; c01-c04 added).
+- *"On it, sir, starting now. On it, sir..."* (c8c3423): after the ack line, `trim_spoken_ack` cuts a repeat off the
+  SPOKEN part before it is split and capped; the voice and chat prompts say never open with "On it" and never end
+  with "anything else?".
+- *Incident, my fault:* naming `tests/real_voice_check.py` on a pytest command line imported it; its top-level code
+  took `-p` (from `-p no:cacheprovider`) as the home and, with `config.HOME` already the real one at collection time,
+  overwrote `~/.waggle/config.json` at 15:19 (vault `-p\vault`, Haiku, quiet hours off, job effort medium). Restored
+  from `config.json.bak-settings-20261126-143119-2` (broken copy kept as `config.json.bak-broken-20261126-1519`);
+  protected-key hash back to 5bbc6605d155. Guard: the three `tests/real_*.py` skip when imported, and
+  `tests/conftest.py` sets a throwaway `WAGGLE_HOME` before any waggle import. Two stray empty folders
+  `waggle\-p` and `waggle-dev\-p` are left for the owner to delete (Claude Code blocked the rm).
+- Proposals YY3X (sign-offs) and 37MM (harmless-command asks) closed as dropped: done by hand.
+- Settings now (the owner's own 14:31 choice): chat Sonnet medium, jobs Sonnet high.
+- OPEN: proposals (`waggle/proposals.py`) still wait for the owner's yes before a merge, and the chat says so ("reply
+  yes" at 15:13). That contradicts full trust; decide with the owner whether proposals merge themselves after a green
+  suite. Speed (from session "Wago performance"): tool turns median 14.6 s vs 2.6 s without tools, about 5.6 s per
+  tool step; 12 of 47 tool turns begin with a ToolSearch for Waggle's own tools; ttfw_s equals total_s on every row.
+
 **2026-11-26, FULL TRUST (live bde0a7f). Do not bring the asks back.** The owner: "It has permission to do anything,
 everything. Stop asking me." `policy.full_trust` turns every ASK into ALLOW (Claude hook and Hermes's
 `security.check_tool_call`); money, their one limit, is a DENY ("never spends money"), never a question; only the
