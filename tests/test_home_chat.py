@@ -5,7 +5,7 @@ import threading
 import time
 
 import pytest
-from engine_fakes import FakeClaude, ev_text
+from engine_fakes import FakeClaude, ev_result, ev_text
 
 from waggle import chat_jobs, chat_store, comfort, config, home, liveturn, traces
 from waggle.chat_session import ChatSession
@@ -87,17 +87,18 @@ def test_stop_asks_the_core_and_says_whether_a_turn_was_running():
     assert home.stop(post=reply(503, error="core down"))["ok"] is False
 
 
-def test_interrupt_ends_the_running_turn_and_the_next_message_resumes(settings):
+def test_interrupt_ends_the_running_turn_and_the_next_message_starts_a_fresh_session(settings):
     started = threading.Event()
 
     def script(proc, text):
-        if text == "long job":
+        if text.endswith("long job"):
             proc.emit(ev_text(proc.session_id, "I started to")[:3])
             started.set()  # and then it keeps working: no result arrives
         else:
             proc.answer("back again")
     fake = FakeClaude(script)
-    s = ChatSession("telegram:1", settings=settings, popen=fake, claude="claude")
+    s = ChatSession("telegram:1", settings=settings, popen=fake, claude="claude",
+                    transcript=lambda chat: "User: long job\nWaggle: I started to\n\n(Stopped, as you asked.)")
     assert s.interrupt() is False  # nothing is running
     out = {}
     t = threading.Thread(target=lambda: out.update(res=s.turn("long job", timeout=20)))
@@ -109,7 +110,23 @@ def test_interrupt_ends_the_running_turn_and_the_next_message_resumes(settings):
     res = out["res"]
     assert res.kind == "stopped" and not res.ok and not res.retried and len(fake.procs) == 1
     again = s.turn("hello")
-    assert again.ok and again.text == "back again" and again.resumed  # the conversation is kept
+    # never resumed: a session cut off mid-answer came back one message out of step on the real Claude (2026-11-25)
+    assert again.ok and again.text == "back again" and again.fresh_session and not again.resumed
+    assert "--resume" not in fake.procs[1].cmd and fake.procs[1].session_id != fake.procs[0].session_id
+    assert "<earlier_conversation>" in fake.procs[1].inputs[0] and "Stopped" in fake.procs[1].inputs[0]  # kept
+
+
+def test_an_answer_left_over_from_an_earlier_message_is_never_read_as_this_ones(settings):
+    def script(proc, text):
+        proc.answer(f"answer to {text}")
+        if text == "one":
+            proc.emit(ev_result(proc.session_id, "late leftover"))  # a second result nobody is waiting for
+    fake = FakeClaude(script)
+    s = ChatSession("telegram:1", settings=settings, popen=fake, claude="claude")
+    assert s.turn("one").text == "answer to one"
+    res = s.turn("two")
+    assert res.ok and res.text == "answer to two"  # not "late leftover", and not one message late from here on
+    assert s.turn("three").text == "answer to three"
 
 
 def test_the_core_stops_the_owner_chat_only_when_its_turn_runs(settings, monkeypatch):

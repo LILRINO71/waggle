@@ -412,3 +412,21 @@ that a model or agent they name is used and remembered.
   until changed. A running chat process moves to the new model on the next message and keeps the conversation
   (`ChatSession._follow_model`). `background_task` takes `model` for a job the owner named a model for; the chat
   prompt says a named model or agent is followed exactly and never swapped.
+- Found by the first live Stop (2026-11-25 18:36): a session cut off mid-answer and then resumed came back out of
+  step on the real Claude: the next message got an empty result, and the message after it received the answer to
+  the one before. Fixed the same evening: after a Stop the next message starts a fresh session seeded with the
+  transcript (never `--resume`), and every turn drops output left over from before its message was sent
+  (`ChatSession._drop_stale_output`, event `chat_stale_output_dropped`), so one message can never read another's
+  answer. Tests: `tests/test_home_chat.py` (16 + the two for this).
+- Evidence: plain `python -m pytest -q -p no:cacheprovider`, one process, nothing else running: 4,181 passed,
+  6 skipped, 4 xfailed in 611 s. Live after the deploy: typed test turn answered through the page with its step
+  recorded ("PowerShell: git ... log --oneline -1"), a real recording through `/api/hear` in 0.4 s ("Switch to the
+  Robotics Project."), Stop cut a long answer mid-sentence, Memory -> Command by the tab.
+- OPEN, older than this change: `python -m waggle.proposals suite` reports 41 failures that plain pytest does not.
+  Its runner sets `WAGGLE_ORIGIN=test` for the child, and tests such as
+  `test_agent_stack.py::test_traces_feedback_and_recall` then record their turns as test turns, which recall leaves
+  out. The same test fails the same way on 2df46c8 (the commit before this work). Until that is fixed the code
+  proposals' full-suite gate cannot pass; use plain pytest as the evidence.
+- Not driven with a real voice at the real microphone: the page's piece-by-piece recording was driven in a browser
+  with a generated tone and a fake recogniser, and the live recogniser with a recorded sentence. The owner's first
+  real dictation is the proof.

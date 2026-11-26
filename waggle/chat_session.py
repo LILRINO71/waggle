@@ -35,7 +35,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import chat_store, claude_cli
+from . import chat_store, claude_cli, events
 from .config import Settings, data_path
 from .guard import turn_state_path
 
@@ -805,6 +805,20 @@ class ChatSession:
         err = parser.error()
         return bool(err and "no conversation found" in err[1].lower())
 
+    def _drop_stale_output(self):
+        """Throw away anything the process wrote before this message was sent. One message, one answer: a result
+        left over from an earlier turn must never be read as the answer to this one (it made every answer one
+        message late). A process that has ended is noticed by the turn loop as before."""
+        dropped = 0
+        try:
+            while True:
+                self.proc.lines.get_nowait()
+                dropped += 1
+        except queue.Empty:
+            pass
+        if dropped:
+            events.log("chat_stale_output_dropped", chat=self.chat, lines=dropped)
+
     def _run(self, text, on_text, on_tool, t0, timeout, res):
         parser = claude_cli.StreamParser(on_text=on_text, on_tool=on_tool, clock=self.clock)
         msg = text
@@ -822,6 +836,7 @@ class ChatSession:
                 new.append(h)
         if self._seed:
             msg = f"<earlier_conversation>\n{self._seed}\n</earlier_conversation>\n\n{msg}"
+        self._drop_stale_output()
         try:
             self.proc.send(msg)
         except (OSError, ValueError) as e:
@@ -858,6 +873,12 @@ class ChatSession:
                 if self._stopped:
                     res.kind, res.error = "stopped", "stopped by the owner"
                     self.stop()
+                    # A session cut off in the middle of an answer comes back out of step when it is resumed
+                    # (measured live 2026-11-25: the next message got an empty result, and from then on every
+                    # answer belonged to the message before it). So the next message starts a fresh session,
+                    # seeded with the transcript, which holds the stopped turn too.
+                    chat_store.set_session(self.chat, "", turns=0)
+                    forget_sent(self.chat)
                     return parser
                 tail = self.proc.last_words() if self.proc else ""
                 low = tail.lower()
