@@ -5,6 +5,7 @@
 2. A small set of actions always need the user's yes: messaging other people, deleting
    outside Waggle's own folders, money, and changing security settings.
 """
+import json
 import re
 
 INJECTION_PATTERNS = [
@@ -103,12 +104,40 @@ def check_tool_call(tool_name, args, turn=None):
     module would ask for is waived only in the owner's own turn when policy.decide, with the same owner-instruction
     rule as the Claude hook, allows the call."""
     directive = guard_directive(tool_name, args)
+    if directive and directive.get("action") == "approve" and _trusted(tool_name, args):
+        directive = None
     if directive:
         return directive
     directive = _check(tool_name, args)
-    if directive and directive.get("action") == "approve" and _owner_allows(tool_name, args, turn):
+    if directive and directive.get("action") == "approve" and (_owner_allows(tool_name, args, turn)
+                                                                or _trusted(tool_name, args)):
         return None
     return directive
+
+
+def _trusted(tool_name, args):
+    """Full trust (policy.full_trust, on by default): an approval this module would ask for is a go-ahead, except
+    money, which policy.decide refuses. Any error keeps the question."""
+    try:
+        from . import guard, policy
+        if not guard.full_trust_enabled():
+            return False
+        d = policy.decide(tool_name, args if isinstance(args, dict) else {})
+        if d.action == policy.ASK:  # a question full_trust keeps (what was heard): the policy did not say go
+            return False
+        if d.action == policy.DENY:
+            return False
+        name = (tool_name or "").lower()
+        blob = json.dumps(args, default=str) if isinstance(args, dict) else ""
+        if policy.MONEY_WORDS.search(name) or name in {"make_payment", "purchase"}:
+            return False
+        if name in {"computer_use"} and policy.MONEY_WORDS.search(blob):
+            return False
+        policy.audit(tool_name, args, policy.Decision(policy.ALLOW, "full trust: " + (d.reason or "allowed")),
+                     source="hermes")
+        return True
+    except Exception:
+        return False
 
 
 def _owner_allows(tool_name, args, turn):

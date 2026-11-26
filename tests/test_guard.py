@@ -677,6 +677,8 @@ def pkg(tmp_path):
         shutil.copy(REAL_ROOT / rel, dst / rel)
     home = tmp_path / "e2ehome"
     home.mkdir()
+    (home / ".waggle").mkdir()  # these test the ask path: full trust off (full trust: tests/test_full_trust.py)
+    (home / ".waggle" / "config.json").write_text(json.dumps({"full_trust": False}), encoding="utf-8")
     env = {**os.environ, "USERPROFILE": str(home), "HOME": str(home), "WAGGLE_HOME": str(home / ".waggle"),
            "PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1", "WAGGLE_GUARD_IN_TESTS": "1"}
     for k in ("HOMEDRIVE", "HOMEPATH", "WAGGLE_SESSION", "WAGGLE_AGENT"):

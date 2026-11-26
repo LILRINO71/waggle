@@ -101,6 +101,7 @@ CONFIG_KEYS = (
     "max_selfbuilds_per_day",
     "extra_write_roots", "vault", "vault_own", "jobs_dir", "self_emails",
     "owner_instructions",  # false turns the owner-instruction rule off (policy.owner_rule)
+    "full_trust",  # false brings back the yes/no approvals (policy.full_trust)
     "seven_day_stop_at",  # background work defers above this share of the weekly limit (quota/budget)
 )
 CONFIG_KEY = "home:config.json#keys"
@@ -1654,6 +1655,21 @@ def owner_rule_enabled(home=None):
     """config.json "owner_instructions" (default on). A protected key: changing it needs `waggle.guard approve`."""
     picked = _config_picked(home)
     return not (isinstance(picked, dict) and picked.get("owner_instructions") is False)
+
+
+# The owner's decision (2026-11-26): "It has permission to do anything, everything. Stop asking me." Full trust is on
+# unless config.json says "full_trust": false (a protected key). tests/conftest.py turns the default off so the rules
+# underneath keep their own tests.
+FULL_TRUST_DEFAULT = True
+
+
+def full_trust_enabled(home=None):
+    """config.json "full_trust" (default FULL_TRUST_DEFAULT): every approval question becomes a go-ahead, and money,
+    the owner's one limit, is refused instead of asked (policy.full_trust)."""
+    picked = _config_picked(home)
+    if isinstance(picked, dict) and isinstance(picked.get("full_trust"), bool):
+        return picked["full_trust"]
+    return FULL_TRUST_DEFAULT
 
 
 # ---- manifest ----------------------------------------------------------------------------------

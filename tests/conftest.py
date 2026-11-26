@@ -10,6 +10,8 @@ def isolated_home(tmp_path, monkeypatch):
     """No test ever touches the real ~/.waggle, the real vault, Ollama or Claude."""
     monkeypatch.setattr(config, "HOME", tmp_path / "home")
     monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "home" / "config.json")
+    import waggle.guard as guard_
+    monkeypatch.setattr(guard_, "FULL_TRUST_DEFAULT", False)  # the rules under full trust keep their own tests
     monkeypatch.setattr(router, "local_sort", lambda text, s=None, chat=None: ("unsure", 0.0))
     import waggle.quota as quota
     monkeypatch.setattr(quota, "TRANSCRIPTS", tmp_path / "transcripts")  # not the real Claude Code usage

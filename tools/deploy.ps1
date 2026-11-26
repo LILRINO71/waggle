@@ -28,7 +28,7 @@ $after = (& git rev-parse HEAD).Trim()
 Write-Output "main: $($before.Substring(0,7)) -> $($after.Substring(0,7))"
 $changed = @(& git diff --name-only $before $after)
 
-if ($changed | Where-Object { $_ -like "hermes_plugin/*" -or $_ -like "skills/*" -or $_ -eq "install.py" }) {
+if ($changed | Where-Object { $_ -like "hermes_plugin/*" -or $_ -like "skills/*" -or $_ -like "persona/*" -or $_ -eq "install.py" }) {
     Step "install the Hermes plug-in and Waggle's skills"
     Run python @("install.py")
 }

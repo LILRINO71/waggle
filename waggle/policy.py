@@ -559,11 +559,47 @@ def _guard_hit(name, base, args, cwd):
 
 def decide(tool_name, args=None, settings=None, cwd=None, turn=None):
     """Decision for one tool call (before approvals are consulted). turn: the running turn's state
-    (guard.read_turn_state); in the owner's own turn an ASK the owner's message covers becomes ALLOW (owner_rule)."""
+    (guard.read_turn_state); in the owner's own turn an ASK the owner's message covers becomes ALLOW (owner_rule).
+    Under full trust (the default) no ASK is left: full_trust() turns it into a go-ahead or, for money, a refusal."""
     d = _base_decide(tool_name, args, settings, cwd)
     if d.action == ASK and turn:
-        return owner_rule(tool_name, args if isinstance(args, dict) else {}, d, turn, settings, cwd) or d
+        d = owner_rule(tool_name, args if isinstance(args, dict) else {}, d, turn, settings, cwd) or d
+    if d.action == ASK:
+        return full_trust(tool_name, args, d)
     return d
+
+
+# The owner's one limit: never spend money. Words that mean a payment, a purchase or a paid plan.
+MONEY_WORDS = re.compile(r"payment|purchase|checkout|/cart\b|billing|invoice|refund|paypal|venmo|zelle|stripe|"
+                         r"coinbase|robinhood|kalshi|wallet|buy now|place order|pay now|submit order|credit card|"
+                         r"debit card|card number|\bcvv\b|\bcvc\b|routing number|\bbank\b|subscribe|upgrade plan|"
+                         r"(^|_)(buy|pay|trade|order|transfer)(_|$)", re.I)
+
+
+def full_trust(tool_name, args, d):
+    """The owner's decision (2026-11-26): "It has permission to do anything, everything. Stop asking me." An ASK
+    becomes ALLOW, except: money (their one limit, "DONT SPEND ANY MONEY") is refused outright, never asked; a "Did
+    you say...?" about words speech recognition was unsure of stays a question (they asked for that one); and an
+    unresolved $variable stays a retry note to the agent (it is never shown to the owner). Off switch: config.json
+    "full_trust": false (a protected key)."""
+    if d.kind in ("hearing", "unresolved"):
+        return d
+    try:
+        if not guard.full_trust_enabled():
+            return d
+    except Exception:
+        return d
+    name = (tool_name or "").lower()
+    base = name.split("__")[-1]
+    blob = json.dumps(args, default=str) if isinstance(args, dict) else str(args or "")
+    looks_money = (d.kind == "money" or bool(MONEY_WORDS.search(base))  # a paying tool, whatever the kind
+                   # a page or window about paying: its address, title or field (not the words of a message)
+                   or (d.kind in ("web", "screen") and bool(MONEY_WORDS.search(blob) or MONEY_WORDS.search(d.reason))))
+    if looks_money:
+        return Decision(DENY, f"{d.reason}: Waggle never spends money (the owner's one limit). Do the rest, and tell "
+                              f"the owner in one line what would cost money so they can do it themselves",
+                        kind="money")
+    return Decision(ALLOW, f"full trust (the owner's standing permission): {d.reason}", kind="trust")
 
 
 def _base_decide(tool_name, args=None, settings=None, cwd=None):

@@ -218,7 +218,7 @@ def test_the_offer_is_one_short_line(world):
     r = tf.top("control Spotify", 3, now=NOW)
     assert len(r["candidates"]) == 3
     line = tf.offer_line(r["candidates"][0])
-    assert line == "There's an MCP server for that: spotify-mcp (MIT, 3k stars). Install it?"
+    assert line == "There's an MCP server for that: spotify-mcp (MIT, 3k stars). Installing it."
     bad = dict(r["candidates"][0], installable=False, why_not="no installer")
     assert "can't install it by itself (no installer)" in tf.offer_line(bad)
 
@@ -236,7 +236,7 @@ def test_find_tool_returns_the_top_three_as_untrusted_data(world):
     text = call("find_tool", need="control Spotify")
     assert text.startswith('<untrusted source="toolfinder-catalogs"')
     data = json.loads(text.split("\n", 1)[1].rsplit("\n</untrusted>", 1)[0])
-    assert data["ok"] and len(data["candidates"]) == 3 and data["offer"].endswith("Install it?")
+    assert data["ok"] and len(data["candidates"]) == 3 and data["offer"].endswith("Installing it.")
     assert "owner then approves" in data["next"]
     assert {"id", "name", "kind", "license", "stars", "pushed", "install_command", "risks"} <= set(data["candidates"][0])
 
@@ -585,7 +585,7 @@ def test_the_smoke_check_really_talks_to_an_mcp_server(tmp_path):
 def test_the_chat_prompt_and_soul_say_find_an_existing_tool_first():
     from pathlib import Path
     for text in (chat_session.CHAT_SYSTEM, (Path(__file__).resolve().parent.parent / "persona" / "SOUL.md").read_text(encoding="utf-8")):
-        assert "find_tool" in text and "Install it?" in text and "yes" in text
+        assert "find_tool" in text and "install" in text.lower() and "Install it?" not in text  # full trust: no ask
     assert "file_proposal" in chat_session.CHAT_SYSTEM and "build" in chat_session.CHAT_SYSTEM.split("find_tool", 1)[1]
     assert "will build the missing tool automatically" not in (Path(__file__).resolve().parent.parent / "persona" / "SOUL.md").read_text(encoding="utf-8")
 

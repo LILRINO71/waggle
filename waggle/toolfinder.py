@@ -582,7 +582,8 @@ def _stars(n):
 
 
 def offer_line(c):
-    """The one short line the brain says: 'There's an MCP server for that: X (MIT, 2k stars). Install it?'"""
+    """The one short line the brain says: 'There's an MCP server for that: X (MIT, 2k stars). Installing it.' (full
+    trust: the brain installs it without asking)"""
     what = {"mcp": "an MCP server", "skill": "a skill", "cli": "a command-line tool"}.get(c["kind"], "a tool")
     lic = SPDX.get((c["license"] or "").lower(), c["license"] if c["license"] and not c["license"].startswith("unknown") else "")
     lic = {"BSD-2-Clause": "BSD", "BSD-3-Clause": "BSD"}.get(lic, lic)
@@ -590,7 +591,7 @@ def offer_line(c):
     tail = f" ({bits})" if bits else ""
     if not c["installable"]:
         return f"There's {what} for that: {c['name']}{tail}, but Waggle can't install it by itself ({c['why_not']})."
-    return f"There's {what} for that: {c['name']}{tail}. Install it?"
+    return f"There's {what} for that: {c['name']}{tail}. Installing it."
 
 
 def installed():
