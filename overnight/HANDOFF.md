@@ -32,6 +32,22 @@ New the same day: the HUD Home with a Memory graph (`waggle/home_page.html`, `/a
 (`waggle/skillscout.py`, daily 03:20, installs vetted instruction-only skills to `~/.hermes/skills/found/`), and
 `tools/vault_para.py` (the vault's PARA layout, reversible with `--undo`; moves Waggle's folder to `01 - Areas/Waggle`).
 
+**2026-11-25 evening, the Home chat (live d889498).** The owner talks to Waggle at the PC through the Home page and
+asked for what the Claude app does. Now: the mic (button, a click or hold on the core, or Space) writes the words
+into a "hearing" strip while they speak and then into the message box; nothing is sent until Enter ("Send as soon as
+I stop talking" is a switch, off). Text typed or checked there counts as the owner's own words (`checked=True`).
+History of every channel loads into the chat (`/api/history`), a Stop button ends a dictation, a spoken answer or the
+running turn (`ChatSession.interrupt`; the next message then starts a FRESH session, never a resume: a resumed
+stopped session answered one message late on the real Claude), the top bar with Command / Memory stays on both
+views, `waggle/liveturn.py` feeds an Activity panel and the chat with each tool step as it happens, and the owner
+chooses who answers and who does background jobs (`chat_model`, `job_model`: by chat through the settings tool or
+with the two pickers; kept until changed; `background_task` takes `model`). Evidence and what is still unproven:
+`docs/STATUS.md`, last section. Two things for the next session: (1) `python -m waggle.proposals suite` reports 41
+failures that plain pytest does not (its `WAGGLE_ORIGIN=test` makes tests record test-origin turns; older than this
+work): use `python -m pytest -q -p no:cacheprovider` alone as the evidence until it is fixed; (2) never run other
+test runs or a preview server while a full run is going. New project the owner wants to build WITH Waggle: Land
+Planner (vault note `Projects/Land Planner`, folder `~/Claude/land-planner`, data tool `tools/menifee.py`).
+
 ## What is live
 
 The live checkout is `main`. Merging to `main` is a deploy: scheduled scripts and the tool hook run straight
