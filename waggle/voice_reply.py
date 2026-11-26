@@ -42,7 +42,10 @@ FORMAT_NOTE = (
     "short voice message plus the written text, so write it in exactly this format, with nothing before it:\n"
     "Manner of the SPOKEN part: a composed British butler-assistant in the manner of JARVIS. Calm, precise, "
     "dry understatement, the result first, no filler, no enthusiasm, no exclamation marks. Address the user as "
-    "\"sir\" once, never more.\n"
+    "\"sir\" once, never more. When you use tools the owner has already heard \"On it, sir. Starting now.\", so never "
+    "open with \"On it\" or \"starting now\": say what is running or what happened. When the owner signs off "
+    "(\"that's it, thank you\", \"thanks\", \"bye\"), answer in two or three words and invite nothing more; never end "
+    "a reply with \"anything else?\" or \"I'm here if...\".\n"
     "SPOKEN: <one to three short sentences, at most 40 words, plain words, no lists, no markdown, no code, no file "
     "paths or links, numbers written the way you say them aloud (\"ten minutes\", not \"10 min\")>\n"
     "ANSWER:\n"
@@ -56,6 +59,31 @@ FORMAT_NOTE = (
 _MARK = r"[ \t*_#>]{0,6}"
 _SPOKEN = re.compile(r"(?im)^\s*" + _MARK + r"SPOKEN" + _MARK + r":[ \t*_]*")
 ACK_LINE = "On it, sir. Starting now."  # said at once when a spoken request starts using tools (the PC voice)
+# What the ack line already said, at the start of the answer that follows it (2026-11-26: the owner heard "On it,
+# sir, starting now. On it, sir, ..." on every task).
+_ACK_REPEAT = re.compile(r"(?i)^\s*(?:(?:on it|working on it|doing that now|doing it now|starting now|starting it now|"
+                         r"right away|will do|very good|certainly|of course|understood)(?:,?\s*sir)?\s*[.,:;!\-–—]*\s*)+")
+
+
+def after_ack(sentence):
+    """One sentence of the answer with a repeat of the ack line taken off its start; "" when nothing else is left."""
+    rest = _ACK_REPEAT.sub("", sentence or "", count=1).strip()
+    if not rest or not re.search(r"[A-Za-z0-9]", rest):
+        return ""
+    return rest[0].upper() + rest[1:] if rest != sentence.strip() else rest
+
+
+def trim_spoken_ack(text):
+    """The reply with a repeat of the ack line taken off the start of its SPOKEN part (the rest is unchanged)."""
+    m = _spoken_at(text or "")
+    if not m:
+        return text
+    body = text[m.end():]
+    cut = _ACK_REPEAT.match(body)
+    if not cut or not cut.group(0).strip():
+        return text
+    rest = body[cut.end():]
+    return text[:m.end()] + (rest[:1].upper() + rest[1:])
 
 
 def _spoken_at(t):
@@ -373,6 +401,11 @@ class VoiceReply:
             except Exception:
                 pass
 
+    def _trim(self, text):
+        """After the ack line, the reply with a repeat of it ("On it, sir. Starting now.") taken off the start of its
+        SPOKEN part, before it is split into sentences and capped, so the repeat is neither said nor counted."""
+        return trim_spoken_ack(text) if self._acked else text
+
     def ack(self, line=ACK_LINE):
         """Say a short line at once when the model starts using its tools and nothing has been said yet, so the
         owner knows the request is being worked on. Once per reply; never counted as part of the spoken answer."""
@@ -389,6 +422,7 @@ class VoiceReply:
         """The reply so far: speech starts the moment the SPOKEN part is complete; sentences go to on_sentence as
         each one is finished."""
         try:
+            text = self._trim(text)
             if self.on_sentence:
                 self._emit(spoken_sentences(text))
             if self._started_text is None and spoken_complete(text):
@@ -401,7 +435,7 @@ class VoiceReply:
     def finish(self, final_text):
         """Split the final reply; start the speech if it has not started (or the final SPOKEN part differs).
         Returns (answer, spoken)."""
-        spoken_raw, self.answer, self.had_spoken = split_reply(final_text)
+        spoken_raw, self.answer, self.had_spoken = split_reply(self._trim(final_text))
         self.spoken = cap_spoken(spoken_raw) or fallback_spoken(self.answer)
         if self.spoken:
             self._start(self.spoken)

@@ -429,3 +429,28 @@ def test_recogniser_is_given_the_users_project_names(tmp_path):
     hint = stt.vocabulary(SimpleNamespace(vault=str(tmp_path)))
     assert "Waggle" in hint and "Kalshi Claude Desk" in hint and len(hint) <= 600
     assert stt.vocabulary(SimpleNamespace(vault=str(tmp_path / "missing"))).startswith("Names that may come up: Waggle")
+
+
+# ---- the ack line is not said twice (2026-11-26: "On it, sir, starting now. On it, sir, ...") ------------------
+
+def test_after_the_ack_line_a_repeat_of_it_is_not_said_again():
+    from waggle.voice_reply import ACK_LINE, VoiceReply, after_ack
+    assert after_ack("On it, sir. Starting now.") == "" and after_ack("On it, sir.") == ""
+    assert after_ack("On it, sir: the coder agent is building it.") == "The coder agent is building it."
+    assert after_ack("The coder is on it.") == "The coder is on it."
+    said = []
+    vr = VoiceReply(".", audio=False, on_sentence=said.append)
+    assert vr.ack()
+    vr.feed("SPOKEN: On it, sir. Starting now. The coder agent is building Land Planner as job 9. ")
+    vr.finish("SPOKEN: On it, sir. Starting now. The coder agent is building Land Planner as job 9. I will post the "
+              "link.\nANSWER:\nJob 9.")
+    assert said == [ACK_LINE, "The coder agent is building Land Planner as job 9.", "I will post the link."]
+    assert vr.spoken.startswith("The coder agent")
+
+
+def test_without_the_ack_line_the_answer_is_said_as_written():
+    from waggle.voice_reply import VoiceReply
+    said = []
+    vr = VoiceReply(".", audio=False, on_sentence=said.append)
+    vr.finish("SPOKEN: On it, sir. The reminder is set.\nANSWER:\nSet.")
+    assert said[0].startswith("On it, sir")

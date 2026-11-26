@@ -915,6 +915,10 @@ class PcVoice:
             if d.action == "stop":
                 self.stats["stops"] += 1
                 return "stop"
+            if d.action == "done":  # "That's it, thank you": the conversation is over, nothing more is said
+                self.stats["closed"] = self.stats.get("closed", 0) + 1
+                log.info("conversation ends: the owner closed it")
+                return "stop"
             self.stats["echoes" if d.action == "echo" else "ignored"] += 1
             if time.monotonic() >= deadline:
                 return None

@@ -1,6 +1,6 @@
 {"id": "d01", "text": "and what about tomorrow's schedule", "last_spoken": "It is six fifteen, sir.", "asked": false, "want": "directed"}
 {"id": "d02", "text": "yes please", "last_spoken": "Your reminder is set for ten minutes from now, sir. Shall I add a note to it?", "asked": true, "want": "directed"}
-{"id": "d03", "text": "no thanks that's fine", "last_spoken": "Shall I send that to your email as well, sir?", "asked": true, "want": "directed"}
+{"id": "d03", "text": "no thanks that's fine", "last_spoken": "Shall I send that to your email as well, sir?", "asked": true, "want": "done"}
 {"id": "d04", "text": "okay now push it to github", "last_spoken": "The robot code builds cleanly, sir.", "asked": false, "want": "directed"}
 {"id": "d05", "text": "read me the one about the visit", "last_spoken": "Three emails from school, sir. One mentions the visit.", "asked": false, "want": "directed"}
 {"id": "d06", "text": "thanks, and remind me to bring a jacket anyway", "last_spoken": "It is seventy two degrees and sunny.", "asked": false, "want": "directed"}
@@ -11,7 +11,7 @@
 {"id": "d11", "text": "can you explain that in simpler terms", "last_spoken": "The torque scales with the square of the radius, sir.", "asked": false, "want": "directed"}
 {"id": "d12", "text": "open the vault dashboard", "last_spoken": "Sir?", "asked": true, "want": "directed"}
 {"id": "d13", "text": "move the target back about two feet", "last_spoken": "The shot simulator is open, sir.", "asked": false, "want": "directed"}
-{"id": "d14", "text": "thank you waggle", "last_spoken": "Reminder set, sir.", "asked": false, "want": "directed"}
+{"id": "d14", "text": "thank you waggle", "last_spoken": "Reminder set, sir.", "asked": false, "want": "done"}
 {"id": "d15", "text": "sure go ahead", "last_spoken": "Would you like me to read the full answer?", "asked": true, "want": "directed"}
 {"id": "d16", "text": "add that to my list please", "last_spoken": "Math homework is due on Friday, sir.", "asked": false, "want": "directed"}
 {"id": "d17", "text": "yes, one more thing", "last_spoken": "Anything else, sir?", "asked": true, "want": "directed"}
@@ -48,3 +48,8 @@
 {"id": "e06", "text": "shall I search the downloads folder", "last_spoken": "I could not find that file on the desktop, sir. Shall I search the downloads folder?", "asked": true, "want": "echo"}
 {"id": "e07", "text": "I could not find that file on the desktop sir", "last_spoken": "I could not find that file on the desktop, sir. Shall I search the downloads folder?", "asked": true, "want": "echo"}
 {"id": "e08", "text": "working on it sir I will message you", "last_spoken": "Working on it, sir. I will message you when it is done.", "asked": false, "want": "echo"}
+# 2026-11-26, the owner: "When I say 'That's it, thank you,' that's just end of conversation."
+{"id": "c01", "text": "All right, thank you.", "last_spoken": "No homework is due in the next seven days, sir.", "asked": false, "want": "done"}
+{"id": "c02", "text": "Yep.", "last_spoken": "You're welcome. Happy Thanksgiving.", "asked": false, "want": "done"}
+{"id": "c03", "text": "That's it, thank you.", "last_spoken": "The Land Planner is up to date, sir.", "asked": false, "want": "done"}
+{"id": "c04", "text": "Thanks, and remind me at five to call Dad.", "last_spoken": "Done, sir.", "asked": false, "want": "directed"}

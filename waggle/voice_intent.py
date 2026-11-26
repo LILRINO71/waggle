@@ -118,6 +118,36 @@ def stop_phrase(text):
     return " ".join(core) in STOP_PHRASES or (len(core) == 1 and core[0] in STOP_PHRASES)
 
 
+# ---- done: the owner closes the conversation -----------------------------------------------------------------
+# The owner (2026-11-26): "When I say 'That's it, thank you,' that's just end of conversation. I don't want it to wait
+# for something else." "All right, thank you" ran a turn ("You're welcome"), then "Yep" ran one, then "Alright, thank
+# you" ran a third. A whole utterance made only of these words, with a closer in it, ends the conversation: no turn
+# runs, the closing tone plays. Anything else in it ("thanks, and remind me at five") makes it a request again.
+_CLOSE_STRONG = {"thank", "thanks", "thx", "bye", "goodbye", "goodnight", "cheers", "appreciate", "appreciated"}
+_CLOSE_PHRASES = ("that's it", "thats it", "that is it", "that's all", "thats all", "that is all", "nothing else",
+                  "i'm good", "im good", "we're good", "were good", "i'm done", "im done", "all done", "good night",
+                  "see you", "see ya", "talk later", "that's everything", "thats everything", "all set", "i'm set")
+_CLOSE_WEAK = {"yep", "yup", "yeah", "yes", "sure", "ok", "okay", "alright", "cool", "great", "perfect", "awesome",
+               "nice", "good", "fine", "gotcha", "got", "excellent", "sweet", "noted", "understood", "k"}
+_CLOSE_WORDS = (_FILLER | _CLOSE_STRONG | _CLOSE_WEAK | {
+    "that's", "thats", "that", "is", "it", "all", "for", "i'm", "im", "i", "am", "we're", "were", "we", "done",
+    "nothing", "else", "see", "ya", "later", "talk", "night", "good", "much", "very", "sounds", "so", "then", "it's",
+    "everything", "set", "and", "a", "lot", "bunch", "buddy", "man", "dude", "mate", "again", "for", "today", "the",
+    "help", "your", "really", "kind", "of", "bye-bye", "byebye", "pal"})
+
+
+def closing_phrase(text, asked_question=False):
+    """True when the whole utterance closes the conversation ("That's it, thank you", "All right, thanks", "bye").
+    A short "yep" / "okay" / "cool" also closes unless Waggle just asked a question (then it is an answer)."""
+    w = words(text)
+    if not w or len(w) > 10 or any(x not in _CLOSE_WORDS for x in w):
+        return False
+    joined = " ".join(w)
+    if any(x in _CLOSE_STRONG for x in w) or any(p in joined for p in _CLOSE_PHRASES):
+        return True
+    return not asked_question and any(x in _CLOSE_WEAK for x in w)
+
+
 # ---- the model ---------------------------------------------------------------------------------------------
 
 SYSTEM = (
@@ -247,6 +277,8 @@ def decide(text, *, spoken_texts=(), last_spoken="", asked_question=False, model
             return Decision("echo", "rule", "repeats what Waggle just said")
         if stop_phrase(text):
             return Decision("stop", "rule", "a stop phrase")
+        if closing_phrase(text, asked_question):
+            return Decision("done", "rule", "the owner closed the conversation")
     if not use_model:
         return Decision("send", "fallback", "no judge")
     v = judge(text, last_spoken=last_spoken or (spoken_texts[-1] if spoken_texts else ""), asked_question=asked_question,

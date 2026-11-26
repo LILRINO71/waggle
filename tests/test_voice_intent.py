@@ -317,18 +317,19 @@ def test_cap_spoken_is_unchanged_by_the_refactor():
 
 # ---- the evaluation runner -----------------------------------------------------------------------------------
 
-def test_the_bench_file_has_fifty_labelled_cases_of_four_kinds():
+def test_the_bench_file_has_fifty_labelled_cases_of_five_kinds():
     cases = voice_bench.load()
     assert 40 <= len(cases) <= 60 and len({c["id"] for c in cases}) == len(cases)
     kinds = {c["want"] for c in cases}
-    assert kinds == {"directed", "not_directed", "stop", "echo"}
+    assert kinds == {"directed", "not_directed", "stop", "echo", "done"}  # done: the owner signs off
     assert all(c["text"].strip() and "asked" in c and "last_spoken" in c for c in cases)
 
 
 def test_with_no_model_the_rules_score_exactly_what_today_does_not_catch():
     rows = voice_bench.run(voice_bench.load(), use_model=False)
     sc = voice_bench.score(rows)
-    assert sc["by_label"]["echo"] == "8/8" and sc["by_label"]["directed"] == "20/20"  # no false echo, no false stop
+    assert sc["by_label"]["echo"] == "8/8" and sc["by_label"]["directed"] == "19/19"  # no false echo, no false stop
+    assert sc["by_label"]["done"] == "5/5"  # sign-offs are decided by rule, never sent
     assert sc["by_label"]["not_directed"] == "0/14"  # without a model everything is sent: today's behaviour
     assert set(sc["by_source"]) == {"rule", "fallback"}
 
@@ -362,3 +363,27 @@ def test_the_runner_is_reachable_as_python_m_waggle_bench_voice(capsys):
 def test_decision_is_importable_and_prints():
     assert "send" in repr(Decision("send", "fallback")) and "model" in repr(voice_intent.Verdict(True, False, 0.9, "model"))
     assert time.monotonic() > 0
+
+
+# ---- the owner closes the conversation (2026-11-26) ----------------------------------------------------------
+
+@pytest.mark.parametrize("text", ["That's it, thank you.", "All right, thank you.", "Alright, thank you.", "Yep.",
+                                  "okay", "Thanks Waggle", "Bye", "Thank you so much for your help",
+                                  "Cool, that's all for now", "I'm good, thanks", "good night"])
+def test_a_sign_off_closes_the_conversation_without_the_model(text):
+    def no_model(*a, **k):
+        raise AssertionError("never asked")
+    assert decide(text, ask=no_model).action == "done"
+
+
+@pytest.mark.parametrize("text", ["Thanks, and remind me at five.", "Is that all?", "Cool, now open the land planner",
+                                  "What about tomorrow?", "thank you, what's the weather tomorrow"])
+def test_a_request_with_thanks_in_it_is_not_a_sign_off(text):
+    from waggle.voice_intent import closing_phrase
+    assert not closing_phrase(text)
+
+
+def test_after_a_question_a_bare_yes_is_an_answer_but_thanks_still_closes():
+    from waggle.voice_intent import closing_phrase
+    assert not closing_phrase("Yep.", asked_question=True) and not closing_phrase("okay", asked_question=True)
+    assert closing_phrase("no thanks, that's fine", asked_question=True)

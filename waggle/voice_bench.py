@@ -20,7 +20,7 @@ from . import voice_intent
 
 REPO = Path(__file__).resolve().parent.parent
 CASES = REPO / "bench" / "voice_intent.jsonl"
-ACTION = {"send": "directed", "ignore": "not_directed", "stop": "stop", "echo": "echo"}
+ACTION = {"send": "directed", "ignore": "not_directed", "stop": "stop", "echo": "echo", "done": "done"}
 
 
 def load(path=None):
@@ -35,6 +35,8 @@ def load(path=None):
 def run(cases, *, ask=None, model="", use_model=True, rules=True, timeout=voice_intent.JUDGE_TIMEOUT_S, url=""):
     rows = []
     for c in cases:
+        if not rules and c["want"] == "done":  # a sign-off is decided by rule only; the model alone is not asked it
+            continue
         d = voice_intent.decide(c["text"], spoken_texts=[c["last_spoken"]] if c.get("last_spoken") else [],
                                 last_spoken=c.get("last_spoken", ""), asked_question=bool(c.get("asked")),
                                 model=model, ask=ask, use_model=use_model, rules=rules, timeout=timeout, url=url)

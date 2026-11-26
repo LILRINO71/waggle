@@ -755,3 +755,18 @@ def test_the_spoken_sentence_never_replaces_the_rows_own_keys():
                          meta={"spoken": "Hi.", "asked": False, "urgent": True})
     meta = outbox.get(row["id"])["meta"]
     assert meta["spoken"] == "Hi." and meta["asked"] is True and meta["urgent"] is False
+
+
+def test_a_sign_off_ends_the_conversation_and_sends_nothing(rig, tmp_path):
+    """2026-11-26: "All right, thank you" ran a turn, then "Yep" ran one, then "Alright, thank you" a third. A
+    sign-off now ends the conversation with the closing tone and no turn, decided by rule before any model."""
+    from waggle import voice_intent
+
+    def no_model(*a, **k):
+        raise AssertionError("a sign-off is decided by rule, never by the model")
+    client = StreamClient(tmp_path, transcripts=["All right, thank you."])
+    pv = smart(rig, client, decide=lambda text, asked_question=False: voice_intent.decide(
+        text, asked_question=asked_question, ask=no_model))
+    pv.conversation(follow_up_source(tmp_path), "hotkey")
+    assert client.texts == [] and len(client.audio) == 1 and pv.stats["closed"] == 1
+    assert rig.played()[-1] == "stop" and not pv.in_conversation
