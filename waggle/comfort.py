@@ -46,8 +46,11 @@ KEYS = {
     "mailwatch": "whether Waggle watches the inbox and texts about important mail: on or off",
     "chat_model": "which Claude model answers the owner in chat and by voice: haiku, sonnet, opus or fable "
                   "(opus and fable think harder, answer slower and use the allowance about five times faster than haiku)",
-    "job_model": "which Claude model does background jobs started from chat: auto (each agent's own), haiku, sonnet, "
-                 "opus or fable",
+    "job_model": "which Claude model does background work the owner starts (jobs, builds, objective steps): auto "
+                 "(each agent's own), haiku, sonnet, opus or fable",
+    "chat_effort": "how hard the model thinks when it answers the owner: low (quick), medium or high (slower, uses "
+                   "more of the allowance)",
+    "job_effort": "how hard the model thinks in background jobs and objective steps: low, medium or high",
 }
 ALIASES = {
     "voice": "voice_note_voice", "speaking_voice": "voice_note_voice", "speed": "voice_note_speed",
@@ -57,6 +60,8 @@ ALIASES = {
     "mail_watch": "mailwatch", "mail": "mailwatch",
     "model": "chat_model", "brain": "chat_model", "chat_brain": "chat_model", "answer_model": "chat_model",
     "background_model": "job_model", "jobs_model": "job_model", "agent_model": "job_model", "work_model": "job_model",
+    "effort": "chat_effort", "thinking": "chat_effort", "reasoning": "chat_effort", "background_effort": "job_effort",
+    "jobs_effort": "job_effort", "work_effort": "job_effort",
 }
 assert not set(KEYS) & set(guard.CONFIG_KEYS)  # a safety key never becomes changeable from chat
 
@@ -182,8 +187,21 @@ def _job_model(value):
     return _model(value)
 
 
+EFFORTS = ("low", "medium", "high")
+
+
+def _effort(value):
+    t = str(value or "").strip().lower()
+    t = {"med": "medium", "mid": "medium", "normal": "medium", "quick": "low", "fast": "low", "hard": "high",
+         "deep": "high", "max": "high"}.get(t, t)
+    if t not in EFFORTS:
+        raise SettingError(f"{value!r} is not an effort level. Levels: {', '.join(EFFORTS)}")
+    return t
+
+
 VALIDATE = {"voice_note_voice": _voice, "voice_note_speed": _speed, "quiet_hours": _quiet, "brief_time": _time,
-            "evening_time": _time, "mailwatch": _onoff, "chat_model": _model, "job_model": _job_model}
+            "evening_time": _time, "mailwatch": _onoff, "chat_model": _model, "job_model": _job_model,
+            "chat_effort": _effort, "job_effort": _effort}
 
 
 def _clock(spec, default):
@@ -247,6 +265,8 @@ def current(key, settings=None):
         return _clock(s.evening_time, "21:00")
     if key == "chat_model":
         return model_name(s.chat_model or s.router_model) or str(s.chat_model or s.router_model)
+    if key in ("chat_effort", "job_effort"):
+        return getattr(s, key) or "low"
     return getattr(s, key)
 
 
@@ -257,7 +277,7 @@ def get_all(settings=None):
     for key, what in KEYS.items():
         v = current(key, s)
         out[key] = {"value": v, "now": "not set up yet" if v is None else words(key, v), "what": what}
-    return {"settings": out, "voices": installed_voices(), "models": list(MODELS)}
+    return {"settings": out, "voices": installed_voices(), "models": list(MODELS), "efforts": list(EFFORTS)}
 
 
 def resolve_key(key):

@@ -387,7 +387,10 @@ def _run_step(oid, idx=None, settings=None, run_fn=None, verify_fn=None):
                    f"objective {oid}' to give it more.", urgent=False)
         return "blocked"
     with budget.background("objective", oid, step["idx"]):
-        model = budget.choose_model(agents.model_for(step["agent"], s), step["agent"], s, oid, step["idx"])
+        # the owner's standing choice for background work (settings job_model), else the agent's own model; the
+        # budget still decides whether there is room for it now
+        model = budget.choose_model(s.job_model or agents.model_for(step["agent"], s), step["agent"], s, oid,
+                                    step["idx"])
         ok, why = quota.can_escalate(model, s)
     if not ok:
         _, _, until = budget.check(model, "objective", s)
@@ -419,7 +422,7 @@ def _run_step(oid, idx=None, settings=None, run_fn=None, verify_fn=None):
     try:
         with budget.using(ticket, "objective", oid, step["idx"]):
             res = (run_fn or agents.run)(step["agent"], prompt, session=f"objective-{oid}", settings=s, model=model,
-                                         purpose="objective")
+                                         purpose="objective", **({"effort": s.job_effort} if s.job_effort else {}))
     finally:
         budget.release(ticket)
     con = _db()

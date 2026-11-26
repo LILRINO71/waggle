@@ -168,6 +168,61 @@ def test_the_owner_can_choose_who_answers_and_who_works_and_it_is_kept(settings)
     assert got["settings"]["chat_model"]["value"] == "opus" and "fable" in got["models"]
 
 
+def test_effort_is_a_setting_too_and_reaches_the_chat_and_the_jobs(isolated_home, monkeypatch):
+    from waggle import agents
+    assert comfort.set_value("effort", "High", owner())["key"] == "chat_effort" and Settings.load().chat_effort == "high"
+    assert comfort.set_value("job_effort", "deep", owner())["new"] == "high" and Settings.load().job_effort == "high"
+    with pytest.raises(comfort.SettingError):
+        comfort.set_value("job_effort", "ludicrous", owner())
+    assert home.brain()["chat_effort"] == "high" and home.set_brain({"chat_effort": "medium"})["chat_effort"] == "medium"
+    fake = FakeClaude()
+    s = ChatSession("telegram:1", popen=fake, claude="claude")
+    s.turn("one")
+    assert fake.procs[0].arg("--effort") == "medium"
+    comfort.set_value("chat_effort", "high", owner())
+    s.turn("two")
+    assert len(fake.procs) == 2 and fake.procs[1].arg("--effort") == "high"  # the running chat follows the change
+    seen = {}
+
+    def fake_agent(task, **kw):
+        seen.update(kw)
+        return agents.runner.AgentResult(session="x", model="m")
+    monkeypatch.setattr(agents.runner, "run", fake_agent)
+    chat_jobs.run_background({"chat": "telegram:1", "task": "t", "agent": "coder", "hard": False, "origin": "user",
+                              "key": "e1"})
+    assert seen["effort"] == "high"
+    comfort.set_value("job_effort", "low", owner())
+    seen.clear()
+    agents.run("coder", "t")  # no effort named: the agent runner's own default, as before
+    assert "effort" not in seen
+
+
+def test_the_standing_choice_also_covers_objective_steps_and_builds(isolated_home, monkeypatch):
+    from waggle import jobs, objectives, toolkit
+    comfort.set_value("job_model", "fable", owner())
+    comfort.set_value("job_effort", "high", owner())
+    made = {}
+    monkeypatch.setattr(jobs, "create", lambda *a, **k: "job-1")
+    monkeypatch.setattr(jobs, "update", lambda jid, **k: made.update(k))
+    monkeypatch.setattr(jobs, "launch", lambda jid: None)
+    monkeypatch.setattr(toolkit.quota, "can_escalate", lambda model, s: (True, ""))
+    assert json.loads(toolkit.start_build({"title": "App", "prompt": "build it"}))["started"] and made == {"model": "fable"}
+    monkeypatch.setattr(objectives.quota, "can_escalate", lambda m, s: (True, ""))
+    monkeypatch.setattr(objectives, "kick", lambda oid: None)
+    step = {"title": "Find them", "detail": "search", "agent": "researcher", "done_when": "3 listed", "depends_on": []}
+    s = Settings.load()
+    oid = objectives.create("Find three internships", asker=lambda *a, **k: {"json": {"title": "Hunt", "steps": [step]}},
+                            settings=s)
+    used = {}
+
+    def run(agent_name, prompt, **k):
+        used.update(k)
+        return agents.runner.AgentResult(text="did it", ok=True)
+    from waggle import agents
+    objectives.run_step(oid, settings=s, run_fn=run, verify_fn=lambda *a, **k: (True, ""))
+    assert used["model"] == "fable" and used["effort"] == "high"
+
+
 def test_the_page_picker_changes_the_same_setting(settings):
     assert home.brain()["chat_model"] == "haiku" and home.brain()["job_model"] == ""
     out = home.set_brain({"chat_model": "sonnet", "job_model": "opus"})

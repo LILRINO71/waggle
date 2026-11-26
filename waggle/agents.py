@@ -105,7 +105,7 @@ def note(name, text):
 
 
 def run(name, task, context="", session="", hard=False, settings=None, timeout=900, runner_fn=None, model=None,
-        purpose="agent", progress_key=None):
+        purpose="agent", progress_key=None, effort=None):
     """Run a named agent. Returns an AgentResult (traced with the agent's name). model= overrides the agent's own
     (the background budget may pick a cheaper one). progress_key names its live progress (default: the session)."""
     s = settings or Settings.load()
@@ -114,7 +114,7 @@ def run(name, task, context="", session="", hard=False, settings=None, timeout=9
     t0 = time.time()
     res = runner.run(task, model=model, context=context, agent_rules=instructions(name, s), session=session,
                      agent_name=name, settings=s, timeout=timeout, runner=runner_fn, purpose=purpose,
-                     progress_key=progress_key)
+                     progress_key=progress_key, **({"effort": effort} if effort else {}))
     traces.record(task, session=session, route=f"agent:{name}", model=res.model, agent=name,
                   latency_s=round(time.time() - t0, 2), ok=res.ok, error=res.error, reply=res.text,
                   tokens=res.usage, steps=res.steps, extra={"turns": res.turns})

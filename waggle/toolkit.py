@@ -44,6 +44,8 @@ def start_build(args, **kw):
         return json.dumps({"started": False, "reason": why})
     job_id = jobs.create(args.get("title", "Build"), args["prompt"], args.get("request", args["prompt"]),
                          project=args.get("project"))
+    if s.job_model:  # the owner's standing choice for background work also builds
+        jobs.update(job_id, model=s.job_model)
     jobs.launch(job_id)
     return json.dumps({"started": True, "job_id": job_id})
 

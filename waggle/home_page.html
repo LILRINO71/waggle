@@ -95,6 +95,7 @@ canvas.spark{width:100%;height:46px;display:block}
  <div class="tabs"><button class="tab on" id="tab-cmd">Command</button><button class="tab" id="tab-mem">Memory</button></div>
  <label class="brain" title="Which Claude model answers you. Waggle keeps this until you change it.">Brain <select id="brain"></select></label>
  <label class="brain" title="Which Claude model does background jobs. Auto lets each agent use its own.">Jobs <select id="jobbrain"></select></label>
+ <label class="brain" title="How hard the model thinks, when answering you and in background jobs. High is slower and uses more of the allowance.">Effort <select id="effort"></select></label>
  <div class="pills" id="health"></div></header>
 <div class="wrap">
 <div class="col">
@@ -328,12 +329,17 @@ setInterval(()=>{liveN++;if(busy||liveRunning||waiting.length||liveN%4===0)liveT
 const NAMES={haiku:"Haiku (fast)",sonnet:"Sonnet",opus:"Opus (deep)",fable:"Fable (deepest)"};
 function renderBrain(b){if(!b||!b.models)return;const fill=(el,val,auto)=>{if(document.activeElement===el)return;
   el.innerHTML=(auto?`<option value="auto">Auto</option>`:"")+b.models.map(m=>`<option value="${m}">${NAMES[m]||m}</option>`).join("");el.value=val||"auto"};
- fill($("brain"),b.chat_model,false);fill($("jobbrain"),b.job_model,true)}
+ fill($("brain"),b.chat_model,false);fill($("jobbrain"),b.job_model,true);
+ const E=$("effort");if(document.activeElement!==E&&b.efforts){const same=b.chat_effort===b.job_effort;
+  E.innerHTML=(same?"":`<option value="">Mixed</option>`)+b.efforts.map(e=>`<option value="${e}">${e[0].toUpperCase()+e.slice(1)}</option>`).join("");E.value=same?b.chat_effort:""}}
 async function setBrain(key,el){try{const r=await (await post("/api/brain",{[key]:el.value})).json();el.blur();renderBrain(r);
   bubble("sys",r.ok?(key==="chat_model"?`${NAMES[r.chat_model]||r.chat_model} answers from your next message. I will keep it that way until you change it.`
    :`Background jobs now run on ${r.job_model?NAMES[r.job_model]||r.job_model:"each agent's own model"}. I will keep it that way until you change it.`):("Not changed: "+r.error))}
  catch(e){bubble("sys","Could not change the model. Is the dashboard running?")}}
 $("brain").onchange=()=>setBrain("chat_model",$("brain"));$("jobbrain").onchange=()=>setBrain("job_model",$("jobbrain"));
+$("effort").onchange=async()=>{const v=$("effort").value;if(!v)return;try{const r=await (await post("/api/brain",{chat_effort:v,job_effort:v})).json();$("effort").blur();renderBrain(r);
+  bubble("sys",r.ok?`Effort is now ${v} for answers and for background jobs. I will keep it that way until you change it.`:("Not changed: "+r.error))}
+ catch(e){bubble("sys","Could not change the effort. Is the dashboard running?")}};
 
 /* side panels */
 $("thinkbtn").onclick=async()=>{$("thinkbtn").disabled=true;await post("/api/think",{});refresh()};

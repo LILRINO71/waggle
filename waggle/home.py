@@ -397,7 +397,8 @@ def brain(settings=None):
     from . import comfort
     s = settings or Settings.load()
     return {"chat_model": comfort.current("chat_model", s), "job_model": comfort.current("job_model", s),
-            "models": list(comfort.MODELS)}
+            "chat_effort": comfort.current("chat_effort", s), "job_effort": comfort.current("job_effort", s),
+            "models": list(comfort.MODELS), "efforts": list(comfort.EFFORTS)}
 
 
 def set_brain(args):
@@ -405,7 +406,7 @@ def set_brain(args):
     from . import comfort
     done = {}
     try:
-        for key in ("chat_model", "job_model"):
+        for key in ("chat_model", "job_model", "chat_effort", "job_effort"):
             if key in (args or {}):
                 done[key] = comfort.set_value(key, args[key], turn={"owner": True, "origin": "home", "chat": "home"})
     except comfort.SettingError as e:

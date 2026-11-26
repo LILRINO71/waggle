@@ -430,3 +430,9 @@ that a model or agent they name is used and remembered.
 - Not driven with a real voice at the real microphone: the page's piece-by-piece recording was driven in a browser
   with a generated tone and a fake recogniser, and the live recogniser with a recorded sentence. The owner's first
   real dictation is the proof.
+- Effort (2026-11-25 night, on the owner's word "make sure the model Waggle is using is Fable 5.2 high"): settings
+  `chat_effort` and `job_effort` (low, medium, high) join `chat_model` / `job_model` in the settings tool and get an
+  Effort picker on Home (it sets both). A running chat follows a changed effort like a changed model.
+  `job_model` / `job_effort` now also reach objective steps (the background budget still decides whether there is
+  room) and `start_build`. Before this every background job ran at `--effort low` with no way to change it.
+  Plain pytest alone: 4,183 passed, 6 skipped, 4 xfailed in 619 s.

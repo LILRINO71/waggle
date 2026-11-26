@@ -76,10 +76,11 @@ def run_background(payload, runner=None):
             from waggle import agents
             from waggle.config import Settings
             # the model the owner named for this job, else their standing choice for jobs, else the agent's own
-            model = payload.get("model") or Settings.load().job_model or None
+            chosen = Settings.load()
+            model = payload.get("model") or chosen.job_model or None
             res = agents.run(payload.get("agent") or "general", payload["task"] + REPORT_RULE, session=payload["chat"],
                              hard=bool(payload.get("hard")), timeout=1800, progress_key=progress_key(payload),
-                             model=model)
+                             model=model, effort=chosen.job_effort or None)
         from waggle.agent import approval_message
         ok = bool(getattr(res, "ok", False))
         body = (getattr(res, "text", "") or f"It didn't work: {str(getattr(res, 'error', ''))[:300]}") \
@@ -191,7 +192,8 @@ def _t_background_task(args):
     jid, _ = start(chat, task, args.get("agent") or "general", bool(args.get("hard")),
                    origin=os.environ.get("WAGGLE_ORIGIN", ""), model=model)
     from waggle.config import Settings
-    doing = model or Settings.load().job_model or "the agent's usual model"
+    chosen = Settings.load()
+    doing = (model or chosen.job_model or "the agent's usual model") + (f", {chosen.job_effort} effort" if chosen.job_effort else "")
     return json.dumps({"started": True, "job": jid, "agent": args.get("agent") or "general", "model": doing,
                        "note": "Queued in the background. Tell the user in one short line that you're on it and "
                                "which agent and model are doing it; the result will be posted into this chat when "

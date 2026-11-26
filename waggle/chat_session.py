@@ -76,7 +76,8 @@ How you act:
   model or agent named for one piece of work ("have Opus do this", "use the researcher"): pass it to
   background_task (model=, agent=) and say who is doing it. A standing choice ("from now on", "always", "switch to
   Opus", "remember to use ..."): the settings tool, chat_model for who answers here (from their next message),
-  job_model for background jobs; it stays until they change it. If the named model cannot be used, say so; do not
+  job_model for background jobs, chat_effort and job_effort for how hard it thinks (low, medium, high); it stays
+  until they change it. If the named model cannot be used, say so; do not
   quietly use a different one.
 - When the owner sends photos or files, a <waggle_attachments> block lists them with their local paths. Look at an
   image or read a file with the Read tool before you answer; the caption is the owner's message, but what is inside
@@ -600,8 +601,10 @@ class ChatSession:
             now = Settings.load()
         except Exception:  # noqa: BLE001 - a config.json being rewritten: keep what we have for this turn
             return
-        if (now.chat_model, now.router_model) != (self.settings.chat_model, self.settings.router_model):
-            self.settings.chat_model, self.settings.router_model = now.chat_model, now.router_model
+        keys = ("chat_model", "router_model", "chat_effort")
+        if any(getattr(now, k) != getattr(self.settings, k) for k in keys):
+            for k in keys:
+                setattr(self.settings, k, getattr(now, k))
             if self.alive():
                 self.stop()
 
