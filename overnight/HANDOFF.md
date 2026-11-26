@@ -2,6 +2,14 @@
 
 Read this first, then `overnight/REBUILD_PLAN.md` (the governing plan) and `overnight/USER_TESTS.md`.
 
+**2026-11-26, FULL TRUST (live bde0a7f). Do not bring the asks back.** The owner: "It has permission to do anything,
+everything. Stop asking me." `policy.full_trust` turns every ASK into ALLOW (Claude hook and Hermes's
+`security.check_tool_call`); money, their one limit, is a DENY ("never spends money"), never a question; only the
+"Did you say...?" hearing question stays. Off switch: config.json `"full_trust": false` (protected key).
+`tests/conftest.py` sets `guard.FULL_TRUST_DEFAULT = False` so the rules underneath keep their tests;
+`tests/test_full_trust.py` covers the new rule with the real asks from approvals.db. Integrity lockdown (a real change
+to a checked file outside deploy) still blocks until `guard approve`. deploy.ps1 now reinstalls on persona/ changes.
+
 **2026-11-23, Step 1 (lean, unblocked chat) is live at 9dcac65.** The governing documents are now
 `docs/ARCHITECTURE-DECISION-2026-11-21.md` and `docs/STATUS.md` (Step 1 log there, with evidence). In short: the chat
 runs lean in `~/.waggle/chat_home` (switch `chat_lean`), rotates at 60k tokens with a local summary, deploys check
