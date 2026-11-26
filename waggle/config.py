@@ -49,6 +49,7 @@ class Settings:
     chat_model: str = ""  # answers + routing (router_model when empty)
     chat_agent_model: str = ""  # tool jobs from chat (agent_model when empty)
     chat_deep_model: str = ""  # coder / researcher / robotics jobs from chat (agent_deep_model when empty)
+    job_model: str = ""  # the owner's standing choice for background jobs started from chat ("" = each agent's own)
     local_first: bool = False  # let the local model answer "simple" chat itself (faster, much less smart)
     # The user's own addresses: mail to these needs no approval (it reaches only the user). Set in config.json.
     self_emails: list = field(default_factory=list)

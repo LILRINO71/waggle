@@ -298,10 +298,12 @@ add(schema("settings", "Read or change Waggle's comfort settings when the owner 
            "Works only in the owner's own message.",
            {"action": {"type": "string", "enum": ["get", "set"]},
             "key": {"type": "string", "enum": ["voice_note_voice", "voice_note_speed", "quiet_hours", "brief_time",
-                                               "evening_time", "mailwatch"]},
+                                               "evening_time", "mailwatch", "chat_model", "job_model"]},
             "value": {"description": "voice_note_voice: a voice id like bm_george; voice_note_speed: 0.7-1.8; "
                                      "quiet_hours: [start hour, end hour] 0-23; brief_time / evening_time: 24-hour "
-                                     "HH:MM; mailwatch: true or false"}},
+                                     "HH:MM; mailwatch: true or false; chat_model (who answers the owner from the "
+                                     "next message on): haiku, sonnet, opus or fable; job_model (who does background "
+                                     "jobs): auto, haiku, sonnet, opus or fable"}},
            ["action"]), t_settings)
 
 

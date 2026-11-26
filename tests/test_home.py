@@ -53,7 +53,7 @@ def test_page_carries_the_token_and_the_state_is_served(srv):
 
 
 def test_a_post_needs_the_page_token(srv, monkeypatch):
-    monkeypatch.setattr(home, "say", lambda text: {"ok": True, "text": "hi " + text})
+    monkeypatch.setattr(home, "say", lambda text, dictated=False: {"ok": True, "text": "hi " + text})
     assert post(srv, "/api/say", {"text": "x"}, token="")[0] == 403
     assert post(srv, "/api/say", {"text": "x"}, token="wrong")[0] == 403
     assert post(srv, "/api/say", {"text": "x"}) == (200, {"ok": True, "text": "hi x"})
@@ -85,7 +85,7 @@ def test_say_goes_to_the_voice_line_as_the_dashboard_client():
     before = time.time()
     out = home.say("  what is 2+2 ", post=core)
     assert before <= out.pop("asked_at") <= time.time()
-    assert out == {"ok": True, "text": "2 + 2 = 4", "spoken": "Four.", "status": "done"}
+    assert out == {"ok": True, "text": "2 + 2 = 4", "spoken": "Four.", "status": "done", "turn": ""}
     assert seen["path"] == "/voice?reply=json&client=dash" and seen["body"] == {"text": "what is 2+2"}
     assert home.say("   ", post=core)["ok"] is False
     down = home.say("hi", post=lambda *a: (503, {}, b'{"error": "the core is not accepting turns now"}'))

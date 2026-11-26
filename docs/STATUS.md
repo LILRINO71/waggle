@@ -385,3 +385,30 @@ the owner through `tools/say.py` and checked every claim against the real files,
 - Open: the money objective's step 3 waits on approval 7AP9 (a false ask the guard no longer makes; the owner decides);
   the chat under-reports reminder delivery (no tool reads the outbox state); an "approve CODE" inside a longer message
   still grants nothing by design; the money plan needs a parent account for any payout.
+
+**Home chat: see it, check it, send it (2026-11-25 evening, on the owner's word).** The owner uses the Home page at
+the PC and asked for the small things the Claude app has: see the words while speaking, correct them before they
+go, send by hand, the earlier conversation, a way back from Memory, a visible record of what Waggle is doing, and
+that a model or agent they name is used and remembered.
+- Dictation (`waggle/home_page.html`, `home.hear`, POST `/api/hear` -> the core's `/voice/transcribe`): the page
+  records in pieces cut at pauses, each piece is recognised by the local recogniser while the owner still talks and
+  shown in a "hearing" strip; when they stop, the text lands in the message box. Nothing is sent. Enter sends.
+  "Send as soon as I stop talking" is a switch, off by default. Text sent this way goes as client `dashmic`; text
+  typed on the page as `dash`. Both are now taken as written with the owner's full authority (`handle_inbound
+  checked=True`): before, text typed on Home was cleaned like a dictation and counted as an unsure hearing.
+- The page no longer posts a recording straight into a turn (`/api/talk` stays for other callers).
+- History: `home.history` / GET `/api/history` (the owner's chat from every channel, test turns left out, pages of
+  30, "Show earlier messages"); each answer shows time, model, seconds, tool steps and where it was asked.
+- Stop: `ChatSession.interrupt` ends the running turn (kind `stopped`, what was written so far is kept, the session
+  resumes on the next message), reached by POST `/voice/stop` on the core and `/api/stop` on the page; the same
+  button throws a dictation away or silences a spoken answer. Esc does the same.
+- Tabs: the top bar (Command, Memory, the model pickers, health) is fixed above both views.
+- Activity: `waggle/liveturn.py` (one small file the core writes, the dashboard reads): each tool call of the
+  running turn in one short line, the words as they are written, then model and seconds. The page shows it in the
+  chat for its own questions and in an Activity panel for any turn (phone, PC voice) plus running background jobs
+  with their last steps. A turn asked elsewhere appears in the Home chat when it ends.
+- Models: settings `chat_model` (who answers; haiku, sonnet, opus, fable) and `job_model` (background jobs; auto or
+  a model) can be changed by asking in chat (the `settings` tool) or with the two pickers on the page, and stay
+  until changed. A running chat process moves to the new model on the next message and keeps the conversation
+  (`ChatSession._follow_model`). `background_task` takes `model` for a job the owner named a model for; the chat
+  prompt says a named model or agent is followed exactly and never swapped.

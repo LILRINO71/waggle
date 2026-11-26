@@ -26,6 +26,7 @@ The PC voice (waggle/pcvoice.py) uses the same entry with two query options:
     ?format=wav   the reply audio is the speech server's WAV as it is (no AAC encoding; the PC plays WAV)
     ?client=dash  the request comes from the dashboard page (waggle/home.py): typed text is labelled as such and the
                   written copy to Telegram goes without a notification sound
+    ?client=dashmic  the same page, but the owner dictated the text there, read it and corrected it before sending
     ?client=pc    the request comes from the PC microphone: dictated text is labelled "PC wake word", the written
                   copy to Telegram goes without a notification sound (the owner just heard the answer), and an
                   answer that arrives after the holding line is marked to be spoken on the PC (waggle/pcspeak.py)
@@ -39,7 +40,9 @@ with the holding line (status "working") as on /voice. Errors before the turn st
 and one more path with the same token, for the wake word:
     POST /voice/transcribe   audio/* -> 200 JSON {"text", "ok", "confident", "seconds", "audio_s"}; no turn runs,
                              the audio is deleted at once and neither it nor the text is logged or stored.
-                             429 while another transcription runs."""
+                             429 while another transcription runs.
+    POST /voice/stop         the owner pressed Stop on the Home page: the turn running in the owner's chat ends now
+                             (waggle/chat_session.py interrupt). 200 JSON {"stopped": true|false}."""
 import hmac
 import json
 import logging
@@ -61,7 +64,12 @@ TOKEN_FILE = "voice.token"
 PATH = "/voice"
 TRANSCRIBE_PATH = "/voice/transcribe"
 STREAM_PATH = "/voice/stream"
-CLIENT_SOURCE = {"pc": "PC wake word", "dash": "typed in the Waggle dashboard"}  # ?client=... -> how dictated text from that client is labelled
+STOP_PATH = "/voice/stop"
+PATHS = (PATH, TRANSCRIBE_PATH, STREAM_PATH, STOP_PATH)
+# ?client=... -> how dictated text from that client is labelled
+CLIENT_SOURCE = {"pc": "PC wake word", "dash": "typed in the Waggle dashboard",
+                 "dashmic": "dictated in the Waggle dashboard, then read and corrected by the owner before sending"}
+DASH_CLIENTS = ("dash", "dashmic")
 HOLD_LINE = "Working on it, sir. I will message you when it is done."
 ERROR_LINE = "I could not answer that just now, sir. Please try again in a moment."
 MAX_BODY = 2 * 1024 * 1024
@@ -194,7 +202,8 @@ class _Run:
                 self.chat, text, kind="voice", audio=self.audio_path, platform="telegram", origin=self.origin,
                 turn_id=self.turn_id,
                 delivery=self.delivery,
-                voice_source="" if self.audio_path else CLIENT_SOURCE.get(self.client, "phone dictation"))
+                voice_source="" if self.audio_path else CLIENT_SOURCE.get(self.client, "phone dictation"),
+                checked=not self.audio_path and self.client in DASH_CLIENTS)
         except Exception as e:  # the request answers with a spoken apology; the trace holds what there is
             self.error = f"{type(e).__name__}: {e}"[:300]
             log.exception("voice line turn failed")
@@ -235,7 +244,7 @@ class _Run:
                 meta["speak_pc"] = True
             else:  # they just heard it through the speakers: the written record arrives without a sound
                 meta["silent"] = True
-        elif self.client == "dash":  # asked and answered on the dashboard page: the record arrives without a sound
+        elif self.client in DASH_CLIENTS:  # asked and answered on the dashboard page: the record arrives without a sound
             meta["via"] = "dashboard"
             meta["silent"] = True
         try:
@@ -345,6 +354,9 @@ def _respond(headers, rfile, query, accepting, path=PATH):
     if not authorized(headers.get("Authorization", "")):
         _drain(rfile, length)
         return _json(401, {"error": "unauthorized"})
+    if path == STOP_PATH:
+        _drain(rfile, length)
+        return _json(200, {"stopped": stop_turn()})
     if path == TRANSCRIBE_PATH:
         if not _transcribing.acquire(blocking=False):
             _drain(rfile, length)
@@ -369,6 +381,17 @@ def _respond(headers, rfile, query, accepting, path=PATH):
         return _serve(headers, rfile, query, accepting, length)
     finally:
         _busy.release()
+
+
+def stop_turn():
+    """End the turn running in the owner's chat now. True when one was running."""
+    from waggle import chat_engine
+    sess = chat_engine.pool().sessions.get(owner_chat())
+    try:
+        return bool(sess and sess.interrupt())
+    except Exception as e:  # noqa: BLE001
+        log.error("stop failed: %s: %s", type(e).__name__, e)
+        return False
 
 
 def _transcribe(headers, rfile, length):

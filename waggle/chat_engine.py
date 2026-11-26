@@ -35,7 +35,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import chat_store, claude_cli, engine_commands, events, media_intake, quota, stt, traces, voice_fast, voice_reply, voice_turn
+from . import chat_store, claude_cli, engine_commands, events, liveturn, media_intake, quota, stt, traces, voice_fast, voice_reply, voice_turn
 from . import guard  # turn state for the owner-instruction rule
 from .chat_session import VOICE_STYLE, ChatSession, SessionPool
 from .config import Settings, data_path
@@ -53,6 +53,7 @@ INTERRUPTED_NOTE = ("Waggle restarted while you were answering this message befo
                     "(writing or changing files, commands, commits, messages, background_task), check what was "
                     "already done (files, git log, background_status) and only do what is still missing. Say "
                     "briefly what you found already done.")
+STOPPED = "(Stopped, as you asked. Anything already done stays done.)"
 INTERRUPTED_LINE = "\n\n(A restart interrupted my first try at this, so I checked what was already done first.)"
 
 CONTEXT_BUDGET_S = 0.8  # the notes search may take this long before the model is asked without it
@@ -518,7 +519,7 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
     t0 = t0 or time.time()
     rec = TurnRecord(chat=chat, text=text, origin=origin or origin_for(platform), platform=platform or "")
     rec.voice = dict(voice_info or {})
-    if voice:
+    if voice and not rec.voice.get("checked"):
         heard = heard_line(rec.voice.get("transcript_cleaned") or text)
         if heard:
             rec.voice["heard_line"] = heard  # shown at the top of the written reply, never spoken
@@ -532,6 +533,7 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
         stream = False  # the voice message comes first, then the whole text
     if turn_id:
         rec.turn_id = turn_id
+    liveturn.begin(rec.turn_id, chat, text if owner_text is None else owner_text, rec.origin)  # the Home page watches
     keeper = typing or Typing(delivery, every=TYPING_EVERY_S).start()
     prev_user = 0.0
     try:
@@ -598,9 +600,17 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
             guard.write_turn_state(chat, rec.turn_id, rec.origin, text if owner_text is None else owner_text,
                                    voice=voice, confident=rec.voice.get(
                 "stt_confident", True), max_age_s=(s.chat_turn_timeout_s or 600) + 60)  # what the owner said (policy)
-            turn_kw = dict(on_text=vr.feed if vr else _after_heard(writer.update, rec.voice.get("heard_line")),
-                           on_tool=(lambda *a, **k: vr.ack()) if vr else writer.tool,  # PC voice: "on it" at once
-                           origin=rec.origin)
+            show_text = vr.feed if vr else _after_heard(writer.update, rec.voice.get("heard_line"))
+            show_tool = (lambda *a, **k: vr.ack()) if vr else writer.tool  # PC voice: "on it" at once
+
+            def on_text(full):
+                liveturn.words(voice_reply.split_reply(full)[1] if vr else full)
+                return show_text(full)
+
+            def on_tool(step):
+                liveturn.tool(step)
+                return show_tool(step)
+            turn_kw = dict(on_text=on_text, on_tool=on_tool, origin=rec.origin)
             repeatable = tuple(getattr(ctx, "sections", ()) or ())
             if repeatable and getattr(sess, "takes_repeatable", False):
                 turn_kw["repeatable"] = repeatable  # what the session already holds is not sent again
@@ -634,6 +644,10 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
             answered_by = res.model or chat_model(s)
             if res.ok and res.text.strip():
                 reply, rec.answered_by = res.text, answered_by
+            elif res.kind == "stopped":  # the owner pressed Stop: what was written so far, and a plain line
+                said = res.text.strip()
+                reply, rec.answered_by, rec.partial = (said + "\n\n" if said else "") + STOPPED, answered_by, True
+                rec.fallback_reason = "stopped by the owner"
             elif res.text.strip():  # it said something, then failed: keep what was said, say it was cut off
                 reply, rec.answered_by, rec.partial = res.text + CUT_OFF.format(why=_why_short(res.kind)), answered_by, True
                 rec.fallback_reason = f"{res.kind or 'error'}: {res.error}"
@@ -680,6 +694,7 @@ def run_turn(chat, text, delivery, *, platform="", origin=None, voice=False, t0=
             rec.delivery = "none"
     rec.total_s = round(time.time() - t0, 2)
     rec.settle()
+    liveturn.end(model=rec.model or rec.answered_by, outcome=rec.outcome, reply=plain_text(shown_reply(rec)))
     if record:
         rec.trace_id = record_turn(rec, voice=voice, note=note)
     if vr is not None:
@@ -979,7 +994,7 @@ NO_TEXT = ("I got your message but couldn't read anything in it{what}. Could you
 
 def handle_inbound(chat, text, *, kind="text", media=None, platform="telegram", origin="user", delivery=None,
                    settings=None, session=None, t0=None, local=None, turn_id=None, attempt=1, address=None,
-                   audio=None, voice_source=""):
+                   audio=None, voice_source="", checked=False):
     """One inbound message, end to end: the typing indicator at once, approvals first, then the chat's Claude
     session, streamed into the chat's delivery, the reply queued in the core outbox if delivery fails, and the
     full turn record.
@@ -988,7 +1003,9 @@ def handle_inbound(chat, text, *, kind="text", media=None, platform="telegram", 
     transcribed here; the reply is a short spoken version plus the full text) | anything else with
     `media` (paths, or dicts with path/kind) the brain is told about. origin: "user" only for the owner's own
     channel. attempt 2: a restart interrupted the first run (see run_turn); a turn already delivered under the
-    same turn_id is not answered again. Never raises for turn failures; returns the TurnRecord."""
+    same turn_id is not answered again. checked: the owner typed these words, or read and corrected a dictation,
+    before sending (the Home page): they are taken as written, like a typed chat message, with no Heard line.
+    Never raises for turn failures; returns the TurnRecord."""
     if origin not in ORIGINS:
         raise ValueError(f"origin must be one of {ORIGINS}, not {origin!r}")
     s = settings or Settings.load()
@@ -1022,6 +1039,10 @@ def handle_inbound(chat, text, *, kind="text", media=None, platform="telegram", 
             text = stt.clean_transcript(words)
             vinfo["transcript_cleaned"] = text
             vinfo.update(stt_confident=False, stt_confident_why=["the gateway gave no recogniser numbers"])
+        elif voice_source and checked:  # the owner saw exactly these words before sending: theirs as written
+            text = text.strip()
+            vinfo = {"voice": True, "checked": True, "transcript_source": voice_source, "transcript_raw": text,
+                     "transcript_cleaned": text, "stt_confident": True, "stt_confident_why": []}
         elif voice_source:  # words dictated elsewhere (the phone's own dictation): cleaned, but no recogniser numbers
             raw = text.strip()
             text = stt.clean_transcript(voice_turn.fix(raw, getattr(s, "voice_fixes", None)))

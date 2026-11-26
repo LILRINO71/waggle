@@ -44,6 +44,10 @@ KEYS = {
     "brief_time": "when the morning brief is sent (24-hour HH:MM)",
     "evening_time": "when the evening note is sent (24-hour HH:MM)",
     "mailwatch": "whether Waggle watches the inbox and texts about important mail: on or off",
+    "chat_model": "which Claude model answers the owner in chat and by voice: haiku, sonnet, opus or fable "
+                  "(opus and fable think harder, answer slower and use the allowance about five times faster than haiku)",
+    "job_model": "which Claude model does background jobs started from chat: auto (each agent's own), haiku, sonnet, "
+                 "opus or fable",
 }
 ALIASES = {
     "voice": "voice_note_voice", "speaking_voice": "voice_note_voice", "speed": "voice_note_speed",
@@ -51,6 +55,8 @@ ALIASES = {
     "quiet_time": "quiet_hours", "brief": "brief_time", "morning_brief": "brief_time", "morning_brief_time": "brief_time",
     "evening": "evening_time", "evening_note": "evening_time", "evening_note_time": "evening_time",
     "mail_watch": "mailwatch", "mail": "mailwatch",
+    "model": "chat_model", "brain": "chat_model", "chat_brain": "chat_model", "answer_model": "chat_model",
+    "background_model": "job_model", "jobs_model": "job_model", "agent_model": "job_model", "work_model": "job_model",
 }
 assert not set(KEYS) & set(guard.CONFIG_KEYS)  # a safety key never becomes changeable from chat
 
@@ -154,8 +160,30 @@ def _onoff(value):
     raise SettingError(f"{value!r} is not on or off")
 
 
+MODELS = ("haiku", "sonnet", "opus", "fable")
+
+
+def model_name(value):
+    """'sonnet' for "Sonnet", "claude-sonnet-5-5" or "sonnet 5.5"; "" when it names no model Waggle can run."""
+    t = str(value or "").strip().lower()
+    return next((m for m in MODELS if m in t), "")
+
+
+def _model(value):
+    name = model_name(value)
+    if not name:
+        raise SettingError(f"{value!r} is not a model Waggle can use. Models: {', '.join(MODELS)}")
+    return name
+
+
+def _job_model(value):
+    if str(value or "").strip().lower() in ("", "auto", "automatic", "default", "none", "any"):
+        return ""
+    return _model(value)
+
+
 VALIDATE = {"voice_note_voice": _voice, "voice_note_speed": _speed, "quiet_hours": _quiet, "brief_time": _time,
-            "evening_time": _time, "mailwatch": _onoff}
+            "evening_time": _time, "mailwatch": _onoff, "chat_model": _model, "job_model": _job_model}
 
 
 def _clock(spec, default):
@@ -190,6 +218,8 @@ def words(key, value):
         return "on" if value else "off"
     if key == "voice_note_speed":
         return f"{value:g}x"
+    if key == "job_model":
+        return value or "auto (each agent's own model)"
     return str(value)
 
 
@@ -215,6 +245,8 @@ def current(key, settings=None):
         return _clock(s.brief_time, "07:30")
     if key == "evening_time":
         return _clock(s.evening_time, "21:00")
+    if key == "chat_model":
+        return model_name(s.chat_model or s.router_model) or str(s.chat_model or s.router_model)
     return getattr(s, key)
 
 
@@ -225,7 +257,7 @@ def get_all(settings=None):
     for key, what in KEYS.items():
         v = current(key, s)
         out[key] = {"value": v, "now": "not set up yet" if v is None else words(key, v), "what": what}
-    return {"settings": out, "voices": installed_voices()}
+    return {"settings": out, "voices": installed_voices(), "models": list(MODELS)}
 
 
 def resolve_key(key):

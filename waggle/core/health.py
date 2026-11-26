@@ -263,7 +263,7 @@ def serve(loops_fn=None, port=None, accepting_fn=None):
         def do_POST(self):  # noqa: N802 - http.server API
             arrived = self.server.arrival(self.request)
             url = urlparse(self.path)
-            if url.path in (voiceline.PATH, voiceline.TRANSCRIBE_PATH, voiceline.STREAM_PATH):  # own token, checked inside
+            if url.path in voiceline.PATHS:  # own token, checked inside
                 out = voiceline.respond(self.headers, self.rfile, url.query, accepting=accepting_fn, path=url.path)
                 if isinstance(out, voiceline.Stream):
                     return self._send_stream(out)

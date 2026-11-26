@@ -5,8 +5,19 @@
                     the last night shift, reminders, usage, and "late": what reached the owner's chat after the
                     fact (answers to this page's questions that came after the voice line's 25 s holding line, and
                     background job results); the page shows each one in its chat if it is newer than the page
+  GET  /api/history the owner's conversation, oldest first ({"turns": [...], "more"}; ?before=<time>&n=<count>)
+  GET  /api/live    what Waggle is doing right now: the turn in progress with each tool step and the words so far
+                    (waggle/liveturn.py), and the background jobs that are running with their last steps
+  GET  /api/turn    ?id=<turn id>: one finished turn (full reply, model, seconds, tool steps)
+  POST /api/hear    audio/*   the words in one recording, for the page's dictation: nothing is sent, no turn runs;
+                    the owner reads and corrects the text, then sends it with /api/say
   POST /api/say     {"text"}  one typed turn for the owner's chat through the core's voice line (reply as JSON,
-                    with "status" "done" or "working" and "asked_at", this machine's clock when it was sent)
+                    with "status" "done" or "working" and "asked_at", this machine's clock when it was sent).
+                    "dictated": true marks text that was dictated and then checked by the owner; "speak": true asks
+                    for the answer as audio (the response is then the WAV, as for /api/talk)
+  POST /api/stop    {}        end the turn that is running now
+  POST /api/brain   {"chat_model"} and/or {"job_model"}: which Claude model answers, which does background jobs
+                    (the same settings the owner can change by asking in chat, waggle/comfort.py)
   POST /api/talk    audio/*   one spoken turn; the answer comes back as WAV with the spoken words in a header
                     (X-Waggle-Status and X-Waggle-Asked as for /api/say)
   POST /api/night   {"text"}  "accept 1", "redo 2", "reject 3 because ..." for the last night report
@@ -34,6 +45,7 @@ from .config import Settings
 
 TOKEN = secrets.token_urlsafe(24)
 MAX_BODY = 2 * 1024 * 1024
+HEAR_TRIES = 8
 _thinking = {"running": False, "started": 0.0, "last": None}
 
 
@@ -177,6 +189,7 @@ def state(now=None):
             "night": _safe(_night, {"items": [], "queued": 0}),
             "reminders": _safe(lambda: _reminders(now), []),
             "late": _safe(lambda: late_answers(now), []),
+            "brain": _safe(lambda: brain(s), {}),
             "taste": _safe(lambda: [l.lstrip("- ").strip() for l in think.taste(s).splitlines()
                                     if l.strip().startswith("-")], [])}
 
@@ -198,22 +211,206 @@ def _core(path, body, ctype, timeout=90):
         return 503, {}, json.dumps({"error": f"Waggle's core did not answer ({type(e).__name__})"}).encode()
 
 
-def say(text, post=None):
-    """One typed turn. {"ok", "text", "spoken", "status"} or {"ok": False, "error"}."""
+def _client(dictated):
+    return "dashmic" if dictated else "dash"
+
+
+def say(text, post=None, dictated=False):
+    """One typed turn. {"ok", "text", "spoken", "status", "turn"} or {"ok": False, "error"}. dictated: the text was
+    dictated on the page and checked by the owner before sending."""
     text = " ".join(str(text or "").split())
     if not text:
         return {"ok": False, "error": "nothing to send"}
     asked_at = time.time()
-    code, _, body = (post or _core)("/voice?reply=json&client=dash", json.dumps({"text": text[:4000]}).encode("utf-8"),
-                                    "application/json")
+    code, headers, body = (post or _core)(f"/voice?reply=json&client={_client(dictated)}",
+                                          json.dumps({"text": text[:4000]}).encode("utf-8"), "application/json")
     try:
         data = json.loads(body.decode("utf-8", "replace"))
     except ValueError:
         data = {}
     if code != 200:
         return {"ok": False, "error": data.get("error") or f"the core answered {code}"}
+    low = {k.lower(): v for k, v in (headers or {}).items()}
     return {"ok": True, "text": data.get("text") or "", "spoken": data.get("spoken") or "",
-            "status": data.get("status") or "done", "asked_at": asked_at}
+            "status": data.get("status") or low.get("x-waggle-status") or "done", "asked_at": asked_at,
+            "turn": low.get("x-waggle-turn", "")}
+
+
+def say_aloud(text, post=None, dictated=True):
+    """One turn from text, answered as audio. The same tuple as talk(), plus the turn id."""
+    import urllib.parse
+    text = " ".join(str(text or "").split())
+    if not text:
+        return 400, "application/json", json.dumps({"error": "nothing to send"}).encode(), "", "error", 0.0, ""
+    asked_at = time.time()
+    code, headers, body = (post or _core)(f"/voice?format=wav&client={_client(dictated)}",
+                                          json.dumps({"text": text[:4000]}).encode("utf-8"), "application/json")
+    low = {k.lower(): v for k, v in (headers or {}).items()}
+    spoken = urllib.parse.unquote(low.get("x-waggle-spoken", ""))
+    status = low.get("x-waggle-status", "done" if code == 200 else "error")
+    return code, low.get("content-type", "application/json"), body, spoken, status, asked_at, low.get("x-waggle-turn", "")
+
+
+def hear(audio, ctype, post=None, sleep=time.sleep):
+    """The words in one recording, for the page's dictation. No turn runs and nothing is sent or stored: the owner
+    reads the text, corrects it and sends it themself. {"ok", "text"}; {"ok": False, "error", "busy"} otherwise.
+    The known mishearings are fixed and the fillers and false starts taken out, as for a voice note."""
+    if not audio or len(audio) > MAX_BODY or not str(ctype or "").lower().startswith("audio/"):
+        return {"ok": False, "error": "send up to 2 MB of audio"}
+    code, body = 429, b""
+    for _ in range(HEAR_TRIES):  # the recogniser takes one recording at a time
+        code, _h, body = (post or _core)("/voice/transcribe", audio, ctype.split(";")[0])
+        if code != 429:
+            break
+        sleep(0.35)
+    try:
+        data = json.loads(body.decode("utf-8", "replace"))
+    except ValueError:
+        data = {}
+    if code != 200:
+        return {"ok": False, "busy": code == 429, "error": data.get("error") or f"the core answered {code}"}
+    text = str(data.get("text") or "").strip()
+    if text:
+        from . import stt, voice_turn
+        try:
+            text = stt.clean_transcript(voice_turn.fix(text, getattr(Settings.load(), "voice_fixes", None))).strip()
+        except Exception:  # noqa: BLE001 - the raw words are still better than none
+            pass
+    return {"ok": True, "text": text, "confident": bool(data.get("confident")), "audio_s": data.get("audio_s")}
+
+
+def stop(post=None):
+    """End the turn that is running now. {"ok", "stopped"}."""
+    code, _, body = (post or _core)("/voice/stop", b"{}", "application/json")
+    try:
+        data = json.loads(body.decode("utf-8", "replace"))
+    except ValueError:
+        data = {}
+    return {"ok": code == 200, "stopped": bool(data.get("stopped")), "error": "" if code == 200 else
+            (data.get("error") or f"the core answered {code}")}
+
+
+# ---- the conversation, and what is happening now ---------------------------------------------------------------
+
+def _owner_chat():
+    from waggle.core import voiceline
+    return voiceline.owner_chat()
+
+
+def _short_model(model):
+    from . import comfort
+    return comfort.model_name(model) or str(model or "")
+
+
+def _turn_row(r, full=True):
+    try:
+        extra = json.loads(r["extra"] or "{}")
+    except (ValueError, TypeError):
+        extra = {}
+    v = extra.get("voice_turn") or {}
+    tools = extra.get("tools") or []
+    source = str(v.get("transcript_source") or "")
+    said = "typed" if v.get("typed") or source.startswith("typed") else "dictated" if source.startswith("dictated") \
+        else "spoken" if extra.get("voice") else "typed"
+    reply = r["reply"] or ""
+    return {"id": r["id"], "turn": r["turn_id"] or "", "time": r["time"], "request": r["request"] or "",
+            "reply": reply if full else reply[:600], "model": _short_model(r["answered_by"] or r["model"]),
+            "seconds": r["total_s"], "outcome": r["turn_outcome"] or "", "said": said, "tools": len(tools),
+            "where": "here" if "dashboard" in source else "pc voice" if "PC" in source else "phone"}
+
+
+def history(before=None, n=30, chat=None):
+    """The owner's conversation with Waggle (every channel: this page, the PC voice, the phone), oldest first.
+    {"turns": [...], "more": True when older turns exist}. Test turns are left out."""
+    import sqlite3
+
+    from . import traces
+    chat = chat or _owner_chat()
+    n = max(1, min(int(n or 30), 100))
+    if not chat:
+        return {"turns": [], "more": False}
+    con = traces._db()
+    con.row_factory = sqlite3.Row
+    marks = ",".join("?" * len(TEST_ORIGINS))
+    q = (f"SELECT id, turn_id, time, request, reply, model, answered_by, total_s, turn_outcome, extra FROM traces "
+         f"WHERE chat=? AND reply IS NOT NULL AND reply != '' AND request IS NOT NULL AND request != '' "
+         f"AND (origin IS NULL OR origin NOT IN ({marks}))")
+    params = [chat, *TEST_ORIGINS]
+    if before:
+        q += " AND time < ?"
+        params.append(float(before))
+    rows = con.execute(q + " ORDER BY time DESC, id DESC LIMIT ?", (*params, n + 1)).fetchall()
+    con.close()
+    return {"turns": [_turn_row(r) for r in reversed(rows[:n])], "more": len(rows) > n}
+
+
+def turn(turn_id):
+    """One finished turn for the page: the full reply, who answered, how long it took and each tool step."""
+    from . import traces
+    row = traces.by_turn_id(str(turn_id or "")[:64])
+    if not row:
+        return {"error": "no such turn"}
+    out = _turn_row(row)
+    try:
+        tools = (json.loads(row.get("extra") or "{}").get("tools")) or []
+    except (ValueError, TypeError):
+        tools = []
+    out["steps"] = [{"line": progress_line(t), "ok": t.get("ok"), "denied": bool(t.get("denied"))}
+                    for t in tools if isinstance(t, dict)][:60]
+    return out
+
+
+def progress_line(step):
+    from . import liveturn
+    return liveturn._line(step)
+
+
+def live(now=None):
+    """What Waggle is doing right now: {"turn": the turn in progress or the last one (test turns are not shown),
+    "jobs": the background jobs that are running, each with its last steps}."""
+    from . import liveturn
+    now = now or time.time()
+    out = {"time": now, "turn": None, "jobs": []}
+    st = _safe(lambda: liveturn.read(now), {})
+    if st and st.get("origin") not in TEST_ORIGINS and (st.get("running") or now - (st.get("finished") or 0) < 600):
+        st["model"] = _short_model(st.get("model"))
+        out["turn"] = st
+
+    def jobs():
+        from . import chat_jobs
+        rows = []
+        for j in chat_jobs.status(_owner_chat() or None, limit=8, now=now):
+            if str(j.get("state") or j.get("status") or "") not in ("running", "queued", "leased", "pending"):
+                continue
+            p = j.get("progress") or {}
+            rows.append({"title": str(j.get("task") or j.get("title") or "")[:160], "state": j.get("state") or j.get("status"),
+                         "agent": j.get("agent") or "", "model": j.get("model") or "",
+                         "minutes": p.get("running_min"), "steps": p.get("steps", 0),
+                         "recent": p.get("recent_steps") or [], "files": p.get("files_written") or []})
+        return rows
+    out["jobs"] = _safe(jobs, [])
+    return out
+
+
+def brain(settings=None):
+    """Who answers and who works: {"chat_model", "job_model" ("" = each agent's own), "models"}."""
+    from . import comfort
+    s = settings or Settings.load()
+    return {"chat_model": comfort.current("chat_model", s), "job_model": comfort.current("job_model", s),
+            "models": list(comfort.MODELS)}
+
+
+def set_brain(args):
+    """The owner picked a model on the page. The same change, with the same checks and backup, as asking in chat."""
+    from . import comfort
+    done = {}
+    try:
+        for key in ("chat_model", "job_model"):
+            if key in (args or {}):
+                done[key] = comfort.set_value(key, args[key], turn={"owner": True, "origin": "home", "chat": "home"})
+    except comfort.SettingError as e:
+        return {"ok": False, "error": str(e), **brain()}
+    return {"ok": True, "changed": {k: v["new_words"] for k, v in done.items() if not v.get("unchanged")}, **brain()}
 
 
 def talk(audio, ctype, post=None):

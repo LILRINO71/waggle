@@ -34,11 +34,14 @@ def result_key(payload):
     return f"{JOB_KIND}:{payload['key']}"
 
 
-def start(chat, task, agent="general", hard=False, origin="", now=None):
-    """Queue a background job for `chat`. Returns (job id, key)."""
+def start(chat, task, agent="general", hard=False, origin="", now=None, model=""):
+    """Queue a background job for `chat`. Returns (job id, key). model: the Claude model the owner named for this
+    job (haiku, sonnet, opus, fable), "" for the usual choice."""
     key = uuid.uuid4().hex
     payload = {"chat": chat, "task": task, "agent": agent or "general", "hard": bool(hard), "key": key,
                "origin": origin or "", "asked": store.now_or(now)}
+    if model:
+        payload["model"] = model
     return jobs.enqueue(JOB_KIND, payload, idem_key=f"{JOB_KIND}:{key}", now=now), key
 
 
@@ -71,8 +74,12 @@ def run_background(payload, runner=None):
             res = runner(payload)
         else:
             from waggle import agents
+            from waggle.config import Settings
+            # the model the owner named for this job, else their standing choice for jobs, else the agent's own
+            model = payload.get("model") or Settings.load().job_model or None
             res = agents.run(payload.get("agent") or "general", payload["task"] + REPORT_RULE, session=payload["chat"],
-                             hard=bool(payload.get("hard")), timeout=1800, progress_key=progress_key(payload))
+                             hard=bool(payload.get("hard")), timeout=1800, progress_key=progress_key(payload),
+                             model=model)
         from waggle.agent import approval_message
         ok = bool(getattr(res, "ok", False))
         body = (getattr(res, "text", "") or f"It didn't work: {str(getattr(res, 'error', ''))[:300]}") \
@@ -156,6 +163,7 @@ def status(chat=None, limit=6, now=None):
     for j in rows:
         p, r = j.get("payload") or {}, j.get("result") if isinstance(j.get("result"), dict) else {}
         item = {"job": j["id"], "task": _title(p.get("task", "")), "state": j["state"],
+                "agent": p.get("agent") or "general", "model": p.get("model") or "",
                 "ok": r.get("ok"), "started": j.get("started"), "finished": j.get("finished"),
                 "result": str(r.get("result") or j.get("error") or "")[:600]}
         if j["state"] in ("running", "queued", "pending") and j.get("started"):
@@ -175,10 +183,19 @@ def _t_background_task(args):
         return "Give the task: a complete, self-contained description of what to do and what 'done' means."
     if not chat:
         return "background_task only works from a chat; use delegate for a sub-task you wait for."
+    from waggle import comfort
+    asked = str(args.get("model") or "").strip()
+    model = comfort.model_name(asked)
+    if asked and not model:
+        return f"{asked!r} is not a model Waggle can run. Models: {', '.join(comfort.MODELS)}. Nothing was started."
     jid, _ = start(chat, task, args.get("agent") or "general", bool(args.get("hard")),
-                   origin=os.environ.get("WAGGLE_ORIGIN", ""))
-    return json.dumps({"started": True, "job": jid, "note": "Queued in the background. Tell the user in one short "
-                       "line that you're on it; the result will be posted into this chat when it's done."})
+                   origin=os.environ.get("WAGGLE_ORIGIN", ""), model=model)
+    from waggle.config import Settings
+    doing = model or Settings.load().job_model or "the agent's usual model"
+    return json.dumps({"started": True, "job": jid, "agent": args.get("agent") or "general", "model": doing,
+                       "note": "Queued in the background. Tell the user in one short line that you're on it and "
+                               "which agent and model are doing it; the result will be posted into this chat when "
+                               "it's done."})
 
 
 def _t_background_status(args):
@@ -191,9 +208,11 @@ MCP_TOOLS = [
       "building or editing code, documents, multi-step PC or web work, anything over ~30 seconds. A Claude tool "
       "agent does it (agent: general, coder, researcher, robotics, planner, tutor, monitor; hard=true for difficult "
       "work) and its result is posted into this chat automatically. Write the task completely: the agent does not "
-      "see this conversation.",
+      "see this conversation. model: set it ONLY when the owner named the model for this job (haiku, sonnet, opus, "
+      "fable); it is then used exactly, never swapped.",
       "parameters": {"type": "object", "properties": {"task": {"type": "string"}, "agent": {"type": "string"},
-                                                      "hard": {"type": "boolean"}}, "required": ["task"]}},
+                                                      "hard": {"type": "boolean"}, "model": {"type": "string"}},
+                     "required": ["task"]}},
      _t_background_task),
     ({"name": "background_status", "description": "Background jobs started from this chat: status and results; a "
       "running job also shows minutes running, its last steps and the files it wrote so far (say these when asked "

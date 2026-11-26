@@ -13,7 +13,8 @@ from pathlib import Path
 from . import cooldowns, quota
 
 # Exact IDs: an inherited environment can remap short aliases (kalshi bot caught "sonnet" running as Haiku).
-MODEL_IDS = {"haiku": "claude-haiku-5-5", "sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5"}
+MODEL_IDS = {"haiku": "claude-haiku-5-5", "sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5",
+             "fable": "claude-fable-5-2"}
 # Without these, a headless call loads MCP servers, settings and tool prompts: ~72k tokens instead of ~1.3k.
 LEAN_FLAGS = ["--tools", "", "--no-session-persistence", "--strict-mcp-config",
               "--setting-sources", "", "--disable-slash-commands"]

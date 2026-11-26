@@ -189,10 +189,21 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(200, json.dumps(home.state(), default=str), "application/json")
         if self.path.startswith("/api/graph"):
             return self._send(200, json.dumps(home.graph(), default=str), "application/json")
-        if self.path.startswith("/api/note"):
+        if self.path.startswith(("/api/note", "/api/history", "/api/turn")):
             from urllib.parse import parse_qs, urlparse
-            q = parse_qs(urlparse(self.path).query)
-            return self._send(200, json.dumps(home.note((q.get("path") or [""])[0])), "application/json")
+            q = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+            if self.path.startswith("/api/note"):
+                out = home.note(q.get("path", ""))
+            elif self.path.startswith("/api/turn"):
+                out = home.turn(q.get("id", ""))
+            else:
+                try:
+                    out = home.history(before=float(q["before"]) if q.get("before") else None, n=int(q.get("n") or 30))
+                except ValueError:
+                    out = {"turns": [], "more": False, "error": "before and n are numbers"}
+            return self._send(200, json.dumps(out, default=str), "application/json")
+        if self.path.startswith("/api/live"):
+            return self._send(200, json.dumps(home.live(), default=str), "application/json")
         if self.path in ("/", "/index.html"):
             return self._send(200, home.page(), "text/html; charset=utf-8")
         if self.path in ("/ops", "/ops/"):
@@ -211,8 +222,22 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(403 if why else 413, json.dumps({"error": why or "too large"}), "application/json")
         body = self.rfile.read(length) if length else b""
         path = self.path.split("?")[0]
-        if path == "/api/talk":
-            code, ctype, data, spoken, status, asked_at = home.talk(body, self.headers.get("Content-Type"))
+        if path == "/api/hear":
+            return self._send(200, json.dumps(home.hear(body, self.headers.get("Content-Type"))), "application/json")
+        spoken_say = None
+        if path == "/api/say":
+            try:
+                spoken_say = json.loads(body.decode("utf-8")) if body else {}
+            except (UnicodeDecodeError, ValueError):
+                spoken_say = None
+            spoken_say = spoken_say if isinstance(spoken_say, dict) and spoken_say.get("speak") else None
+        if path == "/api/talk" or spoken_say:
+            turn_id = ""
+            if spoken_say:
+                code, ctype, data, spoken, status, asked_at, turn_id = home.say_aloud(
+                    spoken_say.get("text"), dictated=bool(spoken_say.get("dictated", True)))
+            else:
+                code, ctype, data, spoken, status, asked_at = home.talk(body, self.headers.get("Content-Type"))
             import urllib.parse
             self.send_response(code)
             self.send_header("Content-Type", ctype)
@@ -220,6 +245,7 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header("X-Waggle-Spoken", urllib.parse.quote(spoken))
             self.send_header("X-Waggle-Status", status)
             self.send_header("X-Waggle-Asked", f"{asked_at:.3f}")
+            self.send_header("X-Waggle-Turn", turn_id)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
@@ -229,8 +255,10 @@ class _Handler(BaseHTTPRequestHandler):
             args = args if isinstance(args, dict) else {}
         except (UnicodeDecodeError, ValueError):
             return self._send(400, json.dumps({"error": "a JSON body is required"}), "application/json")
-        routes = {"/api/say": lambda: home.say(args.get("text")), "/api/night": lambda: home.night(args.get("text")),
-                  "/api/taste": lambda: home.teach(args.get("line")), "/api/think": home.think_now}
+        routes = {"/api/say": lambda: home.say(args.get("text"), dictated=bool(args.get("dictated"))),
+                  "/api/night": lambda: home.night(args.get("text")),
+                  "/api/taste": lambda: home.teach(args.get("line")), "/api/think": home.think_now,
+                  "/api/stop": home.stop, "/api/brain": lambda: home.set_brain(args)}
         if path not in routes:
             return self._send(404, json.dumps({"error": "not found"}), "application/json")
         try:
