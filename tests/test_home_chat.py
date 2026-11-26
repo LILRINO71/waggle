@@ -243,6 +243,19 @@ def test_a_running_chat_moves_to_the_newly_chosen_model_and_keeps_the_conversati
     assert len(fake.procs) == 2  # no restart while the choice stays the same
 
 
+def test_the_live_pool_follows_a_choice_made_after_the_core_started(isolated_home, monkeypatch):
+    from waggle import chat_engine
+    monkeypatch.setattr(chat_engine, "_pool", None)
+    fake = FakeClaude()
+    sess = chat_engine.pool(Settings.load()).get("telegram:1")  # as the core's pre-warm makes it: settings handed in
+    sess.popen, sess._claude = fake, "claude"
+    assert sess.turn("one").ok and fake.procs[0].arg("--model") == "claude-haiku-5-5"
+    comfort.set_value("chat_model", "fable", owner())
+    comfort.set_value("chat_effort", "high", owner())
+    assert sess.turn("two").ok and len(fake.procs) == 2
+    assert fake.procs[1].arg("--model") == "claude-fable-5-2" and fake.procs[1].arg("--effort") == "high"
+
+
 def test_a_job_uses_the_model_the_owner_named_else_their_standing_choice(settings, monkeypatch):
     from waggle import agents
     used = []

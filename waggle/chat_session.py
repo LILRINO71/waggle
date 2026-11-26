@@ -544,7 +544,7 @@ class ChatSession:
     takes_repeatable = True  # turn(..., repeatable=) is understood (chat_engine checks before passing it)
 
     def __init__(self, chat, settings=None, popen=None, claude=None, transcript=None, clock=time.time,
-                 summarizer=None):
+                 summarizer=None, follow_config=None):
         self.chat = chat
         self.summarizer = summarizer  # summarizer(convo, settings) -> text; default: the local model (local_summary)
         self._carry = None  # summary + recent exchanges for the next fresh session (rotation by size)
@@ -563,7 +563,10 @@ class ChatSession:
         self.origin = "user"  # where this chat's messages come from (set per turn by the engine)
         self._proc_origin = None
         self._marked = False  # this turn's message was the session's first (it is counted as sent, see _run)
-        self._own_settings = settings is None  # read config.json's chat_model again each turn (see _follow_model)
+        # Read config.json's chat_model and chat_effort again each turn (see _follow_model). The live pool passes
+        # follow_config=True: it hands every session one Settings object loaded when the core started, so without
+        # this a choice the owner made later was never seen (found live 2026-11-25: Fable chosen, Sonnet answered).
+        self._own_settings = (settings is None) if follow_config is None else bool(follow_config)
         self._stopped = False  # the owner pressed Stop during the running turn (interrupt)
 
     # -- process management

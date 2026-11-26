@@ -436,3 +436,9 @@ that a model or agent they name is used and remembered.
   `job_model` / `job_effort` now also reach objective steps (the background budget still decides whether there is
   room) and `start_build`. Before this every background job ran at `--effort low` with no way to change it.
   Plain pytest alone: 4,183 passed, 6 skipped, 4 xfailed in 619 s.
+- Found live the same night: with Fable chosen, Sonnet still answered. The core's pre-warm creates the chat pool
+  with one Settings object loaded at start, so `ChatSession._follow_model` (which only ran for sessions made
+  without settings) never looked at config.json again. The live pool now passes `follow_config=True`; the test
+  builds the session the way the core does. Plain pytest alone: 4,184 passed, 6 skipped, 4 xfailed in 616 s.
+  (So the earlier line "a running chat process moves to the new model on the next message" was true only in a
+  unit test until this fix.)

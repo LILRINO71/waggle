@@ -70,7 +70,8 @@ def pool(settings=None):
     with _pool_lock:
         if _pool is None:
             _pool = SessionPool(factory=lambda chat: ChatSession(chat, settings=settings,
-                                                                 transcript=traces.chat_transcript),
+                                                                 transcript=traces.chat_transcript,
+                                                                 follow_config=True),
                                 settings=settings)
         return _pool
 
