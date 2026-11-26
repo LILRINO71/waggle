@@ -40,6 +40,19 @@ Read this first, then `overnight/REBUILD_PLAN.md` (the governing plan) and `over
   suite. Speed (from session "Wago performance"): tool turns median 14.6 s vs 2.6 s without tools, about 5.6 s per
   tool step; 12 of 47 tool turns begin with a ToolSearch for Waggle's own tools; ttfw_s equals total_s on every row.
 
+**2026-11-26, the "What Is Waggle?" presentation (session "Waggle story"; no Waggle code changed).** For the owner's
+dad, who works in IT: an 11-scene animated page on what Waggle is, why, how one voice note travels through it, the
+stack, and the Claude usage at API prices. Public: https://lilrino71.github.io/waggle-story/ (repo
+`LILRINO71/waggle-story`, Pages from `docs/`, source `index.html`, `python build.py` rebuilds; local checkout
+`C:\Users\hiheo\Claude\waggle-story`, which has its own git identity with the GitHub no-reply address). Also a
+private Claude artifact (link in the builder's memory note `waggle-story-page`). Nothing in `waggle` or `waggle-dev`
+was touched and nothing was deployed. Its numbers are a snapshot of `README.md`, `docs/STATUS.md` and git on
+2026-11-25 (392 commits, 4,161 tests, 54 timers): update the page if it is shown again later. Cost estimate: Waggle
+about $841, all Claude Code work since July about $1,785; method in that repo's `tools/api_cost_estimate.py`
+(session logs deduped by message id, list prices; sessions deleted without an archive cannot be counted). Open: the
+three new scenes were checked for layout and clicks but not watched animating (the browser pane was hidden). Not
+this session's: an untracked `-p/` folder in the live checkout `Claude\waggle`.
+
 **2026-11-26, FULL TRUST (live bde0a7f). Do not bring the asks back.** The owner: "It has permission to do anything,
 everything. Stop asking me." `policy.full_trust` turns every ASK into ALLOW (Claude hook and Hermes's
 `security.check_tool_call`); money, their one limit, is a DENY ("never spends money"), never a question; only the
