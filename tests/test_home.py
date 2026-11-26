@@ -52,6 +52,16 @@ def test_page_carries_the_token_and_the_state_is_served(srv):
     assert code == 200 and "thinking" in json.loads(body)
 
 
+def test_an_open_page_survives_a_restart_by_reading_the_new_token(srv):
+    """2026-11-26: a deploy restarted the dashboard, the open page kept the old token, every recording got 403 and the
+    page said "I did not catch any words". The page reads the current token from its own address on a 403."""
+    import re
+    page = call(srv + "/")[2].decode()
+    m = re.search(r'let TOKEN="([^"]+)"', page)  # the pattern freshToken() reads in the page
+    assert m and m.group(1) == home.TOKEN
+    assert "r.status===403&&await freshToken()" in page and 'fetch(location.pathname||"/",{cache:"no-store"})' in page
+
+
 def test_a_post_needs_the_page_token(srv, monkeypatch):
     monkeypatch.setattr(home, "say", lambda text, dictated=False: {"ok": True, "text": "hi " + text})
     assert post(srv, "/api/say", {"text": "x"}, token="")[0] == 403
